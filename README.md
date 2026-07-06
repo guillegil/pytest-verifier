@@ -1,12 +1,25 @@
 # pytest-verify
 
+[![CI](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest_verify)
+[![pytest](https://img.shields.io/badge/pytest-7%2B-0a9edc)](https://docs.pytest.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 A pytest plugin providing **soft assertions** for test verification. Failed checks never stop
 the test — all checks run to completion, and failures are reported together at test end.
 
 ## Installation
 
+Not published on PyPI — install from Git:
+
 ```bash
-pip install pytest-verify
+pip install "git+https://github.com/guillegil/pytest_verify.git"
+```
+
+Or, to pin a release:
+
+```bash
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.3.1"
 ```
 
 Requires Python 3.9+ and pytest 7+.
@@ -180,6 +193,19 @@ details = verify.evaluate_detailed(descriptor)  # [{passed, details, seq, t}]
 
 If `pytest-reporter` is installed, check results are automatically written to `item.stash`
 for rich HTML rendering. No configuration needed — detection is automatic.
+
+## Development
+
+The project uses [uv](https://docs.astral.sh/uv/). Clone and run the test suite:
+
+```bash
+git clone https://github.com/guillegil/pytest_verify.git
+cd pytest_verify
+uv run pytest
+```
+
+CI runs the full suite on every push and pull request against Python 3.9–3.13
+(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ## License
 

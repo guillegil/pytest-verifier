@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions CI workflow running the test suite on every push and pull request across Python 3.9–3.13.
+- README status badges (CI, Python versions, pytest, license) and a Development section.
+
+### Fixed
+
+- Corrected the README install instructions: the package is not published on PyPI, so `pip install pytest-verify` never resolved. Documented the Git install (`pip install "git+https://github.com/guillegil/pytest_verify.git"`).
+
 ## [0.3.1] - 2026-06-23
 
 ### Fixed
