@@ -27,8 +27,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.0] - 2026-06-20
 
+### Added
+
+- Public `get_check_results(item)` helper, importable from `pytest_verify`. Returns a copy of the check-result descriptors recorded for a pytest item (`[]` when none), reading from the shared stash. This is the read contract consumed by `pytest-reporter` to render verification cards.
+
 ### Changed
 
+- Stash writes are now unconditional: every check records its descriptor to `item.stash` regardless of pass/fail and regardless of whether `pytest-reporter` is installed, so observers see passed checks (green cards), not only failures.
 - `ChecksFailedError` message now follows the spec §7 format: an `N of M checks failed` header, then failed checks (`✗`) before passed checks (`✓`), each with its `[seq]` index, name, and a per-type detail clause — `expected … got …` for failures and a compact restatement for passes (see spec §7.1) — replacing the previous `FAILED checks:` / `PASSED checks:` lists.
 - Check `description` strings now match the authoritative spec (§5): `approx` with both tolerances renders `== 3.3V ± 0.05V (abs) ± 1% (rel)` (labels only when both are present) and percentages drop a trailing `.0` (`1%`, not `1.0%`); `length` renders `Verify 'name' has length N` instead of `Verify len('name') == N`; `all_satisfy` appends the item count, e.g. `… satisfy condition (4 items)`.
 

@@ -150,3 +150,85 @@ class TestSoftAssertFailureBehaviorUnchanged:
         # test fails due to soft-assert (verify.equal(1,2)), but the inner
         # assertions about the stash should pass — the test fails at teardown
         result.assert_outcomes(failed=1)
+
+
+class TestCompositeSchemaThroughReader:
+    """R3/R4 — Composites are exposed via get_check_results() as a single parent
+    descriptor with nested children and NO leaked top-level child entries.
+
+    This is the contract pytest-reporter renders against: it reads children from
+    inside the parent card, so a leaked branch/case/child would show as a phantom
+    independent card (and an unmatched guard branch as a standalone failure)."""
+
+    def test_guard_parent_only_with_nested_branches(self, pytester):
+        pytester.makepyfile("""
+            from pytest_verify import get_check_results
+
+            def test_g(request, verify):
+                verify.guard(
+                    branches=[
+                        (False, "low", verify.equal(1, 2, name="lo")),
+                        (True, "ok", verify.equal(1, 1, name="ok")),
+                    ],
+                    default=verify.equal(9, 9, name="def"),
+                    name="G",
+                )
+                results = get_check_results(request.node)
+                # Only the parent is a top-level entry — no leaked children.
+                assert len(results) == 1
+                parent = results[0]
+                assert parent["check_type"] == "guard"
+                assert parent["matched_index"] == 1
+                # Children remain nested and JSON-serializable inside the parent.
+                labels = [b["label"] for b in parent["branches"]]
+                assert labels == ["low", "ok"]
+                assert parent["branches"][0]["check"]["name"] == "lo"
+                assert parent["default"]["name"] == "def"
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(passed=1)
+
+    def test_conditional_parent_only_with_nested_cases(self, pytester):
+        pytester.makepyfile("""
+            from pytest_verify import get_check_results
+
+            def test_c(request, verify):
+                verify.conditional(
+                    1,
+                    cases={
+                        0: verify.equal(1, 2, name="zero"),
+                        1: verify.equal(1, 1, name="one"),
+                    },
+                    name="C",
+                )
+                results = get_check_results(request.node)
+                assert len(results) == 1
+                parent = results[0]
+                assert parent["check_type"] == "conditional"
+                assert parent["matched_case"] == "1"
+                assert set(parent["cases"]) == {"0", "1"}
+                assert parent["cases"]["1"]["name"] == "one"
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(passed=1)
+
+    def test_all_satisfy_parent_only_with_nested_children(self, pytester):
+        pytester.makepyfile("""
+            from pytest_verify import get_check_results
+            from pytest_verify._descriptors import build_greater
+
+            def test_a(request, verify):
+                verify.all_satisfy(
+                    [1, 2, 3],
+                    lambda x: build_greater(x, 0, name=f"item_{x}"),
+                    name="Positives",
+                )
+                results = get_check_results(request.node)
+                assert len(results) == 1
+                parent = results[0]
+                assert parent["check_type"] == "all_satisfy"
+                assert len(parent["child_checks"]) == 3
+                assert parent["child_checks"][0]["check_type"] == "greater"
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(passed=1)
