@@ -207,6 +207,17 @@ uv run pytest
 CI runs the full suite on every push and pull request against Python 3.9–3.13
 (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
+## Known Issues
+
+Version 0.3.1 has known bugs, including two that can crash a pytest session (for example,
+comparing numpy arrays with `verify.equal`). They are listed by severity, with reproductions and
+suggested fixes, in [`bugs-0.3.1.md`](bugs-0.3.1.md). Most are pinned by a strict
+`xfail` test in `tests/test_known_bugs_*.py`, so fixing a bug makes its test fail until the
+marker is removed.
+
+Planned improvements and feature ideas are collected in
+[`improvements-and-ideas.md`](improvements-and-ideas.md).
+
 ## License
 
 MIT
