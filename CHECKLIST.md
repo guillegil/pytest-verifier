@@ -61,8 +61,9 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~Release workflow: build once, `twine check`, test the wheel with the oldest and newest pytest, publish to PyPI or TestPyPI with Trusted Publishing, then the GitHub release; re-runnable after a partial failure~~ (DX-2)
 - [x] ~~PyPI metadata and a README that renders there (absolute links, `pip install pytest-verifier`)~~
 - [x] ~~README, CHANGELOG, CLAUDE.md~~
-- [ ] Full test matrix, mypy, build, fuzz and performance scripts
+- [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
 - [x] ~~Independent review and fixes~~ (40 confirmed findings, each fixed with a test)
+- [x] ~~Second review of the fixes~~ (11 confirmed findings, each fixed with a test that fails without it)
 - [ ] Trial upload to TestPyPI (needs the pending publisher on test.pypi.org)
 - [ ] PR, CI green, merge, release v0.8.0 to PyPI and GitHub
 

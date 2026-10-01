@@ -266,16 +266,77 @@ class TestRecordedLocation:
         exec(compile(source, inside, "exec"), user)
         assert user["fake"]()[0] == f"{inside}:2"
 
-    def test_a_caller_outside_the_rootdir_is_left_out(self) -> None:
-        # Library code that runs the test (a wrapper without functools.wraps) is no caller to
-        # show.
-        library: Dict[str, Any] = {}
-        exec(compile("def wrapper(fn):\n    return fn()\n", "/outside/lib.py", "exec"), library)
-        test = FunctionCode({library["wrapper"].__code__})
+    def test_a_library_wrapper_is_no_caller(self) -> None:
+        # Library code that runs the test (a wrapper without functools.wraps, a test pytest-bdd
+        # generates) is no caller to show, also in a virtualenv inside the rootdir. The test's
+        # own code is, wherever it is.
         root = os.path.dirname(os.path.abspath(__file__))
-        location, called_from = library["wrapper"](lambda: locate(root, test))
-        assert (location or "").startswith("test_locations.py:") and called_from is None
-        assert library["wrapper"](lambda: locate(None, test))[1] == "/outside/lib.py:2"
+        source = "def wrapper(fn):\n    return fn()\n"
+        def sites(filename: str, rootdir: Any, wrapper: bool) -> Any:
+            library: Dict[str, Any] = {}
+            exec(compile(source, filename, "exec"), library)
+            code = library["wrapper"].__code__
+            test = FunctionCode({code}, wrappers={code} if wrapper else frozenset())
+            return library["wrapper"](lambda: locate(rootdir, test))
+
+        for filename in ("/outside/lib.py", os.path.join(root, ".venv", "site-packages", "x.py")):
+            location, called_from = sites(filename, root, wrapper=True)
+            assert (location or "").startswith("test_locations.py:") and called_from is None
+            called_from = sites(filename, root, wrapper=False)[1]
+            assert called_from == display_path(filename, root) + ":2"
+        # Without a rootdir every path is absolute: only installed code is left out.
+        assert sites(filename, None, wrapper=True)[1] is None
+        assert sites("/outside/lib.py", None, wrapper=True)[1] == "/outside/lib.py:2"
+
+    def test_a_test_file_outside_the_rootdir(self, pytester: pytest.Pytester) -> None:
+        pytester.mkdir("config")
+        pytester.makepyfile(
+            test_outside="""
+            def helper(verify):
+                verify.is_true(0, name="h")
+
+            def test_outside(verify):
+                helper(verify)
+            """
+        )
+        [record] = _records(pytester, "--rootdir=config")["test_outside"]
+        test_file = str(pytester.path / "test_outside.py")
+        assert record["location"] == f"{test_file}:2"
+        assert record["called_from"] == f"{test_file}:5"
+        result = pytester.runpytest("-p", "no:cacheprovider", "--rootdir=config", "--tb=line")
+        result.stdout.fnmatch_lines(["*test_outside.py:5: 1 of 1 checks failed: h *"])
+
+    def test_a_test_that_calls_a_function_of_the_same_name(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        pytester.makepyfile(
+            test_same_name="""
+            def test_rail(verify):
+                verify.is_true(0, name="module")
+
+            class Base:
+                def test_link(self, verify):
+                    verify.is_true(0, name="base")
+
+            class TestBoard(Base):
+                def test_link(self, verify):
+                    super().test_link(verify)
+
+                def test_rail(self, verify):
+                    test_rail(verify)
+            """
+        )
+        found = _records(pytester, "-k", "TestBoard")
+        [base] = found["test_link"]
+        [module] = found["test_rail"]
+        assert (base["location"], base["called_from"]) == (
+            "test_same_name.py:6",
+            "test_same_name.py:10",
+        )
+        assert (module["location"], module["called_from"]) == (
+            "test_same_name.py:2",
+            "test_same_name.py:13",
+        )
 
     def test_built_checks_and_evaluate_have_no_location(self) -> None:
         built = checks.equal(1, 2, name="x")
@@ -479,6 +540,34 @@ class TestCrashLine:
         result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line", "test_board.py")
         result.assert_outcomes(failed=1)
         result.stdout.fnmatch_lines(["*base_suite.py:7: 1 of 2 checks failed: 3V3 *"])
+
+    def test_a_decorator_from_another_module_that_hides_the_test(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        # reportinfo() names the decorator's file: the line is paired with the test module.
+        pytester.makepyfile(
+            deco="""
+            import inspect
+
+            def logged(fn):
+                def wrapper(*args, **kwargs):
+                    return fn(*args, **kwargs)
+                wrapper.__signature__ = inspect.signature(fn)
+                return wrapper
+            """,
+            test_deco="""
+            from deco import logged
+
+            @logged
+            def test_deco(verify):
+                verify.is_true(1, name="fine")
+                verify.is_true(0, name="body")
+            """,
+        )
+        pytester.syspathinsert()
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line", "-rf")
+        result.stdout.fnmatch_lines(["*test_deco.py:6: 1 of 2 checks failed: body *"])
+        result.stdout.no_fnmatch_line("*/deco.py:*")
 
     def test_a_fixture_check_keeps_the_def_line(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(

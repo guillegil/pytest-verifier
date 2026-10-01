@@ -52,26 +52,41 @@ def _where(frame: FrameType, rootdir: Optional[str]) -> str:
     return f"{display_path(frame.f_code.co_filename, rootdir)}:{frame.f_lineno}"
 
 
+#: Directories that hold installed packages, also when a virtualenv is inside the rootdir.
+_INSTALLED = frozenset({"site-packages", "dist-packages"})
+
+
+def _is_library(site: str, rootdir: Optional[str]) -> bool:
+    """Whether *site*, as :func:`_where` gives it, is in installed or outside code."""
+    if rootdir and os.path.isabs(site):
+        return True
+    return not _INSTALLED.isdisjoint(site.replace("\\", "/").split("/"))
+
+
 class FunctionCode:
     """The code of a test function: what :func:`locate` treats as the test itself.
 
     Code objects match by identity (hashing one walks its bytecode and constants), and the
     code objects are kept alive, so their ids are not reused while the run lasts. A function
-    also matches by file and name, for a test wrapped by a decorator that hides it (no
+    can also match by file and name, for a test wrapped by a decorator that hides it (no
     ``functools.wraps``).
     """
 
-    __slots__ = ("codes", "ids", "names")
+    __slots__ = ("codes", "ids", "names", "wrappers")
 
     def __init__(
         self,
         codes: AbstractSet[CodeType] = frozenset(),
         names: Optional[Mapping[str, AbstractSet[str]]] = None,
+        wrappers: AbstractSet[CodeType] = frozenset(),
     ) -> None:
         self.codes = codes
         self.ids = frozenset(id(code) for code in codes)
         #: Function name -> the files it is defined in.
         self.names: Mapping[str, AbstractSet[str]] = names or {}
+        #: The ids of the codes that run the test without being it, such as the wrapper of a
+        #: decorator without ``functools.wraps`` or a test a plugin generates (pytest-bdd).
+        self.wrappers = frozenset(id(code) for code in wrappers)
 
     def __bool__(self) -> bool:
         return bool(self.ids or self.names)
@@ -100,8 +115,10 @@ def locate(rootdir: Optional[str], test: FunctionCode) -> Site:
                 break
             if test.matches(outer.f_code):
                 called_from = _where(outer, rootdir)
-                if called_from == location or (rootdir and os.path.isabs(called_from)):
-                    # The same line (a lambda), or library code outside the project.
+                if called_from == location or (
+                    id(outer.f_code) in test.wrappers and _is_library(called_from, rootdir)
+                ):
+                    # The same line (a lambda), or library code that runs the test.
                     return location, None
                 return location, called_from
             outer = outer.f_back

@@ -120,6 +120,7 @@ far.
 
 ```python
 def test_link(verify):
+    verify.equal(read_firmware(), "1.2.0", name="Firmware")
     link = open_link()
     verify.require.is_not_none(link, name="Link")   # stops here when there is no link
     verify.equal(link.status(), "ready", name="Status")
@@ -129,7 +130,10 @@ The first line of the summary then names the check that stopped the test, and `-
 points at its line:
 
 ```text
-2 of 3 checks failed, stopped at [2]: Link — expected not None, got None (+1 more)
+2 of 2 checks failed, stopped at [1]: Link — expected not None, got None (+1 more)
+
+  ✗ [0] Firmware (tests/test_link.py:2) — expected '1.2.0', got '1.1.0'
+  ✗ [1] Link (tests/test_link.py:4) — expected not None, got None
 ```
 
 `verify.require(check)` does the same for a check made earlier or built with `checks`, for
@@ -148,7 +152,8 @@ verify_fail_fast = true
 ```
 
 Fail-fast leaves checks made while fixtures are torn down soft, so a fixture's cleanup after a
-failed check still runs; use `verify.require` to stop there. In a fixture's setup, a failed
+failed check still runs, and so are the checks of a unittest `TestCase`'s `tearDown`,
+`asyncTearDown` and cleanups; use `verify.require` to stop there. In a fixture's setup, a failed
 check stops like an `assert`: if that happens before `yield`, the fixture's teardown does not
 run either, so put cleanup that must run in `try`/`finally` or `request.addfinalizer`.
 
@@ -166,7 +171,7 @@ shown (a required or fail-fast check then stops the test like any failed check),
 comparing `None` with a number:
 
 ```text
-  ✗ [1] Reading — expected > 100, got None (TypeError: '>' not supported between instances of 'NoneType' and 'int')
+  ✗ [1] Reading (tests/test_power.py:18) — expected > 100, got None (TypeError: '>' not supported between instances of 'NoneType' and 'int')
 ```
 
 Text is never compared as a number. `"100" < "20"` is true for Python, which compares strings
@@ -175,7 +180,7 @@ fail when the value and a limit are both a `str`, `bytes` or `bytearray`. Conver
 replies and values read from files first, e.g. `float(reply)`:
 
 ```text
-  ✗ [0] Ripple — expected < '20', got '100' (TypeError: str values are compared as text, not as numbers; convert readings with float() first)
+  ✗ [2] Ripple (tests/test_power.py:19) — expected < '20', got '100' (TypeError: str values are compared as text, not as numbers; convert readings with float() first)
 ```
 
 Text against a number fails with Python's own error, plus the same advice. Values that compare
@@ -301,7 +306,8 @@ def test_sensor_output(verify):
 
 Conditions can be any truthy or falsy value, and a condition that is a function is called
 (see [Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch)).
-A failed guard reports the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`, or the
+A failed guard reports the branch it took, e.g.
+`✗ [0] Sensor output (tests/test_sensor.py:2) [→ below floor] — expected 0, got 7`, or the
 labels it tried when none matched: `[→ no branch matched: shutter closed, below floor]`. When a
 condition raises, the guard fails with `[→ no branch chosen]` and the error. Passing a
 check as a condition raises `TypeError`, because a check is always truthy. Use its result
@@ -325,7 +331,7 @@ def test_all_channels(verify):
 A failure names the first three failing items by their index:
 
 ```text
-  ✗ [0] All channels within spec — expected all 4 to pass, got 2 failed: [1] expected [3.2V, 3.4V], got 3.55V; [3] expected [3.2V, 3.4V], got 3.1V
+  ✗ [0] All channels within spec (tests/test_channels.py:2) — expected all 4 to pass, got 2 failed: [1] expected [3.2V, 3.4V], got 3.55V; [3] expected [3.2V, 3.4V], got 3.1V
 ```
 
 ### How child checks are counted

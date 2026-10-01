@@ -22,18 +22,22 @@ failed.
   the summary: `✗ [1] Rail (lib/rails.py:8, called from tests/test_psu.py:22) — …`, or
   `called from line 22` in the same file. Passed checks stay as they were. The test function is
   found behind decorators, also ones without `functools.wraps` such as Hypothesis's `@given`,
-  and a comprehension in the test body counts as the test on every Python version.
+  and a comprehension in the test body counts as the test on every Python version. Installed
+  code that runs the test, such as pytest-bdd's generated test, is never shown as the caller.
 - `verify.require`, with the same methods as `verify`: a check made with it that fails stops
   the test at once with `ChecksFailedError`, listing every check made so far, also from inside
   a lazy child or an `all_satisfy` factory. The first line names the check that stopped the
-  test: `2 of 3 checks failed, stopped at [2]: Link — …`. `verify.require(check)` does the same
+  test: `2 of 2 checks failed, stopped at [1]: Link — …`. `verify.require(check)` does the same
   for a check made earlier or built with `checks`; a check that a composite took or an earlier
-  phase judged is recorded again, so the error names it. The checks stay recorded, so a test
-  that catches the error still fails at the end of the phase. `--pdb` opens in the test, at
-  the failed check. The methods of `checks.require`, and calling it, raise `RuntimeError`.
+  phase judged is recorded again, so the error names it, and a composite never takes the check
+  that stopped the test. The checks stay recorded, so a test that catches the error still fails
+  at the end of the phase. `--pdb` opens in the test, at the failed check, also when checks are
+  made after it. When another error is raised while the stop unwinds (in a `finally`), the
+  summary is shown once. The methods of `checks.require`, and calling it, raise `RuntimeError`.
 - `pytest_verifier.Require`, the type of `verify.require`, for annotating helpers.
 - `--verify-fail-fast` and the `verify_fail_fast` ini setting stop each test at its first
-  failed check. Checks made while fixtures are torn down stay soft, so their cleanup runs.
+  failed check. Checks made while fixtures are torn down, or in a unittest `TestCase`'s
+  `tearDown` and cleanups, stay soft, so their cleanup runs.
 - `pytest_verifier.__version__`.
 - The release workflow builds once, checks the metadata with `twine check`, runs the sdist's
   tests against the wheel with pytest 7.0.1 and with the newest pytest, and uploads to PyPI with
@@ -50,9 +54,9 @@ failed.
 - With `--tb=line`, the line shown for a soft failure is the line of the test that made the
   check the first line names (or called the helper that made it), instead of the test's `def`
   line. It is paired with the file of the test function, also for a test inherited from a class
-  in another file.
+  in another file or hidden by a decorator from another module.
 - `-r` summaries and `--tb=line` print the first line in the terminal's encoding, like the
-  rest of the summary.
+  rest of the summary. Other plugins' terminal summaries still read the summary as it is.
 - The README renders on PyPI: its links, section links included, point at GitHub.
 
 ## [0.7.0] - 2026-10-01

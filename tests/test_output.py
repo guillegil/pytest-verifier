@@ -707,6 +707,52 @@ class TestEncodings:
         xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
         assert "message=\"1 of 1 checks failed: path — expected" in xml
 
+    def test_other_terminal_summaries_read_the_summary_as_it_is(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+        pytester.makeconftest(
+            """
+            import pytest
+
+            def read(terminalreporter, label):
+                message = terminalreporter.stats["failed"][0].longrepr.reprcrash.message
+                with open("messages.txt", "a", encoding="utf-8") as out:
+                    out.write(f"{label}: {message.splitlines()[0]}\\n")
+
+            class Plain:
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "plain")
+
+            class Last:
+                @pytest.hookimpl(trylast=True)
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "trylast")
+
+            class Wrapper:
+                @pytest.hookimpl(wrapper=True)
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "wrapper")
+                    try:
+                        return (yield)
+                    finally:
+                        read(terminalreporter, "wrapper after")
+
+            def pytest_configure(config):
+                for plugin in (Plain(), Last(), Wrapper()):
+                    config.pluginmanager.register(plugin)
+            """
+        )
+        pytester.makepyfile("def test_it(verify):\n    verify.equal(1, 2, name='x')\n")
+        result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-rf", "--tb=line")
+        result.assert_outcomes(failed=1)
+        line = r"1 of 1 checks failed: x \u2014 expected 2, got 1"
+        result.stdout.fnmatch_lines([f"*.py:2: {line}", f"FAILED *::test_it - {line}"])
+        messages = (pytester.path / "messages.txt").read_text(encoding="utf-8").splitlines()
+        text = "1 of 1 checks failed: x — expected 2, got 1"
+        labels = ["wrapper", "plain", "trylast", "wrapper after"]
+        assert sorted(messages) == sorted(f"{label}: {text}" for label in labels)
+
     def test_reports_keep_the_summary_as_it_is(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
             """

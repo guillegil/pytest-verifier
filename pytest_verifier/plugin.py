@@ -23,8 +23,9 @@ The checks judged at the end of a phase are also passed to the ``pytest_verify_r
 and attached to that phase's report as ``report.verify_checks``.
 
 A check made through ``verify.require``, or any check with ``--verify-fail-fast`` (except in
-teardown), raises ``ChecksFailedError`` as soon as it fails (see :mod:`pytest_verifier._run`).
-The end of the phase then keeps that error instead of adding the same summary as a section.
+teardown and a unittest ``TestCase``'s cleanup), raises ``ChecksFailedError`` as soon as it
+fails (see :mod:`pytest_verifier._run`). The end of the phase then keeps that error, or one
+that takes its place, instead of adding the same summary as a section.
 
 Checks built with ``pytest_verifier.checks`` in the test body and still unused when the test's
 teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`).
@@ -32,12 +33,13 @@ teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`
 from __future__ import annotations
 
 import contextlib
+import functools
 import inspect
 import os
 import re
 import sys
 from types import CodeType
-from typing import Any, Dict, Generator, Iterator, List, Optional, Set
+from typing import Any, Dict, FrozenSet, Generator, Iterator, List, Optional, Set
 
 import pytest
 
@@ -89,7 +91,8 @@ def _old_plugin_will_load(pluginmanager: pytest.PytestPluginManager) -> bool:
 
 _FAIL_FAST_HELP = (
     "Stop each test at its first failed check, as if every check were made with "
-    "verify.require (checks made in fixture teardown stay soft)."
+    "verify.require (checks made in fixture teardown, or in a TestCase's tearDown and "
+    "cleanups, stay soft)."
 )
 
 
@@ -145,17 +148,47 @@ def _close_phase(
     if passed:
         return None
     options = _summary_options(item.config)
-    if run.raised(exc):  # a required check stopped the phase; its error lists the checks
-        stopped: ChecksFailedError = exc  # type: ignore[assignment]
-        if stopped.start == start and stopped.results == pending:
+    # A required check stopped the phase: its error lists the checks made so far. The phase
+    # raised that error, or one that links to it (an error raised while it unwound).
+    stops = _linked_stops(run, exc)
+    if run.raised(exc):
+        if _lists(stops[0], start, pending):
             return None
         # Checks were made after it (in a ``finally``), or a composite absorbed some of them.
-        stopped_at = run.stopped_at(stopped)
+        stopped_at = run.stopped_at(stops[0])
         return ChecksFailedError(pending, start=start, stopped_at=stopped_at, **options)
     if exc is None or _is_skip(exc):
-        return ChecksFailedError(pending, start=start, **options)
+        stopped_at = run.stopped_at(stops[0]) if stops else None
+        return ChecksFailedError(pending, start=start, stopped_at=stopped_at, **options)
+    if any(_lists(stop, start, pending) for stop in stops):
+        return None  # pytest shows that summary in the error's chain or group
     run.sections[when] = format_summary(pending, start=start, **options)
     return None
+
+
+def _lists(error: ChecksFailedError, start: int, pending: List[CheckDescriptor]) -> bool:
+    """Whether *error* lists exactly the checks a phase judged."""
+    return error.start == start and error.results == pending
+
+
+def _linked_stops(run: Run, exc: Optional[BaseException]) -> List[ChecksFailedError]:
+    """The errors :meth:`Run.stop` raised that pytest shows with *exc*: *exc* itself, what it is
+    chained to, and the members of an exception group. Nearest first."""
+    found: List[ChecksFailedError] = []
+    seen: Set[int] = set()
+    queue: List[Optional[BaseException]] = [exc]
+    while queue:
+        link = queue.pop(0)
+        if link is None or id(link) in seen:
+            continue
+        seen.add(id(link))
+        if run.raised(link):
+            found.append(link)  # type: ignore[arg-type]
+        queue.append(cause_of(link))
+        members = getattr(link, "exceptions", None)
+        if isinstance(members, tuple):  # an exception group
+            queue.extend(member for member in members if isinstance(member, BaseException))
+    return found
 
 
 #: How many passed checks a summary lists unless pytest runs with ``-vv``.
@@ -188,13 +221,39 @@ def _unittest_outcome(item: pytest.Item) -> Optional[BaseException]:
     return None
 
 
-def _chain_to(run: Run, exc: BaseException) -> Optional[BaseException]:
-    """What an error raised in place of *exc* chains to.
+def _take_place(run: Run, error: ChecksFailedError, exc: BaseException) -> Optional[BaseException]:
+    """Prepare *error*, raised in place of *exc*; returns what it chains to.
 
-    A skip stays visible as the cause. A stop error is replaced by one that lists its checks
-    too, so the new error takes its place in the chain instead of repeating its summary.
+    A skip stays visible as the cause. *error* lists the checks of a stop error that *exc* is
+    or links to, so it takes that error's place: out of the chain, instead of repeating its
+    summary, and with its traceback, so that ``--pdb`` still opens in the test.
     """
-    return cause_of(exc) if run.raised(exc) else exc
+    stops = _linked_stops(run, exc)
+    if stops:
+        error.with_traceback(stops[0].__traceback__)
+    if run.raised(exc):
+        return cause_of(exc)
+    _cut_stops(run, exc)
+    return exc
+
+
+def _cut_stops(run: Run, exc: BaseException) -> None:
+    """Take the errors :meth:`Run.stop` raised out of *exc*'s chain."""
+    link: Optional[BaseException] = exc
+    seen: Set[int] = set()
+    while link is not None and id(link) not in seen:
+        seen.add(id(link))
+        after = cause_of(link)
+        following = after
+        while following is not None and run.raised(following) and id(following) not in seen:
+            seen.add(id(following))
+            following = cause_of(following)
+        if following is not after:
+            if link.__cause__ is not None or link.__suppress_context__:
+                link.__cause__ = following
+            else:
+                link.__context__ = following
+        link = following
 
 
 def _replace_unittest_outcome(
@@ -202,10 +261,52 @@ def _replace_unittest_outcome(
 ) -> None:
     """Raise *error* and report it in place of the skip or stop the ``TestCase`` recorded."""
     try:
-        raise error from _chain_to(run, recorded)
+        raise error from _take_place(run, error, recorded)
     except ChecksFailedError:
         item._excinfo[0] = pytest.ExceptionInfo.from_current()  # type: ignore[attr-defined]
         raise
+
+
+def _drop_later_stops(item: pytest.Item, run: Run) -> None:
+    """Forget the stop errors a ``TestCase`` recorded after its first failure: the summary of
+    the call phase lists their checks, and pytest would report each one again at teardown."""
+    recorded = getattr(item, "_excinfo", None)
+    if isinstance(recorded, list) and len(recorded) > 1:
+        recorded[1:] = [
+            info for info in recorded[1:] if not run.raised(getattr(info, "value", None))
+        ]
+
+
+#: The ``TestCase`` methods that clean up after the test method, in pytest's call phase.
+_CLEANUP_METHODS = ("tearDown", "asyncTearDown", "doCleanups")
+
+
+def _soft_cleanup(item: pytest.Item, run: Run) -> None:
+    """Mark *run* as cleaning up once the ``TestCase`` starts its cleanup, so that fail-fast
+    leaves it soft, as it does fixture teardown."""
+    testcase = getattr(item, "_testcase", None)
+    for name in _CLEANUP_METHODS:
+        method = getattr(testcase, name, None)
+        if _is_bound_to(method, testcase):
+            setattr(testcase, name, _cleaning(run, method))
+
+
+def _cleaning(run: Run, method: Any) -> Any:
+    if inspect.iscoroutinefunction(method):  # IsolatedAsyncioTestCase wants a coroutine function
+
+        @functools.wraps(method)
+        async def clean_up_async(*args: Any, **kwargs: Any) -> Any:
+            run.cleaning = True
+            return await method(*args, **kwargs)
+
+        return clean_up_async
+
+    @functools.wraps(method)
+    def clean_up(*args: Any, **kwargs: Any) -> Any:
+        run.cleaning = True
+        return method(*args, **kwargs)
+
+    return clean_up
 
 
 def _is_unittest(item: pytest.Item) -> bool:
@@ -231,10 +332,13 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
     if run is None:  # pragma: no cover - our setup wrapper always creates it
         return (yield)
     run.phase = when
+    testcase = when == "call" and _is_unittest(item)
+    if testcase and run.fail_fast:
+        _soft_cleanup(item, run)
     # Checks built with ``checks.*`` in the test body must be used by the end of teardown;
     # nothing else is tracked (see _unused).
     tracker = None
-    if when == "call" and not _is_unittest(item):
+    if when == "call" and not testcase:
         tracker = item.stash[_tracker_key] = _unused.start()
     token = _unused.pause() if tracker is None else None
     try:
@@ -258,13 +362,15 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
         if when == "teardown":
             run.closed = True
         if error is not None:
-            raise error from _chain_to(run, exc)
+            raise error from _take_place(run, error, exc)
         raise
     if when == "teardown":
         run.closed = True
     if when != "setup":  # checks made in setup are judged with the test body
         recorded = _unittest_outcome(item) if when == "call" else None
         error = _close_phase(item, run, when, recorded)
+        if recorded is not None:
+            _drop_later_stops(item, run)
         if error is not None:
             if recorded is not None:
                 _replace_unittest_outcome(item, run, error, recorded)
@@ -292,10 +398,11 @@ def _test_function(item: pytest.Item) -> FunctionCode:
     """The code of the test function, to tell a helper's checks from the test's own.
 
     Also the code behind decorators that keep ``__wrapped__``, and Hypothesis's inner test.
-    The test's file and name match the function a decorator without ``functools.wraps``
-    hides. Comprehensions and generator expressions written in the test body run in code of
-    their own (list, set and dict comprehensions only before Python 3.12), which is part of
-    the test too.
+    When none of that code is named like the test, a decorator without ``functools.wraps``
+    hid it: the test's file and name match it instead, and the code found is a wrapper's.
+    Comprehensions and generator expressions written in the test body run in code of their
+    own (list, set and dict comprehensions only before Python 3.12), which is part of the test
+    too.
     """
     codes: Set[CodeType] = set()
     for name in ("function", "obj"):
@@ -311,20 +418,24 @@ def _test_function(item: pytest.Item) -> FunctionCode:
                         codes.add(code)
         except Exception:  # an item whose function cannot be read: no ``called_from``
             pass
+    original = getattr(item, "originalname", None)
+    if not isinstance(original, str):
+        original = None
+    # A plugin's generated test (pytest-bdd) or a decorator's wrapper: not the user's code.
+    wrappers = frozenset(code for code in codes if original and code.co_name != original)
+    names: Dict[str, FrozenSet[str]] = {}
+    if original and not any(code.co_name == original for code in codes):
+        files = {code.co_filename for code in codes}
+        with contextlib.suppress(Exception):
+            files.add(str(item.path))
+        names[original] = frozenset(files)
     pending = list(codes)
     while pending:
         for const in pending.pop().co_consts:
             if isinstance(const, CodeType) and const.co_name in _INLINE_SCOPES:
                 codes.add(const)
                 pending.append(const)
-    names: Dict[str, Set[str]] = {}
-    original = getattr(item, "originalname", None)
-    if isinstance(original, str):
-        files = {code.co_filename for code in codes}
-        with contextlib.suppress(Exception):
-            files.add(str(item.path))
-        names[original] = files
-    return FunctionCode(frozenset(codes), {name: frozenset(f) for name, f in names.items()})
+    return FunctionCode(frozenset(codes), names, wrappers)
 
 
 #: The names of the code that comprehensions and generator expressions run in.
@@ -499,24 +610,50 @@ def _summaries_for(longrepr: Any, encoding: str) -> Iterator[None]:
             longrepr.sections = sections
 
 
+#: The ``TerminalReporter`` methods that print crash lines (``--tb=line`` and ``-r``).
+_CRASH_LINE_PRINTERS = ("summary_errors", "summary_failures", "short_test_summary")
+
+
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_terminal_summary(terminalreporter: Any) -> Generator[None, Any, Any]:
     """Print the crash lines of soft failures (``-r`` and ``--tb=line``) in the terminal's
     encoding, as :func:`_print_for_terminal` does for the full reports.
 
-    pytest prints them in the terminal summary, around this wrapper; the reports get their
-    Unicode text back afterwards.
+    Only while the terminal reporter prints them: other plugins' terminal summaries read the
+    reports as they are.
     """
-    saved: List[Any] = []
+    printers: Dict[str, Any] = {}
     try:
-        saved = _crash_lines_for_terminal(terminalreporter)
+        for name in _CRASH_LINE_PRINTERS:
+            method = getattr(terminalreporter, name, None)
+            if _is_bound_to(method, terminalreporter):
+                printers[name] = _printing_crash_lines(terminalreporter, method)
+                setattr(terminalreporter, name, printers[name])
     except Exception:  # pragma: no cover - reporting must never break the session
         pass
     try:
         return (yield)
     finally:
-        for crash, message in saved:
-            crash.message = message
+        for name, printer in printers.items():
+            if vars(terminalreporter).get(name) is printer:
+                delattr(terminalreporter, name)
+
+
+def _printing_crash_lines(terminalreporter: Any, method: Any) -> Any:
+    @functools.wraps(method)
+    def printer(*args: Any, **kwargs: Any) -> Any:
+        saved: List[Any] = []
+        try:
+            saved = _crash_lines_for_terminal(terminalreporter)
+        except Exception:  # pragma: no cover - reporting must never break the session
+            pass
+        try:
+            return method(*args, **kwargs)
+        finally:
+            for crash, message in saved:
+                crash.message = message
+
+    return printer
 
 
 def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
@@ -565,8 +702,14 @@ def _point_crash_line_at_test(
     path, lineno, _ = item.reportinfo()
     if lineno is None:
         return
-    crash.path = str(path)
-    crash.lineno = _headline_line(item, str(path), excinfo.value) or lineno + 1
+    crash.path, crash.lineno = str(path), lineno + 1
+    # reportinfo's file is the one that defines the test function (a base class's, for an
+    # inherited test), or a decorator's when one without ``functools.wraps`` hides the test.
+    for test_file in dict.fromkeys((str(path), str(getattr(item, "path", path)))):
+        line = _headline_line(item, test_file, excinfo.value)
+        if line is not None:
+            crash.path, crash.lineno = test_file, line
+            return
 
 
 def _headline_line(item: pytest.Item, path: str, error: Any) -> Optional[int]:
@@ -597,7 +740,8 @@ def verify(request: pytest.FixtureRequest) -> Verify:
     Every ``verify.*`` call is judged immediately, recorded, and returned as a descriptor with
     ``passed`` set. Failed checks are collected and raised together as ``ChecksFailedError``
     once the phase that recorded them ends. A check made through ``verify.require``, or any
-    check with ``--verify-fail-fast``, raises as soon as it fails.
+    check with ``--verify-fail-fast`` (except checks made while fixtures are torn down), raises
+    as soon as it fails.
     """
     run = request.node.stash.get(_run_key, None)
     if run is None:

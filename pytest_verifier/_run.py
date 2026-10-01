@@ -12,10 +12,11 @@ a callable made but did not return stays on its own, and if building the composi
 interrupted (``pytest.skip`` in an ``all_satisfy`` factory), the checks made so far still count.
 
 A check made through ``verify.require``, or any check when fail-fast is on (except in
-teardown), stops the test when it fails: :meth:`Run.stop` raises ``ChecksFailedError`` for the
-checks made so far. It does not judge them, so the end of the phase still does: a test that
-catches the error still fails. The error is marked ``stops_test``, so that a composite building
-a lazy child lets it through instead of taking it for an error of that child.
+teardown and a unittest ``TestCase``'s cleanup), stops the test when it fails: :meth:`Run.stop`
+raises ``ChecksFailedError`` for the checks made so far. It does not judge them, so the end of
+the phase still does: a test that catches the error still fails. The error is marked
+``stops_test``, so that a composite building a lazy child lets it through instead of taking it
+for an error of that child, and the check that stopped the test stays at the top level.
 
 This module's frames hide themselves from tracebacks of such errors (``__tracebackhide__``), so
 ``--pdb`` opens in the test.
@@ -100,6 +101,9 @@ class Run:
         self.test = test if test is not None else FunctionCode()
         #: Whether every failed check stops the test, as ``verify.require`` does.
         self.fail_fast = fail_fast
+        #: Whether a unittest ``TestCase`` is cleaning up (``tearDown``, cleanups): unittest
+        #: runs that in the call phase, and fail-fast leaves it soft, as in fixture teardown.
+        self.cleaning = False
         #: How many passed checks a summary lists.
         self.max_passed = max_passed
         #: The errors :meth:`stop` raised, each with the check that made it stop.
@@ -155,12 +159,21 @@ class Run:
         ``branches`` in a variable before the call works like building them inline. To keep a
         check on its own as well, pass a copy (``dict(check)``): only the recorded object
         itself is absorbed.
+
+        A check that stopped the test stays at the top level too: the end of the phase must
+        judge it, and the summary names it as the check the test stopped at.
         """
         with self.lock:
             ids = set()
+            triggers = {id(trigger) for _, trigger in self._stops}
             for child in children:
                 entry = self._entries.get(id(child))
-                if entry is None or entry.record is not child or not entry.top_level:
+                if (
+                    entry is None
+                    or entry.record is not child
+                    or not entry.top_level
+                    or id(child) in triggers
+                ):
                     continue
                 entry.top_level = False
                 ids.add(id(child))
@@ -265,8 +278,8 @@ class Recorder(Sink):
     """The fixture's sink: judges, snapshots and records every check in a :class:`Run`.
 
     A *hard* recorder (``verify.require``) stops the test when a check fails; with fail-fast
-    on, every recorder does, except in teardown: the test is over by then, and stopping would
-    only cut a fixture's cleanup short.
+    on, every recorder does, except in teardown (and a ``TestCase``'s cleanup): the test is
+    over by then, and stopping would only cut the cleanup short.
     """
 
     def __init__(self, run: Run, hard: bool = False) -> None:
@@ -281,7 +294,7 @@ class Recorder(Sink):
         if passed:
             return
         run = self._run
-        if self._hard or (run.fail_fast and run.phase != "teardown"):
+        if self._hard or (run.fail_fast and run.phase != "teardown" and not run.cleaning):
             run.stop(record)
 
     def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:

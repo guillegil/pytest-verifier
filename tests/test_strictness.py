@@ -171,6 +171,71 @@ class TestRequire:
         )
         result.stdout.no_fnmatch_line("1 of 1 checks failed*")
 
+    def test_a_stop_inside_another_error_is_shown_once(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture
+            def required(verify):
+                yield
+                verify.require.equal(1, 2, name="Off")
+
+            @pytest.fixture
+            def broken():
+                yield
+                raise OSError("port stuck")
+            """
+        )
+        pytester.makepyfile(
+            """
+            import pytest
+            from pytest_verifier import ChecksFailedError
+
+            def test_skip(verify):
+                try:
+                    verify.require.equal(1, 2, name="Req")
+                finally:
+                    pytest.skip("hardware missing")
+
+            def test_cleanup_error(verify):
+                try:
+                    verify.require.equal(1, 2, name="Req")
+                finally:
+                    raise OSError("port busy")
+
+            def test_wrapped(verify):
+                try:
+                    verify.require.equal(1, 2, name="Req")
+                except ChecksFailedError as exc:
+                    raise RuntimeError("could not connect") from exc
+
+            def test_teardown(broken, required):
+                pass
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=3, passed=1, errors=1)
+        result.stdout.fnmatch_lines(
+            [
+                "*ERROR at teardown of test_teardown*",
+                "*_ test_skip _*",
+                "*hardware missing*",
+                "1 of 1 checks failed, stopped at ?0?: Req — expected 2, got 1",
+                "*_ test_cleanup_error _*",
+                "*OSError: port busy",
+                "*_ test_wrapped _*",
+                "*RuntimeError: could not connect",
+            ]
+        )
+        result.stdout.no_fnmatch_line("*Soft assertion failures*")
+        shown = [
+            line
+            for line in result.outlines
+            if "checks failed" in line and not line.startswith(("FAILED", "ERROR"))
+        ]
+        assert len(shown) == 4, result.outlines
+
     def test_results_and_report_carry_the_checks_once(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
             """
@@ -430,6 +495,67 @@ class TestRequire:
         )
         result.stdout.no_fnmatch_line("  ✗ ?1? a *")
 
+    def test_the_check_that_stopped_the_test_is_never_absorbed(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        # The stopping check is also a child of the composite whose lazy child stopped, or of a
+        # composite made later: it stays at the top level, so the results, the hook and a
+        # swallowed stop still see it.
+        pytester.makeconftest(
+            """
+            import json
+
+            def pytest_verify_results(item, when, checks, passed):
+                with open("results.jsonl", "a", encoding="utf-8") as out:
+                    names = [check["name"] for check in checks]
+                    out.write(json.dumps([item.name, names, passed]) + "\\n")
+            """
+        )
+        pytester.makepyfile(
+            """
+            import pytest
+            from pytest_verifier import ChecksFailedError
+
+            def test_raised(verify):
+                standby = verify.equal(0.0, 3.3, name="standby")
+                verify.conditional(
+                    1, cases={1: lambda: verify.require(standby), 2: standby}, name="mode"
+                )
+
+            def test_swallowed(verify):
+                standby = verify.equal(0.0, 3.3, name="standby")
+                with pytest.raises(ChecksFailedError):
+                    verify.guard([(lambda: verify.require(standby), "on", standby)], name="on")
+
+            def test_later(verify):
+                standby = verify.equal(0.0, 3.3, name="standby")
+                try:
+                    verify.require(standby)
+                finally:
+                    verify.conditional(
+                        1, cases={1: verify.equal(1, 1, name="active"), 2: standby}, name="mode"
+                    )
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=3)
+        result.stdout.fnmatch_lines(
+            [
+                "*_ test_raised _*",
+                "1 of 1 checks failed, stopped at ?0?: standby — expected 3.3, got 0.0",
+                "*_ test_swallowed _*",
+                "1 of 1 checks failed: standby — expected 3.3, got 0.0",
+                "*_ test_later _*",
+                "1 of 2 checks failed, stopped at ?0?: standby — expected 3.3, got 0.0",
+            ]
+        )
+        reported = (pytester.path / "results.jsonl").read_text(encoding="utf-8").splitlines()
+        assert [json.loads(line) for line in reported] == [
+            ["test_raised", ["standby"], False],
+            ["test_swallowed", ["standby"], False],
+            ["test_later", ["standby", "mode"], False],
+        ]
+
     def test_a_stop_lists_at_most_ten_passed_checks(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
@@ -541,6 +667,20 @@ class TestRequire:
         result.stdout.fnmatch_lines(["1 of 2 checks failed, stopped at ?1?: Req *"])
         _never(result)
 
+    def test_two_testcase_stops_are_reported_once(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            self._TESTCASE
+            + """
+            def tearDown(self):
+                self.verify.require.equal(3, 4, name="Off")
+        """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["2 of 3 checks failed, stopped at ?1?: Req * (+1 more)"])
+        assert sum(line.startswith("2 of 3 checks failed") for line in result.outlines) == 1
+        _never(result)
+
     def test_pdb_opens_in_the_test(self, pytester: pytest.Pytester) -> None:
         # pytest's debugger starts at the last frame whose locals have no true
         # ``__tracebackhide__``; record that frame for every failure.
@@ -570,12 +710,43 @@ class TestRequire:
             def test_fail_fast(verify, request):
                 if request.config.getoption("verify_fail_fast"):
                     verify.all_satisfy([1], lambda x: x, name="c")
+
+            # The phase end replaces these stops: a check came after, or a sibling was absorbed.
+            def test_cleanup(verify):
+                try:
+                    verify.require.equal(1, 2, name="d")
+                finally:
+                    verify.equal(1, 1, name="cleaned up")
+
+            def test_lazy(verify):
+                sibling = verify.equal(1, 1, name="f")
+                required = lambda: verify.require.equal(1, 2, name="e")
+                verify.conditional(1, cases={1: required, 2: sibling}, name="g")
             """
         )
-        _run(pytester).assert_outcomes(failed=2, passed=1)
+        pytester.makepyfile(
+            test_unit="""
+            import unittest
+
+            import pytest
+
+            class TestUnit(unittest.TestCase):
+                @pytest.fixture(autouse=True)
+                def _verify(self, verify):
+                    self.verify = verify
+
+                def test_unit(self):
+                    try:
+                        self.verify.require.equal(1, 2, name="h")
+                    finally:
+                        self.verify.equal(1, 1, name="cleaned up")
+            """
+        )
+        _run(pytester).assert_outcomes(failed=5, passed=1)
         _run(pytester, "--verify-fail-fast", "-k", "fail_fast").assert_outcomes(failed=1)
         frames = (pytester.path / "frames.txt").read_text(encoding="utf-8").split()
-        assert frames == ["test_required", "test_record", "test_fail_fast"]
+        expected = ["test_required", "test_record", "test_cleanup", "<lambda>", "test_unit"]
+        assert frames == expected + ["test_fail_fast"]
 
     def test_require_is_cached_and_idempotent(self) -> None:
         verify = recording_verify(Run())
@@ -763,6 +934,65 @@ class TestFailFast:
         )
         made = {path.name for path in pytester.path.iterdir() if path.suffix == ".txt"}
         assert made == {"cleaned.txt"}
+
+
+    def test_testcase_cleanup_stays_soft(self, pytester: pytest.Pytester) -> None:
+        # unittest runs tearDown and cleanups in the call phase: fail-fast leaves them soft,
+        # as it does fixture teardown; verify.require still stops there.
+        pytester.makepyfile(
+            """
+            import unittest
+
+            import pytest
+
+            class Base:
+                @pytest.fixture(autouse=True)
+                def _verify(self, verify):
+                    self.verify = verify
+
+            class TestSync(Base, unittest.TestCase):
+                def setUp(self):
+                    self.addCleanup(self.disconnect)
+
+                def disconnect(self):
+                    self.verify.equal(1, 2, name="link down")
+                    open("disconnected.txt", "w").close()
+
+                def tearDown(self):
+                    self.verify.equal(1, 2, name="off")
+                    open("off.txt", "w").close()
+
+                def test_it(self):
+                    self.verify.equal(1, 1, name="body")
+
+            class TestAsync(Base, unittest.IsolatedAsyncioTestCase):
+                async def asyncTearDown(self):
+                    self.verify.equal(1, 2, name="async off")
+                    open("async-off.txt", "w").close()
+
+                async def test_it(self):
+                    self.verify.equal(1, 1, name="body")
+
+            class TestRequired(Base, unittest.TestCase):
+                def tearDown(self):
+                    self.verify.require.equal(1, 2, name="must be off")
+                    open("not-off.txt", "w").close()
+
+                def test_it(self):
+                    pass
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(failed=3)
+        result.stdout.fnmatch_lines(
+            [
+                "2 of 3 checks failed: off — expected 2, got 1 (+1 more)",
+                "1 of 2 checks failed: async off — expected 2, got 1",
+                "1 of 1 checks failed, stopped at ?0?: must be off *",
+            ]
+        )
+        made = {path.name for path in pytester.path.iterdir() if path.suffix == ".txt"}
+        assert made == {"disconnected.txt", "off.txt", "async-off.txt"}
 
 
 class TestFirstLine:
