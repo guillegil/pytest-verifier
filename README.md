@@ -276,6 +276,11 @@ CI runs on every push to `main` and every pull request targeting `main`
 Python 3.9–3.13 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
 `mypy --strict` and the tests of the built sdist.
 
+To release, bump `version` in `pyproject.toml`, move the `[Unreleased]` CHANGELOG entries under
+the new version, merge, then push a `vX.Y.Z` tag or run the **Release** workflow
+([`.github/workflows/release.yml`](.github/workflows/release.yml)). It publishes a GitHub
+release with the CHANGELOG notes and the built sdist and wheel.
+
 ## Known Issues and Roadmap
 
 Version 0.4.0 fixes every bug found by the review of 0.3.1. The report is in

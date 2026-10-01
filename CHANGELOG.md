@@ -20,6 +20,7 @@ existing tests may rely on. Those are listed under **Changed**.
 - `evaluate_detailed()` results include `error` when a check could not be evaluated.
 - Package metadata: classifiers, project URLs and author. `py.typed` is declared explicitly, and a `MANIFEST.in` puts the whole test suite in the sdist.
 - CI jobs for `mypy --strict`, for the oldest supported pytest (7.0) and pluggy (1.2), and for building the sdist and running its tests against the wheel.
+- A release workflow. Pushing a `vX.Y.Z` tag, or running the workflow by hand, publishes a GitHub release with the CHANGELOG notes and the built sdist and wheel.
 - `bugs-0.3.1.md` (the severity-ranked bug report behind this release) and `improvements-and-ideas.md` (improvements, refactors and feature ideas).
 - `CHECKLIST.md`, which tracks every item of both documents and the release that handles it.
 
