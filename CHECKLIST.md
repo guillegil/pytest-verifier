@@ -86,33 +86,33 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 - [ ] **IMP-16** Explain NaN comparisons · discuss (changes output)
 - [ ] **IMP-17** Render compiled regexes properly · discuss (changes output)
 - [x] ~~**IMP-18** Keep the verdict out of reach of mutation~~ · done in 0.4.0
-- [ ] **IMP-19** Record a pre-built descriptor with the fixture · 0.5.0, only if ARCH-8 makes it trivial
+- [x] ~~**IMP-19** Record a pre-built descriptor with the fixture~~ · done in 0.5.0
 - [x] ~~**IMP-20** Consistent per-child verdicts in composites~~ · done in 0.4.0
 - [x] ~~**IMP-21** Document that JSON round-trips change verdicts~~ · done in 0.4.0
 - [x] ~~**IMP-22** Absorb children consistently when mixing module and fixture checks~~ · done in 0.4.0
-- [ ] **IMP-23** Send check data to the xdist controller · discuss
+- [x] ~~**IMP-23** Send check data to the xdist controller~~ · done in 0.5.0 with ARCH-6 (`report.verify_checks`)
 - [x] ~~**IMP-24** Export the public types and document the reader contract~~ · done in 0.4.0 (`check_results_key` stays importable, undocumented)
 - [x] ~~**IMP-25** Make the package pass `mypy --strict`~~ · done in 0.4.0
-- [ ] **IMP-26** Required keys in `CheckDescriptor` · 0.5.0
+- [x] ~~**IMP-26** Required keys in `CheckDescriptor`~~ · done in 0.5.0
 - [ ] **IMP-27** Narrower parameter types where calls always fail · discuss
 - [x] ~~**IMP-28** Remove or use `_types.py`~~ · done in 0.4.0
 - [ ] **IMP-29** Use a specific plugin name and a public plugin module · discuss (renames the plugin)
 - [x] ~~**IMP-30** Richer package metadata and a tested pytest floor~~ · done in 0.4.0
 - [x] ~~**IMP-31** Faster composite recording~~ · done in 0.4.0
-- [ ] **IMP-32** Test the contracts the bugs slipped through · 0.4.0 part done (regression, thread, typing and sdist tests); contract harness in 0.5.0
+- [x] ~~**IMP-32** Test the contracts the bugs slipped through~~ · done in 0.4.0 (regression, thread, typing and sdist tests) and 0.5.0 (contract harness)
 
 ## Architecture and refactoring
 
-- [ ] **ARCH-1** A registry of check types instead of parallel if-chains · 0.5.0
+- [x] ~~**ARCH-1** A registry of check types instead of parallel if-chains~~ · done in 0.5.0
 - [x] ~~**ARCH-2** Judge every check in one exception-safe place~~ · done in 0.4.0
-- [ ] **ARCH-3** Separate the JSON evidence from the live values · 0.4.0 part done (JSON-safe snapshots); record type in 0.5.0
-- [ ] **ARCH-4** Lazy composite children instead of evaluate-then-discard · 0.4.0 part done (children absorbed once, linear); lazy callables in 0.5.0
+- [x] ~~**ARCH-3** Separate the JSON evidence from the live values~~ · done in 0.4.0 (JSON-safe snapshots) and 0.5.0 (`phase` on every record, records built only in `_settle`)
+- [x] ~~**ARCH-4** Lazy composite children instead of evaluate-then-discard~~ · done in 0.4.0 (linear absorption) and 0.5.0 (lazy callables)
 - [x] ~~**ARCH-5** Enforce the verdict by raising, not by rewriting reports~~ · done in 0.4.0
-- [ ] **ARCH-6** Let pytest-reporter read results without importing pytest-verify · 0.5.0
+- [x] ~~**ARCH-6** Let pytest-reporter read results without importing pytest-verify~~ · done in 0.5.0
 - [x] ~~**ARCH-7** One thread-safe run object per attempt~~ · done in 0.4.0
-- [ ] **ARCH-8** One `Verify` front-end with a pluggable sink · 0.5.0
+- [x] ~~**ARCH-8** One `Verify` front-end with a pluggable sink~~ · done in 0.5.0
 - [ ] **ARCH-9** Rename the module-level builder · discuss (renames public API)
-- [ ] **ARCH-10** A contract test harness driven by the registry · 0.5.0
+- [x] ~~**ARCH-10** A contract test harness driven by the registry~~ · done in 0.5.0
 
 ## Ideas: features
 

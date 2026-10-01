@@ -136,6 +136,9 @@ non-string `name`, a negative tolerance, `between` with `low` above `high`, or a
 | `verify.guard(branches, *, default=None, name)` | Check the first branch whose condition is true |
 | `verify.fail(msg, *, name=None)` | Unconditional failure |
 
+The fixture also has `verify.record(check)`, which records a check built elsewhere (see
+[Recording checks built by helpers](#recording-checks-built-by-helpers)).
+
 ## Usage Examples
 
 Most checks read like their table entry — `verify.equal(status, 200, name="Status")`.
@@ -218,13 +221,39 @@ cases = {
 verify.conditional(mode, cases=cases, name="Output voltage")  # only the selected case counts
 ```
 
-Each child is still evaluated when it is built, because it is an argument of the call, so an
-unselected branch should not depend on values that only the selected branch can use. A child
-that raises is just a failed child.
+A child built this way is evaluated when it is built, because it is an argument of the call,
+so it should not depend on values that only its own branch can use. A child that raises is
+just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
 A composite built with the module-level `verify` is never recorded, so fixture checks passed to
 it stay separate checks.
+
+### Lazy children — build only the selected branch
+
+A `conditional` case or default, and a `guard` check or default, can be a function with no
+arguments that returns the check, such as a `lambda`. Only the selected one is called, so the
+other branches never touch values they cannot use. A `guard` condition can be a function too.
+Conditions are called in order until one is true, and the ones after it are not called.
+
+```python
+def test_sensor_output(verify):
+    verify.guard(
+        branches=[
+            (lambda: sensor.shutter_closed(), "shutter closed",
+             lambda: verify.equal(sensor.read(), 0, name="Dark")),
+            (lambda: sensor.enabled(), "enabled",
+             lambda: verify.approx(sensor.read(), 512, abs_tol=2, name="Lit", units="DN")),
+        ],
+        default=lambda: verify.fail("sensor disabled"),
+        name="Sensor output",
+    )
+```
+
+In the recorded check, a lazy child that was not called is `None`, and so is a condition that
+was not called. If the selected function raises, or returns something that is not a check
+(for example, a forgotten `return`), the composite fails and its `error` says why. Any other
+check the function records while it runs stays a check of its own.
 
 ### `is_instance` — type check
 
@@ -263,6 +292,27 @@ A descriptor sent through JSON loses Python types: tuples become lists and dict 
 strings. `equal((1, 2), [1, 2])` fails, but the same descriptor passes after a JSON round-trip.
 Results recorded by the fixture carry their `passed` verdict, and `evaluate()` keeps it.
 
+### Recording checks built by helpers
+
+A helper that builds checks with the module-level `verify` does not need the fixture. In the
+test, pass what it returns to the fixture's `verify.record()`. The check is then judged and
+reported like any other, and a composite absorbs the fixture checks passed to it.
+
+```python
+# helpers.py
+from pytest_verify import verify
+
+def rail_ok(voltage):
+    return verify.between(voltage, 3.2, 3.4, name="3V3 rail", units="V")
+
+# test_power.py
+def test_rails(verify):
+    verify.record(rail_ok(measure("3V3")))
+```
+
+Calling `record()` on the module-level `verify` raises `RuntimeError`, because only the
+fixture records checks.
+
 ## Reading Results from Another Plugin
 
 Reporters and other plugins read a test's checks with `get_check_results(item)`:
@@ -276,10 +326,27 @@ def pytest_runtest_makereport(item, call):
 ```
 
 It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
-`passed` and `detail`, and holds JSON-safe copies of the checked values taken when the check
-was made, so `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or
-`guard` is inside its parent. After a rerun, only the last attempt's checks are returned.
-`pytest-reporter` uses this to render verification cards.
+`passed`, `detail` and `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
+it), and holds JSON-safe copies of the checked values taken when the check was made, so
+`json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
+its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
+this to render verification cards.
+
+A plugin that should not import pytest-verify can implement the `pytest_verify_results` hook
+instead. It is called when a phase ends with checks to judge: when the test body ends, for the
+checks made in setup and in the body, and when teardown ends, for the checks made in teardown.
+Mark it optional, so it also loads where pytest-verify is not installed:
+
+```python
+import pytest
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_verify_results(item, when, checks, passed):
+    print(item.nodeid, when, passed, [check["name"] for check in checks])
+```
+
+The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
+so they also reach the main process under pytest-xdist.
 
 ## Development
 

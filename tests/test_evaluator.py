@@ -1,7 +1,7 @@
 """Tests for the evaluator module — evaluate() and evaluate_detailed()."""
 from __future__ import annotations
 
-from pytest_verify._descriptors import (
+from tests._builders import (
     build_approx,
     build_between,
     build_contains,

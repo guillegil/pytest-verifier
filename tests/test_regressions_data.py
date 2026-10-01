@@ -41,7 +41,7 @@ import pytest
 from pytest_verify import CheckDescriptor, Verify, get_check_results
 from pytest_verify import verify as mverify
 from pytest_verify._exceptions import ChecksFailedError
-from pytest_verify._fixture import _FixtureVerify
+from pytest_verify._run import Run, recording_verify
 
 
 # ── H-5: module-level is_instance matches by bare class name ────────
@@ -413,7 +413,9 @@ def test_l10_check_descriptor_type_hints_resolve():
     assert "default" in hints
 
 
-@pytest.mark.parametrize("cls", [Verify, _FixtureVerify], ids=["module", "fixture"])
+@pytest.mark.parametrize(
+    "cls", [Verify, type(recording_verify(Run()))], ids=["module", "fixture"]
+)
 def test_l10_public_verify_method_type_hints_resolve(cls):
     """Every public method's hints resolve at runtime, on the module-level ``Verify`` and on
     the object the ``verify`` fixture returns."""

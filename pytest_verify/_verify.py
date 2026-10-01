@@ -1,34 +1,73 @@
+"""The ``Verify`` front-end: one typed method per check type.
+
+Each method builds a descriptor with its check type and hands it to the instance's sink. The
+module-level ``verify``'s sink returns it unevaluated; the fixture's sink judges and records it
+(see :mod:`pytest_verify._run`).
+"""
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
-from ._descriptors import (
-    CheckDescriptor,
-    ClassInfo,
-    build_all_satisfy,
-    build_approx,
-    build_between,
-    build_conditional,
-    build_contains,
-    build_equal,
-    build_fail,
-    build_greater,
-    build_greater_equal,
-    build_guard,
-    build_is_false,
-    build_is_instance,
-    build_is_none,
-    build_is_not_none,
-    build_is_true,
-    build_length,
-    build_less,
-    build_less_equal,
-    build_matches,
-    build_not_contains,
-    build_not_equal,
+from ._checks import (
+    ALL_SATISFY,
+    APPROX,
+    BETWEEN,
+    CONDITIONAL,
+    CONTAINS,
+    EQUAL,
+    FAIL,
+    GREATER,
+    GREATER_EQUAL,
+    GUARD,
+    IS_FALSE,
+    IS_INSTANCE,
+    IS_NONE,
+    IS_NOT_NONE,
+    IS_TRUE,
+    LENGTH,
+    LESS,
+    LESS_EQUAL,
+    MATCHES,
+    NOT_CONTAINS,
+    NOT_EQUAL,
+    RunChild,
+    call,
 )
+from ._descriptors import CheckDescriptor, Child, ClassInfo
 from ._evaluator import evaluate as _evaluate
 from ._evaluator import evaluate_detailed as _evaluate_detailed
+
+_RECORD_NEEDS_FIXTURE = (
+    "verify.record() records a check with the 'verify' fixture; the module-level verify only "
+    "builds checks. Request the 'verify' fixture in the test and call record() on it."
+)
+
+
+class Sink:
+    """Where a :class:`Verify` sends the checks it builds.
+
+    This one, used by the module-level ``verify``, returns them unevaluated.
+    """
+
+    def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        """Take a check that has no children."""
+        return descriptor
+
+    def composite(
+        self, build: Callable[[RunChild], CheckDescriptor], arguments: Sequence[Any]
+    ) -> CheckDescriptor:
+        """Build a composite with *build*, giving it the function that runs lazy children.
+
+        *arguments* are the containers of its children, for cleanup when *build* raises.
+        """
+        return build(call)
+
+    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        """Take a check built elsewhere."""
+        raise RuntimeError(_RECORD_NEEDS_FIXTURE)
+
+
+_BUILD_ONLY = Sink()
 
 
 class Verify:
@@ -46,11 +85,16 @@ class Verify:
     negative tolerance) raise ``TypeError``/``ValueError``.
     """
 
+    #: Where the built checks go; the fixture's instance has a recording sink.
+    _sink: Sink = _BUILD_ONLY
+
     # ------------------------------------------------------------------
     # Equality & approximation
     # ------------------------------------------------------------------
 
-    def equal(self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None) -> CheckDescriptor:
+    def equal(
+        self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+    ) -> CheckDescriptor:
         """Check that *actual* equals *expected*.
 
         Args:
@@ -62,9 +106,11 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_equal(actual, expected, name=name, units=units)
+        return self._sink.check(EQUAL.build(actual, expected, name=name, units=units))
 
-    def not_equal(self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None) -> CheckDescriptor:
+    def not_equal(
+        self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+    ) -> CheckDescriptor:
         """Check that *actual* does not equal *expected*.
 
         Args:
@@ -76,7 +122,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_not_equal(actual, expected, name=name, units=units)
+        return self._sink.check(NOT_EQUAL.build(actual, expected, name=name, units=units))
 
     def approx(
         self,
@@ -106,13 +152,17 @@ class Verify:
         Raises:
             ValueError: If neither *abs_tol* nor *rel_tol* is provided.
         """
-        return build_approx(actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units)
+        return self._sink.check(
+            APPROX.build(actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units)
+        )
 
     # ------------------------------------------------------------------
     # Ordering & range
     # ------------------------------------------------------------------
 
-    def greater(self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None) -> CheckDescriptor:
+    def greater(
+        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+    ) -> CheckDescriptor:
         """Check that *actual* > *threshold*.
 
         Args:
@@ -124,7 +174,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_greater(actual, threshold, name=name, units=units)
+        return self._sink.check(GREATER.build(actual, threshold, name=name, units=units))
 
     def greater_equal(
         self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
@@ -140,9 +190,11 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_greater_equal(actual, threshold, name=name, units=units)
+        return self._sink.check(GREATER_EQUAL.build(actual, threshold, name=name, units=units))
 
-    def less(self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None) -> CheckDescriptor:
+    def less(
+        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+    ) -> CheckDescriptor:
         """Check that *actual* < *threshold*.
 
         Args:
@@ -154,9 +206,11 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_less(actual, threshold, name=name, units=units)
+        return self._sink.check(LESS.build(actual, threshold, name=name, units=units))
 
-    def less_equal(self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None) -> CheckDescriptor:
+    def less_equal(
+        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+    ) -> CheckDescriptor:
         """Check that *actual* <= *threshold*.
 
         Args:
@@ -168,7 +222,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_less_equal(actual, threshold, name=name, units=units)
+        return self._sink.check(LESS_EQUAL.build(actual, threshold, name=name, units=units))
 
     def between(
         self,
@@ -193,7 +247,9 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_between(actual, low, high, inclusive=inclusive, name=name, units=units)
+        return self._sink.check(
+            BETWEEN.build(actual, low, high, inclusive=inclusive, name=name, units=units)
+        )
 
     # ------------------------------------------------------------------
     # Boolean & identity
@@ -209,7 +265,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_is_true(actual, name=name)
+        return self._sink.check(IS_TRUE.build(actual, name=name))
 
     def is_false(self, actual: Any, *, name: str) -> CheckDescriptor:
         """Check that ``bool(actual)`` is ``False``.
@@ -221,7 +277,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_is_false(actual, name=name)
+        return self._sink.check(IS_FALSE.build(actual, name=name))
 
     def is_none(self, actual: Any, *, name: str) -> CheckDescriptor:
         """Check that *actual* is ``None``.
@@ -233,7 +289,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_is_none(actual, name=name)
+        return self._sink.check(IS_NONE.build(actual, name=name))
 
     def is_not_none(self, actual: Any, *, name: str) -> CheckDescriptor:
         """Check that *actual* is not ``None``.
@@ -245,7 +301,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_is_not_none(actual, name=name)
+        return self._sink.check(IS_NOT_NONE.build(actual, name=name))
 
     # ------------------------------------------------------------------
     # String & container
@@ -262,7 +318,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_contains(haystack, needle, name=name)
+        return self._sink.check(CONTAINS.build(haystack, needle, name=name))
 
     def not_contains(self, haystack: Any, needle: Any, *, name: str) -> CheckDescriptor:
         """Check that *needle* is **not** in *haystack*.
@@ -275,7 +331,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_not_contains(haystack, needle, name=name)
+        return self._sink.check(NOT_CONTAINS.build(haystack, needle, name=name))
 
     def matches(self, actual: Any, pattern: str, *, name: str) -> CheckDescriptor:
         """Check that *actual* matches the regular-expression *pattern*.
@@ -288,7 +344,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_matches(actual, pattern, name=name)
+        return self._sink.check(MATCHES.build(actual, pattern, name=name))
 
     # ------------------------------------------------------------------
     # Type / collection / conditional
@@ -312,7 +368,7 @@ class Verify:
         Raises:
             TypeError: If *expected_type* is not something ``isinstance`` accepts.
         """
-        return build_is_instance(actual, expected_type, name=name)
+        return self._sink.check(IS_INSTANCE.build(actual, expected_type, name=name))
 
     def length(self, actual: Any, expected: int, *, name: str) -> CheckDescriptor:
         """Check that ``len(actual)`` equals *expected*.
@@ -325,7 +381,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_length(actual, expected, name=name)
+        return self._sink.check(LENGTH.build(actual, expected, name=name))
 
     def all_satisfy(
         self,
@@ -339,7 +395,8 @@ class Verify:
         The factory is invoked immediately for each item, and the resulting
         child descriptors are stored in the returned descriptor. If *items* cannot be
         iterated, or the factory raises or returns something that is not a check, the check
-        fails and its ``error`` says why.
+        fails and its ``error`` says why. With the fixture, the checks the factory makes
+        belong to this check.
 
         Args:
             items: An iterable of items.
@@ -350,14 +407,16 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_all_satisfy(items, descriptor_factory, name=name)
+        return self._sink.composite(
+            lambda run: ALL_SATISFY.build(items, descriptor_factory, name=name, run=run), ()
+        )
 
     def conditional(
         self,
         switch_value: Any,
         *,
-        cases: Mapping[Any, CheckDescriptor],
-        default: Optional[CheckDescriptor] = None,
+        cases: Mapping[Any, Child],
+        default: Optional[Child] = None,
         name: str,
     ) -> CheckDescriptor:
         """Conditionally evaluate a check based on *switch_value*.
@@ -369,23 +428,33 @@ class Verify:
         matches, the check fails. In the descriptor the keys are stored as strings
         (enum members as their value).
 
+        A case or default can also be a zero-argument callable that returns the check,
+        such as ``lambda: verify.equal(...)``. Only the selected one is called, and the
+        others are stored as ``None``.
+
         Args:
             switch_value: Value to match against *cases* keys.
-            cases: Mapping of keys (ints, strings, enum members, ...) to descriptors.
-                Two keys that would be stored as the same string raise ``ValueError``.
-            default: Fallback descriptor when no case matches.
+            cases: Mapping of keys (ints, strings, enum members, ...) to checks or callables
+                that return one. Two keys that would be stored as the same string raise
+                ``ValueError``.
+            default: Fallback check (or callable) when no case matches.
             name: Human-readable label for the check.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_conditional(switch_value, cases=cases, default=default, name=name)
+        return self._sink.composite(
+            lambda run: CONDITIONAL.build(
+                switch_value, cases=cases, default=default, name=name, run=run
+            ),
+            (cases, default),
+        )
 
     def guard(
         self,
-        branches: Sequence[Tuple[object, str, CheckDescriptor]],
+        branches: Sequence[Tuple[object, str, Child]],
         *,
-        default: Optional[CheckDescriptor] = None,
+        default: Optional[Child] = None,
         name: str,
     ) -> CheckDescriptor:
         """Evaluate an ordered if/elif/else chain of guarded checks.
@@ -395,15 +464,23 @@ class Verify:
         and if there is no default the check fails. The *label* identifies the
         branch in the failure summary.
 
+        A check (or the default) can also be a zero-argument callable that returns it, and a
+        condition can be a callable that returns its truth value. Conditions are called in
+        order until one is true, and only the selected check is called; checks that were not
+        called are stored as ``None``.
+
         Args:
             branches: Ordered ``(condition, label, check)`` tuples.
-            default: Fallback descriptor when no condition is truthy.
+            default: Fallback check (or callable) when no condition is truthy.
             name: Human-readable label for the check.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_guard(branches, default=default, name=name)
+        return self._sink.composite(
+            lambda run: GUARD.build(branches, default=default, name=name, run=run),
+            (branches, default),
+        )
 
     def fail(self, msg: str, *, name: Optional[str] = None) -> CheckDescriptor:
         """Unconditionally failing check.
@@ -415,7 +492,26 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
-        return build_fail(msg, name=name)
+        return self._sink.check(FAIL.build(msg, name=name))
+
+    def record(self, check: CheckDescriptor) -> CheckDescriptor:
+        """Record a check that was built elsewhere, for example by a helper that uses the
+        module-level ``verify``.
+
+        Only the fixture records checks. The check is judged and recorded like one made
+        through the fixture, and a check the fixture already recorded is returned as is.
+
+        Args:
+            check: A check descriptor.
+
+        Returns:
+            The recorded check, with ``passed`` set.
+
+        Raises:
+            TypeError: If *check* is not a check descriptor.
+            RuntimeError: When called on the module-level ``verify``.
+        """
+        return self._sink.record(check)
 
     # ------------------------------------------------------------------
     # Evaluation helpers (module-level API)

@@ -1,3 +1,4 @@
+"""``ChecksFailedError`` and the ``N of M checks failed`` summary it carries."""
 from __future__ import annotations
 
 import functools
@@ -5,168 +6,17 @@ from typing import Any, Iterable, Mapping
 
 import pytest
 
-from ._descriptors import approx_tolerance
-from ._evaluator import judge, selected_child
-from ._render import bounded_format, bounded_repr, describe_error, safe_str
+from ._checks import render_detail, summary_separator
+from ._render import describe_error, safe_str
 
-# Comparison operators rendered for the ordering checks.
-_ORDER_OPS = {"greater": ">", "greater_equal": ">=", "less": "<", "less_equal": "<="}
-
-
-def _value(value: object, units: str | None) -> str:
-    """Render a value with its optional unit suffix (e.g. ``3.3V``)."""
-    return f"{bounded_format(value)}{units or ''}"
-
-
-def _range(result: Mapping[str, Any], units: str | None) -> str:
-    """Render a ``between`` range with inclusive ``[]`` or exclusive ``()`` brackets."""
-    low = _value(result["low"], units)
-    high = _value(result["high"], units)
-    return f"[{low}, {high}]" if result.get("inclusive", True) else f"({low}, {high})"
-
-
-def _child_detail(child: Mapping[str, Any], passed: bool) -> str:
-    stored = child.get("detail")
-    return stored if isinstance(stored, str) else render_detail(child, passed)
-
-
-def _detail(result: Mapping[str, Any], passed: bool) -> str:
-    """Render the per-type ``expected … got …`` (failed) or compact (passed) clause.
-
-    Follows the spec §7 table. ``passed`` selects which rendering to produce; for
-    composite checks (``conditional``) it is the parent verdict, which equals the
-    matched child's verdict.
-    """
-    check_type = result.get("check_type")
-    units = result.get("units")
-
-    if check_type == "equal":
-        actual, expected = _value(result["actual"], units), _value(result["expected"], units)
-        return f"{actual} == {expected}" if passed else f"expected {expected}, got {actual}"
-
-    if check_type == "not_equal":
-        actual, expected = _value(result["actual"], units), _value(result["expected"], units)
-        return f"{actual} ≠ {expected}" if passed else f"expected ≠ {expected}, got {actual}"
-
-    if check_type == "approx":
-        actual = _value(result["actual"], units)
-        expected = _value(result["expected"], units)
-        tol = approx_tolerance(result.get("abs_tol"), result.get("rel_tol"), units)
-        target = f"{expected} {tol}"
-        return f"{actual} == {target}" if passed else f"expected {target}, got {actual}"
-
-    if check_type in _ORDER_OPS:
-        op = _ORDER_OPS[check_type]
-        actual = _value(result["actual"], units)
-        threshold = _value(result["threshold"], units)
-        return f"{actual} {op} {threshold}" if passed else f"expected {op} {threshold}, got {actual}"
-
-    if check_type == "between":
-        actual = _value(result["actual"], units)
-        rng = _range(result, units)
-        return f"{actual} ∈ {rng}" if passed else f"expected {rng}, got {actual}"
-
-    if check_type == "true":
-        return "True" if passed else f"expected True, got {bool(result['actual'])}"
-
-    if check_type == "false":
-        return "False" if passed else f"expected False, got {bool(result['actual'])}"
-
-    if check_type == "is_none":
-        return "None" if passed else f"expected None, got {bounded_repr(result['actual'])}"
-
-    if check_type == "is_not_none":
-        return "not None" if passed else f"expected not None, got {bounded_repr(result['actual'])}"
-
-    if check_type == "contains":
-        needle = bounded_repr(result["needle"])
-        if passed:
-            return f"contains {needle}"
-        return f"expected to contain {needle}, got {bounded_repr(result['haystack'])}"
-
-    if check_type == "not_contains":
-        needle = bounded_repr(result["needle"])
-        return (
-            f"does not contain {needle}"
-            if passed
-            else f"expected to not contain {needle}, got {bounded_repr(result['haystack'])}"
-        )
-
-    if check_type == "matches":
-        pattern = bounded_format(result["pattern"])
-        actual = bounded_repr(result["actual"])
-        return f"matches /{pattern}/" if passed else f"expected to match /{pattern}/, got {actual}"
-
-    if check_type == "is_instance":
-        expected_type = result["expected_type"]
-        if passed:
-            return f"instance of {expected_type}"
-        return f"expected instance of {expected_type}, got {type(result['actual']).__name__}"
-
-    if check_type == "length":
-        expected = result["expected"]
-        if passed:
-            return f"length {expected}"
-        return f"expected length {expected}, got length {result.get('actual_length')}"
-
-    if check_type == "all_satisfy":
-        children = result.get("child_checks") or []
-        total = len(children)
-        if passed:
-            return f"all {total} items pass"
-        failed = sum(1 for child in children if judge(child)[0] is not True)
-        return f"expected all {total} to pass, got {failed} failed"
-
-    if check_type == "conditional":
-        mode = f"mode={result.get('switch_label', safe_str(result.get('switch_value')))}"
-        selected = selected_child(result)
-        if selected is None:
-            return f"[{mode} → no match]"
-        child = selected[1]
-        return f"[{mode} → {child.get('name', '')}] — {_child_detail(child, passed)}"
-
-    if check_type == "guard":
-        selected = selected_child(result)
-        if selected is None:
-            return "[→ no match]"
-        label, child = selected
-        return f"[→ {label}] — {_child_detail(child, passed)}"
-
-    if check_type == "fail":
-        return f"FAIL: {bounded_format(result.get('msg', ''))}"
-
-    # Fallback for any unknown check type: the canonical description, prefix-stripped.
-    name = safe_str(result.get("name", ""))
-    description = safe_str(result.get("description", ""))
-    prefix = f"Verify '{name}' "
-    return description[len(prefix):] if description.startswith(prefix) else description
-
-
-def render_detail(result: Mapping[str, Any], passed: bool, error: str | None = None) -> str:
-    """The detail clause of one check, never raising.
-
-    A check that could not be evaluated gets its error appended, for example
-    ``expected > 100, got None (TypeError: '>' not supported ...)``.
-    """
-    if error is None:
-        error = result.get("error")
-    try:
-        text = _detail(result, passed)
-    except Exception as exc:
-        if error is None:
-            return f"<detail unavailable: {describe_error(exc)}>"
-        return f"error: {error}"
-    return text if error is None else f"{text} ({error})"
+__all__ = ["ChecksFailedError", "format_summary", "render_detail"]
 
 
 def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
     name = safe_str(result.get("name", ""))
-    # conditional/guard render `name [… → child] — …`, attaching their
-    # bracket clause directly to the name without the `— ` separator.
-    sep = " " if result.get("check_type") in ("conditional", "guard") else " — "
     stored = result.get("detail")
     detail = stored if isinstance(stored, str) else render_detail(result, passed)
-    return f"  {marker} [{idx}] {name}{sep}{detail}"
+    return f"  {marker} [{idx}] {name}{summary_separator(result)}{detail}"
 
 
 def format_summary(results: Iterable[Mapping[str, Any]], *, start: int = 0) -> str:

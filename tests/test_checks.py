@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from pytest_verify._descriptors import build_equal, build_greater
+from tests._builders import build_equal, build_greater
 from pytest_verify._evaluator import evaluate
 from pytest_verify._verify import Verify
 
