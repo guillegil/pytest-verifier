@@ -1,11 +1,10 @@
-"""Known-bug regression tests: descriptor data, types and value lifetime (0.3.1).
+"""Regression tests: descriptor data, types and value lifetime (bugs found in 0.3.1).
 
-Every test here asserts the CORRECT behaviour for a bug confirmed by the 0.3.1 review
-(see ``bugs-0.3.1.md``) and is marked ``xfail(strict=True)``. The suite stays green while
-the bug exists; once a fix lands the test XPASSes, which fails the run and forces the
-marker to be removed.
+Every test here asserts the correct behaviour for a bug found by the 0.3.1 review
+(see ``bugs-0.3.1.md``) and fixed in 0.4.0. Each one failed on 0.3.1 and keeps the bug
+from coming back.
 
-Bugs pinned in this module:
+Bugs covered by this module:
 
 * H-5: module-level ``is_instance`` matches by bare class name, so unrelated same-name
   classes pass and runtime-checkable Protocols fail.
@@ -42,43 +41,7 @@ import pytest
 from pytest_verify import CheckDescriptor, Verify, get_check_results
 from pytest_verify import verify as mverify
 from pytest_verify._exceptions import ChecksFailedError
-
-XFAIL_H5 = pytest.mark.xfail(
-    strict=True,
-    reason="H-5: module-level is_instance matches by bare class name only "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M2 = pytest.mark.xfail(
-    strict=True,
-    reason="M-2: is_instance crashes on tuples and unions of types (see bugs-0.3.1.md)",
-)
-XFAIL_M3 = pytest.mark.xfail(
-    strict=True,
-    reason="M-3: descriptors are not JSON-serializable for common inputs "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M4 = pytest.mark.xfail(
-    strict=True,
-    reason="M-4: reports show values after mutation, not the values that were checked "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M5 = pytest.mark.xfail(
-    strict=True,
-    reason="M-5: every checked value is kept alive until the session ends "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_L6 = pytest.mark.xfail(
-    strict=True,
-    reason="L-6: ChecksFailedError cannot be pickled or copied (see bugs-0.3.1.md)",
-)
-
-# PEP 604 ``X | None`` annotations only evaluate at runtime from Python 3.10 on, so L-10
-# manifests on 3.9 only; on 3.10+ these tests pass.
-XFAIL_L10 = pytest.mark.xfail(
-    sys.version_info < (3, 10),
-    strict=True,
-    reason="L-10: typing.get_type_hints fails on Python 3.9 (see bugs-0.3.1.md)",
-)
+from pytest_verify._fixture import _FixtureVerify
 
 
 # ── H-5: module-level is_instance matches by bare class name ────────
@@ -94,7 +57,6 @@ _VendorAConfig = _make_class("vendor_a.Config")
 _VendorBConfig = _make_class("vendor_b.Config")
 
 
-@XFAIL_H5
 @pytest.mark.parametrize(
     ("actual", "expected_type"),
     [
@@ -130,7 +92,6 @@ class _Device:
         return b""
 
 
-@XFAIL_H5
 def test_h5_runtime_checkable_protocol_instance_passes():
     """``isinstance`` accepts a structural match of a runtime-checkable Protocol."""
     assert isinstance(_Device(), _Readable)
@@ -138,10 +99,9 @@ def test_h5_runtime_checkable_protocol_instance_passes():
     assert mverify.evaluate(descriptor) is True
 
 
-@XFAIL_H5
 def test_h5_fixture_composite_with_same_name_module_child_fails(pytester):
     """A fixture ``all_satisfy`` whose (module-built) children all fail ``isinstance`` must
-    fail the test. Today the name-based evaluator passes them and the test goes green."""
+    fail the test. In 0.3.1 the name-based evaluator passes them and the test goes green."""
     pytester.makepyfile("""
         import types
 
@@ -178,7 +138,6 @@ def _build_is_instance(actual: Any, expected_type: Any) -> CheckDescriptor:
         pytest.fail(f"is_instance crashed while building for {expected_type!r}: {exc!r}")
 
 
-@XFAIL_M2
 @pytest.mark.parametrize("value", [1, 2.5, "1"], ids=["int", "float", "str"])
 def test_m2_tuple_of_types_builds_and_matches_isinstance(value):
     """``(int, float)`` is accepted and the verdict equals ``isinstance(value, (int, float))``."""
@@ -187,7 +146,6 @@ def test_m2_tuple_of_types_builds_and_matches_isinstance(value):
 
 
 @pytest.mark.skipif(sys.version_info < (3, 10), reason="PEP 604 unions need Python 3.10+")
-@XFAIL_M2
 @pytest.mark.parametrize("value", [1, "1", 2.5], ids=["int", "str", "float"])
 def test_m2_pep604_union_builds_and_matches_isinstance(value):
     """``int | str`` is accepted and the verdict equals ``isinstance(value, int | str)``."""
@@ -196,10 +154,9 @@ def test_m2_pep604_union_builds_and_matches_isinstance(value):
     assert mverify.evaluate(descriptor) is isinstance(value, union)
 
 
-@XFAIL_M2
 def test_m2_typing_optional_is_rejected_or_matches_isinstance():
     """``typing.Optional[int]`` is either rejected with a clear ``TypeError`` or evaluated like
-    ``isinstance``. Today 3.9 crashes with AttributeError, and 3.10+ builds an
+    ``isinstance``. In 0.3.1, 3.9 crashed with AttributeError, and 3.10+ builds an
     'is instance of Optional' check that fails for ``1``."""
     try:
         descriptor = mverify.is_instance(1, typing.Optional[int], name="value")
@@ -210,7 +167,6 @@ def test_m2_typing_optional_is_rejected_or_matches_isinstance():
     assert mverify.evaluate(descriptor) is True, descriptor["description"]
 
 
-@XFAIL_M2
 def test_m2_fixture_tuple_of_types_check_passes(pytester):
     """Through the fixture, a tuple-of-types check that holds lets the test pass."""
     pytester.makepyfile("""
@@ -241,7 +197,6 @@ def _assert_json_safe(data: Any) -> None:
         pytest.fail(f"not JSON-serializable: {type(exc).__name__}: {exc}")
 
 
-@XFAIL_M3
 def test_m3_module_conditional_with_enum_switch_value_is_json_serializable():
     """The README's enum-keyed ``conditional`` gives a JSON-serializable descriptor: case keys
     are stringified, so ``switch_value`` must be JSON-safe too."""
@@ -251,7 +206,6 @@ def test_m3_module_conditional_with_enum_switch_value_is_json_serializable():
     _assert_json_safe(descriptor)
 
 
-@XFAIL_M3
 def test_m3_fixture_conditional_with_enum_switch_value_is_json_serializable(verify, request):
     """What a reporter reads through ``get_check_results`` for an enum switch is JSON-safe."""
     verify.conditional(
@@ -274,7 +228,6 @@ _M3_FIXTURE_CALLS: dict[str, Callable[[Any], Any]] = {
 }
 
 
-@XFAIL_M3
 @pytest.mark.parametrize("case", list(_M3_FIXTURE_CALLS))
 def test_m3_fixture_results_are_json_serializable_for_common_inputs(verify, request, case):
     """``json.dumps(..., allow_nan=False)`` of the recorded results succeeds for any input.
@@ -302,7 +255,6 @@ def _summary_line(pytester: pytest.Pytester, source: str, name: str) -> str:
     return lines[0]
 
 
-@XFAIL_M4
 def test_m4_failed_equal_reports_the_value_that_was_compared(pytester):
     """The dict was ``{'mode': 'idle'}`` when compared; the summary must not claim
     ``expected {'mode': 'run'}, got {'mode': 'run'}`` for a failed check."""
@@ -315,7 +267,6 @@ def test_m4_failed_equal_reports_the_value_that_was_compared(pytester):
     assert "idle" in line, line
 
 
-@XFAIL_M4
 def test_m4_failed_contains_reports_the_haystack_that_was_searched(pytester):
     """The log was ``['boot']`` when searched; the summary must not show the later append."""
     line = _summary_line(pytester, """
@@ -327,7 +278,6 @@ def test_m4_failed_contains_reports_the_haystack_that_was_searched(pytester):
     assert "'boot', 'ready'" not in line, line
 
 
-@XFAIL_M4
 def test_m4_passed_equal_reports_the_value_that_was_compared(pytester):
     """A passing check must not be rendered as ``[1, 2, 99] == [1, 2]``."""
     line = _summary_line(pytester, """
@@ -340,7 +290,6 @@ def test_m4_passed_equal_reports_the_value_that_was_compared(pytester):
     assert "99" not in line, line
 
 
-@XFAIL_M4
 def test_m4_all_satisfy_failed_count_uses_recorded_child_verdicts(pytester):
     """One child failed when checked; mutating it afterwards must not make the summary say
     ``got 0 failed`` for a failed ``all_satisfy``."""
@@ -386,7 +335,6 @@ _M5_CONFTEST = """
 """
 
 
-@XFAIL_M5
 @pytest.mark.parametrize(
     "call",
     [
@@ -437,7 +385,6 @@ def _checks_failed_error() -> ChecksFailedError:
     return ChecksFailedError([failed, passed])
 
 
-@XFAIL_L6
 @pytest.mark.parametrize(
     "clone",
     [
@@ -459,7 +406,6 @@ def test_l6_checks_failed_error_round_trips(clone):
 # ── L-10: runtime type-hint resolution on every supported Python ────
 
 
-@XFAIL_L10
 def test_l10_check_descriptor_type_hints_resolve():
     """``typing.get_type_hints(CheckDescriptor)`` works (pydantic, typeguard, sphinx...)."""
     hints = typing.get_type_hints(CheckDescriptor)
@@ -467,11 +413,12 @@ def test_l10_check_descriptor_type_hints_resolve():
     assert "default" in hints
 
 
-@XFAIL_L10
-def test_l10_public_verify_method_type_hints_resolve():
-    """Every public ``Verify`` method's hints resolve at runtime."""
+@pytest.mark.parametrize("cls", [Verify, _FixtureVerify], ids=["module", "fixture"])
+def test_l10_public_verify_method_type_hints_resolve(cls):
+    """Every public method's hints resolve at runtime, on the module-level ``Verify`` and on
+    the object the ``verify`` fixture returns."""
     failing = []
-    for name, method in inspect.getmembers(Verify, predicate=inspect.isfunction):
+    for name, method in inspect.getmembers(cls, predicate=inspect.isfunction):
         if name.startswith("_"):
             continue
         try:

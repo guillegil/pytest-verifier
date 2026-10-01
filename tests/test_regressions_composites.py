@@ -1,11 +1,8 @@
-"""Known-bug regression pins for composite checks (guard / conditional / all_satisfy).
+"""Regression tests for composite checks (guard / conditional / all_satisfy).
 
-Every test here asserts the CORRECT behaviour for a bug confirmed in pytest-verify 0.3.1
-and is marked ``xfail(strict=True)``. Today each one fails for the reason its bug
-describes, so the suite stays green. Once a bug is fixed its tests XPASS, and strict
-mode turns that into a failure: delete the marker (and the bug entry) when that happens.
-
-Bug ids refer to ``bugs-0.3.1.md``.
+Every test here asserts the correct behaviour for a bug found by the 0.3.1 review
+(see ``bugs-0.3.1.md``) and fixed in 0.4.0. Each one failed on 0.3.1 and keeps the bug
+from coming back.
 """
 from __future__ import annotations
 
@@ -78,9 +75,6 @@ def _render(descriptor: dict) -> str:
 # H-2: the fixture evaluates every guard branch / conditional case eagerly
 # ======================================================================
 
-_H2 = "H-2: fixture evaluates unmatched guard/conditional children eagerly (see bugs-0.3.1.md)"
-
-
 def _carries_failed_verdict(child: dict | None) -> bool:
     """Whether an unmatched child would still render as a failed card.
 
@@ -93,7 +87,6 @@ def _carries_failed_verdict(child: dict | None) -> bool:
     return not any(m in key.lower() for key in child for m in markers)
 
 
-@pytest.mark.xfail(strict=True, reason=_H2)
 def test_h2_guard_unmatched_default_not_evaluated(pytester):
     """A disabled sensor (reading None) takes the first branch; the default that compares
     the reading must not run, so the guard passes and the later check is reached."""
@@ -111,7 +104,6 @@ def test_h2_guard_unmatched_default_not_evaluated(pytester):
     result.assert_outcomes(passed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H2)
 def test_h2_guard_unmatched_branch_not_evaluated(pytester):
     """Same as above, but the check that cannot run sits in a later (unmatched) branch."""
     pytester.makepyfile("""
@@ -130,7 +122,6 @@ def test_h2_guard_unmatched_branch_not_evaluated(pytester):
     result.assert_outcomes(passed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H2)
 def test_h2_conditional_unmatched_case_not_evaluated(pytester):
     """Mode 'off' is selected; the 'on' case compares a string to a float range and must
     not run."""
@@ -149,7 +140,6 @@ def test_h2_conditional_unmatched_case_not_evaluated(pytester):
     result.assert_outcomes(passed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H2)
 def test_h2_module_path_length_in_unmatched_default_not_evaluated():
     """``length`` calls len() at build time, so it crashes even on the (otherwise lazy)
     module path when it sits in a branch that is never taken."""
@@ -162,7 +152,6 @@ def test_h2_module_path_length_in_unmatched_default_not_evaluated():
     assert verify.evaluate(descriptor) is True
 
 
-@pytest.mark.xfail(strict=True, reason=_H2)
 def test_h2_unmatched_children_carry_no_failed_verdict(verify, request):
     """Children that were never selected must not keep a red ``passed: False`` inside a
     passing composite (a reporter would render them as failed cards)."""
@@ -193,8 +182,6 @@ def test_h2_unmatched_children_carry_no_failed_verdict(verify, request):
 # H-3: composite parents re-evaluate children instead of using their verdicts
 # ======================================================================
 
-_H3 = "H-3: composite re-evaluates children instead of using recorded verdicts (see bugs-0.3.1.md)"
-
 _ABC_CHILD_SOURCES = {
     "all_satisfy-Number": """
         import numbers
@@ -223,7 +210,6 @@ _ABC_CHILD_SOURCES = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason=_H3)
 @pytest.mark.parametrize(
     "source", list(_ABC_CHILD_SOURCES.values()), ids=list(_ABC_CHILD_SOURCES)
 )
@@ -265,19 +251,17 @@ _SAME_NAME_SOURCES = {
 }
 
 
-@pytest.mark.xfail(strict=True, reason=_H3)
 @pytest.mark.parametrize(
     "source", list(_SAME_NAME_SOURCES.values()), ids=list(_SAME_NAME_SOURCES)
 )
 def test_h3_failing_same_name_children_fail_parent(pytester, source):
-    """Every child fails (real isinstance), so the composite must fail. Today the parent's
+    """Every child fails (real isinstance), so the composite must fail. In 0.3.1 the parent's
     name-based re-check passes and the failing children are discarded: the test goes green."""
     pytester.makepyfile(source)
     result = pytester.runpytest()
     result.assert_outcomes(failed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H3)
 def test_h3_mutation_after_child_check_does_not_flip_parent(pytester):
     """The child passed when it was checked; mutating the object afterwards must not make
     the parent reach the opposite verdict."""
@@ -296,7 +280,6 @@ def test_h3_mutation_after_child_check_does_not_flip_parent(pytester):
     result.assert_outcomes(passed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H3)
 def test_h3_failure_summary_counts_recorded_child_verdicts(pytester):
     """Two of three children pass (1 and 2.5 are Numbers); the summary must not recount
     them by name and report all three as failed."""
@@ -319,10 +302,6 @@ def test_h3_failure_summary_counts_recorded_child_verdicts(pytester):
 # H-4: a recorded check reused inside a composite is silently deleted
 # ======================================================================
 
-_H4 = "H-4: recorded check reused in a composite is silently deleted (see bugs-0.3.1.md)"
-
-
-@pytest.mark.xfail(strict=True, reason=_H4)
 def test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails(pytester):
     """A standalone check that failed must keep failing the test even if the same
     descriptor is later passed to a guard branch that is not taken."""
@@ -339,7 +318,6 @@ def test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails(pytester)
     result.assert_outcomes(failed=1)
 
 
-@pytest.mark.xfail(strict=True, reason=_H4)
 def test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails(pytester):
     pytester.makepyfile("""
         def test_reuse(verify):
@@ -358,9 +336,6 @@ def test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails(pytes
 # H-6: conditional matches cases by str(), not by Python equality
 # ======================================================================
 
-_H6 = "H-6: conditional matches case keys by str(), not equality (see bugs-0.3.1.md)"
-
-
 def _conditional_verdict(switch_value: object, cases: dict) -> bool:
     """Build a conditional whose default always fails, and evaluate it on the module path."""
     descriptor = verify.conditional(
@@ -372,20 +347,17 @@ def _conditional_verdict(switch_value: object, cases: dict) -> bool:
     return verify.evaluate(descriptor)
 
 
-@pytest.mark.xfail(PY_LT_311, strict=True, reason=_H6)
 def test_h6_intenum_switch_matches_int_case_key():
-    """Passes on 3.11+ today; on 3.9/3.10 str(Level.ONE) is 'Level.ONE' and falls through."""
+    """Passed on 3.11+ in 0.3.1; on 3.9/3.10 str(Level.ONE) is 'Level.ONE' and falls through."""
     ok = verify.equal(1, 1, name="ok")
     assert _conditional_verdict(Level.ONE, {0: verify.fail("standby"), 1: ok}) is True
 
 
-@pytest.mark.xfail(PY_LT_311, strict=True, reason=_H6)
 def test_h6_int_switch_matches_intenum_case_key():
     ok = verify.equal(1, 1, name="ok")
     assert _conditional_verdict(1, {Level.STANDBY: verify.fail("standby"), Level.ONE: ok}) is True
 
 
-@pytest.mark.xfail(strict=True, reason=_H6)
 @pytest.mark.parametrize(
     ("switch_value", "case_key"),
     [(1.0, 1), (True, 1), (StrMode.ACTIVE, "active")],
@@ -398,7 +370,6 @@ def test_h6_python_equal_switch_matches_case_key(switch_value, case_key):
     assert _conditional_verdict(switch_value, cases) is True
 
 
-@pytest.mark.xfail(strict=True, reason=_H6)
 def test_h6_none_switch_does_not_match_string_none_key():
     """None is not equal to the string 'None', so the always-failing default applies."""
     cases = {"None": verify.equal(1, 1, name="literal 'None' case")}
@@ -410,10 +381,6 @@ def test_h6_none_switch_does_not_match_string_none_key():
 # L-1: case keys that collide after str() are silently overwritten
 # ======================================================================
 
-_L1 = "L-1: colliding conditional case keys silently overwritten (see bugs-0.3.1.md)"
-
-
-@pytest.mark.xfail(strict=True, reason=_L1)
 @pytest.mark.parametrize(
     ("switch_value", "other_key"),
     [(1, "1"), (True, "True"), (Color.RED, "Color.RED")],
@@ -433,7 +400,6 @@ def test_l1_colliding_case_keys_not_silently_overwritten(switch_value, other_key
     assert verify.evaluate(descriptor) is True, "the colliding later key silently won"
 
 
-@pytest.mark.xfail(strict=True, reason=_L1)
 def test_l1_overwritten_case_not_left_as_standalone_result(pytester):
     """The overwritten fixture child is never absorbed by the composite, so it stays a
     top-level failing check although it can never be selected."""
@@ -463,10 +429,6 @@ def test_l1_overwritten_case_not_left_as_standalone_result(pytester):
 # L-3: an error in the composite (or its factory) leaves orphaned children
 # ======================================================================
 
-_L3 = "L-3: composite/factory error leaves recorded children as orphans (see bugs-0.3.1.md)"
-
-
-@pytest.mark.xfail(strict=True, reason=_L3)
 def test_l3_composite_evaluation_error_leaves_no_orphan_children(pytester):
     """The matched (module-built) child cannot be compared; the unmatched fixture-built
     branch must still not surface as a standalone failing check."""
@@ -489,7 +451,6 @@ def test_l3_composite_evaluation_error_leaves_no_orphan_children(pytester):
     assert "unmatched branch" not in recorded["names"], recorded
 
 
-@pytest.mark.xfail(strict=True, reason=_L3)
 def test_l3_all_satisfy_factory_error_leaves_no_orphan_children(pytester):
     """The factory raises on the third item; the children it built for the first two items
     belong to the aborted all_satisfy and must not remain as standalone checks."""
@@ -514,16 +475,12 @@ def test_l3_all_satisfy_factory_error_leaves_no_orphan_children(pytester):
 # L-4: conditional renders the switch with format() but looks it up with str()
 # ======================================================================
 
-_L4 = "L-4: conditional message shows format(switch), lookup uses str() (see bugs-0.3.1.md)"
-
-
 def _displayed_switches(descriptor: dict) -> list[str]:
     """Return every ``mode=<switch>`` value shown in the description and the summary."""
     rendered = descriptor["description"] + "\n" + _render(descriptor)
     return re.findall(r"\[mode=(.*?)(?: → .*?)?\]", rendered)
 
 
-@pytest.mark.xfail(PY_LT_311, strict=True, reason=_L4)
 @pytest.mark.parametrize(
     ("switch_value", "case_key"),
     [(Level.ONE, 1), (StrMode.ACTIVE, "active")],
@@ -545,16 +502,12 @@ def test_l4_conditional_displays_the_switch_it_looked_up(switch_value, case_key)
 # M-6: conditional's evaluator ignores the stored matched_case
 # ======================================================================
 
-_M6 = "M-6: conditional evaluator recomputes str(switch), ignores matched_case (see bugs-0.3.1.md)"
-
-
 def _tuple_switch_round_trip() -> tuple[dict, dict]:
     ok = verify.equal(1, 1, name="ok")
     descriptor = verify.conditional((1, 2), cases={(1, 2): ok}, name="pair")
     return descriptor, json.loads(json.dumps(descriptor))
 
 
-@pytest.mark.xfail(strict=True, reason=_M6)
 def test_m6_conditional_verdict_survives_json_round_trip():
     """A tuple switch becomes a list after JSON; the verdict must not change."""
     descriptor, round_tripped = _tuple_switch_round_trip()
@@ -562,7 +515,6 @@ def test_m6_conditional_verdict_survives_json_round_trip():
     assert verify.evaluate(round_tripped) is True
 
 
-@pytest.mark.xfail(strict=True, reason=_M6)
 def test_m6_rendered_case_agrees_with_verdict_after_round_trip():
     """The summary renders the stored matched case (equal(1, 1)); the verdict must agree
     with it instead of reporting 'expected 1, got 1'."""

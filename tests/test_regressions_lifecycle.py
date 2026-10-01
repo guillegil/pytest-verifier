@@ -1,14 +1,13 @@
-"""Known-bug regression tests: when and how the soft-check verdict is applied (0.3.1).
+"""Regression tests: when and how the soft-check verdict is applied (bugs found in 0.3.1).
 
-Every test here asserts the CORRECT behaviour for a bug confirmed by the 0.3.1 review
-(see ``bugs-0.3.1.md``) and is marked ``xfail(strict=True)``. The suite stays green while
-the bug exists; once a fix lands the test XPASSes, which fails the run and forces the
-marker to be removed.
+Every test here asserts the correct behaviour for a bug found by the 0.3.1 review
+(see ``bugs-0.3.1.md``) and fixed in 0.4.0. Each one failed on 0.3.1 and keeps the bug
+from coming back.
 
-Most of these bugs share one root cause: the verdict is applied by rewriting the call-phase
-report in ``pytest_runtest_makereport`` instead of raising ``ChecksFailedError``.
+In 0.3.1 most of these bugs shared one root cause: the verdict was applied by rewriting the
+call-phase report in ``pytest_runtest_makereport`` instead of raising ``ChecksFailedError``.
 
-Bugs pinned in this module:
+Bugs covered by this module:
 
 * H-7: checks recorded during teardown are ignored and the test passes.
 * H-8: soft failures are misreported under ``xfail`` and hidden by a later ``skip``.
@@ -50,70 +49,6 @@ from pytest_verify import _fixture as fixture_module
 #: pytest's major version: the built-in ``subtests`` fixture and the string-longrepr summary
 #: reason both arrived in pytest 9.
 PYTEST_MAJOR = int(pytest.__version__.split(".")[0])
-
-XFAIL_H7 = pytest.mark.xfail(
-    strict=True,
-    reason="H-7: checks recorded during teardown are ignored and the test passes "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_H8 = pytest.mark.xfail(
-    strict=True,
-    reason="H-8: soft failures are misreported under xfail and hidden by skip "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M7 = pytest.mark.xfail(
-    strict=True,
-    reason="M-7: the results stash accumulates across reruns (see bugs-0.3.1.md)",
-)
-XFAIL_M8 = pytest.mark.xfail(
-    strict=True,
-    reason="M-8: a clean rerun is failed with the previous attempt's checks "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M9 = pytest.mark.xfail(
-    strict=True,
-    reason="M-9: pytest 9 subtests: one failing check fails every later subtest "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M10 = pytest.mark.xfail(
-    strict=True,
-    reason="M-10: soft summary next to a hard failure missing from junitxml and hidden by "
-    "--show-capture (see bugs-0.3.1.md)",
-)
-XFAIL_M11 = pytest.mark.xfail(
-    strict=True,
-    reason="M-11: soft failures recorded in setup vanish when setup errors "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M12 = pytest.mark.xfail(
-    strict=True,
-    reason="M-12: --pdb and pytest_exception_interact ignore soft failures "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M13 = pytest.mark.xfail(
-    strict=True,
-    reason="M-13: other makereport hooks can see a soft-failed test as passed "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M14 = pytest.mark.xfail(
-    strict=True,
-    reason="M-14: the fixture without its hook turns every failure into a pass "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_L7 = pytest.mark.xfail(
-    strict=True,
-    reason="L-7: --tb=line prints the summary twice (see bugs-0.3.1.md)",
-)
-# pytest 9 happens to print the first line of a string longrepr; the gap is pytest 8 only.
-XFAIL_L8 = pytest.mark.xfail(
-    PYTEST_MAJOR < 9,
-    strict=True,
-    reason="L-8: pytest 8 short summary gives no reason for soft failures (see bugs-0.3.1.md)",
-)
-XFAIL_D1 = pytest.mark.xfail(
-    strict=True,
-    reason="D-1: ChecksFailedError is documented as raised but never is (see bugs-0.3.1.md)",
-)
 
 
 # ── Helpers ──
@@ -182,11 +117,10 @@ _TEARDOWN_SOURCES = {
 }
 
 
-@XFAIL_H7
 @pytest.mark.parametrize("source", list(_TEARDOWN_SOURCES.values()), ids=list(_TEARDOWN_SOURCES))
 def test_h7_failed_check_in_teardown_fails_the_run(pytester, source):
     """A failed check recorded after the call phase must still fail the run (a teardown ERROR
-    is fine: pytest then reports ``1 passed, 1 error``). Today the run is green."""
+    is fine: pytest then reports ``1 passed, 1 error``). In 0.3.1 the run is green."""
     pytester.makepyfile(source)
     result = pytester.runpytest()
     assert result.ret == pytest.ExitCode.TESTS_FAILED, result.stdout.str()
@@ -212,7 +146,6 @@ class _VerdictVsStash:
         return result
 
 
-@XFAIL_H7
 def test_h7_verdict_never_contradicts_recorded_results(pytester):
     """If ``get_check_results(item)`` holds a failed check once the item is done, one of its
     reports must be failed (a reporter would otherwise draw red cards on a green test)."""
@@ -220,7 +153,7 @@ def test_h7_verdict_never_contradicts_recorded_results(pytester):
     recorder = _VerdictVsStash()
     pytester.runpytest(plugins=[recorder])
     ((nodeid, failed_checks),) = recorder.failed_checks.items()
-    assert failed_checks == ["DUT idle after test"]  # the stash holds the failure (true today)
+    assert failed_checks == ["DUT idle after test"]  # the stash holds the failure (true in 0.3.1 too)
     assert any(o.endswith(":failed") for o in recorder.outcomes[nodeid]), recorder.outcomes
 
 
@@ -236,11 +169,10 @@ _XFAIL_MARKERS = {
 }
 
 
-@XFAIL_H8
 @pytest.mark.parametrize("marker", list(_XFAIL_MARKERS.values()), ids=list(_XFAIL_MARKERS))
 def test_h8_soft_failure_under_xfail_is_xfailed(pytester, marker):
     """A failed soft check is a failure, so an xfail-marked test that has one is XFAIL, the
-    same as a hard assert in the same place. Today it is FAILED (as a flipped XPASS)."""
+    same as a hard assert in the same place. In 0.3.1 it was FAILED (as a flipped XPASS)."""
     pytester.makepyfile(f"""
         import pytest
         from pytest_verify._exceptions import ChecksFailedError
@@ -253,9 +185,8 @@ def test_h8_soft_failure_under_xfail_is_xfailed(pytester, marker):
     result.assert_outcomes(xfailed=1)
 
 
-@XFAIL_H8
 def test_h8_terminal_exit_code_and_junitxml_agree_for_xfail_soft_failure(pytester):
-    """The terminal, the exit code and junitxml must classify the test the same way. Today the
+    """The terminal, the exit code and junitxml must classify the test the same way. In 0.3.1 the
     terminal says FAILED while the exit code is 0 and junitxml writes ``<skipped
     message="xfail-marked test passes unexpectedly">`` (the stale ``wasxfail``)."""
     pytester.makepyfile("""
@@ -306,7 +237,6 @@ _SKIP_AFTER_SOFT_FAIL_SOURCES = {
 }
 
 
-@XFAIL_H8
 @pytest.mark.parametrize(
     "source",
     list(_SKIP_AFTER_SOFT_FAIL_SOURCES.values()),
@@ -314,7 +244,7 @@ _SKIP_AFTER_SOFT_FAIL_SOURCES = {
 )
 def test_h8_later_skip_does_not_hide_soft_failure(pytester, source):
     """A skip after a failed soft check must not hide it: the test is FAILED (or ERROR, for a
-    skip in setup), or at least the output names the failed check. Today it is a plain
+    skip in setup), or at least the output names the failed check. In 0.3.1 it was a plain
     SKIPPED and the name appears nowhere."""
     pytester.makepyfile(source)
     result = pytester.runpytest("-rs")
@@ -356,7 +286,6 @@ _RERUN_CONFTEST = """
 """
 
 
-@XFAIL_M7
 def test_m7_stash_holds_only_the_last_rerun_attempt(pytester):
     """A flaky test fails its soft check on attempt 1 and passes on attempt 2. The recorded
     results must describe attempt 2 only, not attempt 1's failure plus attempt 2."""
@@ -379,16 +308,15 @@ def test_m7_stash_holds_only_the_last_rerun_attempt(pytester):
 
     result = pytester.runpytest(plugins=[_StashDump()])
     outcomes = _outcomes(result)
-    # The verdict itself is right today: attempt 1 is rerun, attempt 2 passes.
+    # The verdict itself was right in 0.3.1 too: attempt 1 is rerun, attempt 2 passes.
     assert (outcomes.get("passed"), outcomes.get("rerun"), outcomes.get("failed")) == (1, 1, None)
     # Only attempt 1's check failed, so a single passing entry means attempt 2 alone.
     assert stash == [("attempt", True)]
 
 
-@XFAIL_M8
 def test_m8_clean_rerun_attempt_is_not_failed_by_previous_attempt(pytester):
     """Attempt 1 requests ``verify`` dynamically and fails a check; attempt 2 records no
-    checks and must pass. Today attempt 2 is judged on attempt 1's stale results."""
+    checks and must pass. In 0.3.1 attempt 2 was judged on attempt 1's stale results."""
     pytester.makeconftest(_RERUN_CONFTEST)
     pytester.makepyfile("""
         N = {"n": 0}
@@ -422,7 +350,6 @@ class _SubtestOutcomes:
 
 
 @pytest.mark.skipif(PYTEST_MAJOR < 9, reason="pytest<9 has no built-in subtests fixture")
-@XFAIL_M9
 def test_m9_passing_subtests_after_a_failing_one_are_not_failed(pytester):
     """Only the subtest holding the failing check may be SUBFAILED (or none, if subtest
     reports are left alone and only the parent fails)."""
@@ -456,11 +383,10 @@ _HARD_AND_SOFT_SOURCE = """
 """
 
 
-@XFAIL_M10
 @pytest.mark.parametrize("show_capture", ["no", "stdout", "log"])
 def test_m10_soft_summary_shown_whatever_show_capture(pytester, show_capture):
     """The soft summary is part of the failure, not captured output: ``--show-capture``
-    must not hide it. Today only the default ``--show-capture=all`` shows it."""
+    must not hide it. In 0.3.1 only the default ``--show-capture=all`` shows it."""
     pytester.makepyfile(_HARD_AND_SOFT_SOURCE)
     result = pytester.runpytest(f"--show-capture={show_capture}")
     result.assert_outcomes(failed=1)
@@ -468,7 +394,6 @@ def test_m10_soft_summary_shown_whatever_show_capture(pytester, show_capture):
     result.stdout.fnmatch_lines(["*SoftBad*"])
 
 
-@XFAIL_M10
 def test_m10_soft_summary_in_junitxml_failure(pytester):
     """The junitxml ``<failure>`` for a test that failed hard and softly must carry the soft
     summary as well as the hard error."""
@@ -517,13 +442,12 @@ _SETUP_ERROR_SOURCES = {
 }
 
 
-@XFAIL_M11
 @pytest.mark.parametrize(
     "source", list(_SETUP_ERROR_SOURCES.values()), ids=list(_SETUP_ERROR_SOURCES)
 )
 def test_m11_setup_error_report_shows_soft_failures(pytester, source):
     """The setup ERROR must show the failed check recorded before it (often the root cause).
-    Today only the setup traceback is shown."""
+    In 0.3.1 only the setup traceback is shown."""
     pytester.makepyfile(source)
     result = pytester.runpytest()
     assert _outcomes(result).get("errors", 0) >= 1, result.stdout.str()
@@ -547,7 +471,6 @@ class _InteractRecorder:
         self.calls.append((node.name, report.when))
 
 
-@XFAIL_M12
 def test_m12_exception_interact_fires_for_soft_failure(pytester):
     pytester.makepyfile("""
         def test_soft(verify):
@@ -560,7 +483,7 @@ def test_m12_exception_interact_fires_for_soft_failure(pytester):
     result = pytester.runpytest(plugins=[recorder])
     result.assert_outcomes(failed=2)
     names = [name for name, _ in recorder.calls]
-    assert "test_hard" in names  # control: a hard failure triggers the hook (true today)
+    assert "test_hard" in names  # control: a hard failure triggers the hook (true in 0.3.1 too)
     assert "test_soft" in names, recorder.calls
 
 
@@ -593,18 +516,16 @@ _SOFT_AND_HARD_SOURCE = """
 """
 
 
-@XFAIL_M13
 def test_m13_makereport_wrapper_registered_first_sees_failed(pytester):
     """A makereport wrapper registered before pytest-verify runs inside its wrapper. It must
     still see FAILED for a soft-failed test, as it does for a hard failure."""
     pytester.makepyfile(_SOFT_AND_HARD_SOURCE)
     reporter = _EarlyReporter()
     result = pytester.runpytest(plugins=[reporter])
-    result.assert_outcomes(failed=2)  # the final verdict is right today
+    result.assert_outcomes(failed=2)  # the final verdict was right in 0.3.1 too
     assert reporter.seen == {"test_soft": "failed", "test_hard": "failed"}
 
 
-@XFAIL_M13
 def test_m13_soft_failed_call_phase_has_assertion_excinfo(pytester):
     """``call.excinfo`` is what rerun filters (``--only-rerun``/``--rerun-except``) and
     on-failure hooks inspect: a soft failure must carry an AssertionError (ChecksFailedError
@@ -614,7 +535,7 @@ def test_m13_soft_failed_call_phase_has_assertion_excinfo(pytester):
     result = pytester.runpytest(plugins=[recorder])
     result.assert_outcomes(failed=2)
     hard = recorder.excinfo[("test_hard", "call")]
-    assert hard is not None and hard.errisinstance(AssertionError)  # control (true today)
+    assert hard is not None and hard.errisinstance(AssertionError)  # control (true in 0.3.1 too)
     soft = recorder.excinfo[("test_soft", "call")]
     assert soft is not None and soft.errisinstance(AssertionError), soft
 
@@ -630,7 +551,6 @@ _MUST_FAIL_SOURCE = """
 """
 
 
-@XFAIL_M14
 @pytest.mark.parametrize(
     ("autoload", "args"),
     [(False, ()), (True, ("-p", "no:verify"))],
@@ -639,7 +559,7 @@ _MUST_FAIL_SOURCE = """
 def test_m14_reexported_fixture_without_hook_never_passes(pytester, monkeypatch, autoload, args):
     """With the fixture vendored through a conftest re-export but the plugin module not
     registered, a test calling ``verify.fail()`` must not pass: it fails, or pytest-verify
-    stops the run loudly (usage error, collection error...). Today the checks are dropped and
+    stops the run loudly (usage error, collection error...). In 0.3.1 the checks are dropped and
     the run is green."""
     if autoload:
         monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
@@ -671,10 +591,9 @@ def _crash_line(lines: list[str]) -> str:
     return section[-1]
 
 
-@XFAIL_L7
 def test_l7_tb_line_crash_line_is_a_location_line(pytester):
     """``--tb=line`` ends each failure with one ``path:lineno: message`` crash line (a hard
-    assert gives ``.../test_x.py:2: assert 1 == 2``). Today the crash line is
+    assert gives ``.../test_x.py:2: assert 1 == 2``). In 0.3.1 the crash line is
     ``str(longrepr)[:50]``: a copy of the summary cut mid-value, with no location."""
     pytester.makepyfile("""
         def test_soft_only(verify):
@@ -691,7 +610,6 @@ def test_l7_tb_line_crash_line_is_a_location_line(pytester):
 # ======================================================================
 
 
-@XFAIL_L8
 def test_l8_short_summary_gives_reason_for_soft_failure(pytester):
     """The ``-r`` short-summary line of a soft failure carries a reason, as a hard failure's
     does. pytest 8.x reads ``longrepr.reprcrash`` and drops it for the plain-string longrepr."""
@@ -705,7 +623,7 @@ def test_l8_short_summary_gives_reason_for_soft_failure(pytester):
     result = pytester.runpytest("-rf")
     result.assert_outcomes(failed=2)
     result.stdout.fnmatch_lines(["FAILED test_summary.py::test_hard - *"])  # control
-    result.stdout.fnmatch_lines(["FAILED test_summary.py::test_soft - *"])
+    result.stdout.fnmatch_lines(["FAILED test_summary.py::test_soft - 1 of 1 checks failed"])
 
 
 # ======================================================================
@@ -730,7 +648,6 @@ def _docs_claiming_checks_failed_error_is_raised() -> dict[str, str]:
     return {where: phrase for where, (phrase, text) in claims.items() if phrase in (text or "")}
 
 
-@XFAIL_D1
 def test_d1_checks_failed_error_raised_and_exported_or_not_documented_as_raised(pytester):
     """Either a soft failure really raises ``ChecksFailedError`` (so ``pytest.raises``,
     ``xfail(raises=...)`` and ``--only-rerun`` can match it) and ``pytest_verify`` exports it,

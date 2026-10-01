@@ -1,7 +1,9 @@
-"""Tests for the verify fixture lifecycle, teardown, and reporter detection."""
+"""Tests for the verify fixture lifecycle, teardown, and the results stash."""
 from __future__ import annotations
 
 import pytest
+
+from pytest_verify import ChecksFailedError
 
 
 class TestFixtureBasicBehavior:
@@ -126,13 +128,10 @@ class TestFixtureTeardown:
     def test_composite_records_only_parent_not_children(self):
         """A composite consumes its child descriptors; the children must not
         remain as independent recorded results."""
-        from pytest_verify._fixture import _FixtureVerify
+        from pytest_verify._fixture import _FixtureVerify, _Run
 
-        class _Item:
-            def __init__(self):
-                self.stash = pytest.Stash()
-
-        fv = _FixtureVerify(_Item())
+        run = _Run()
+        fv = _FixtureVerify(run)
         fv.guard(
             branches=[
                 (False, "bad", fv.equal(1, 2, name="bad")),
@@ -140,7 +139,7 @@ class TestFixtureTeardown:
             ],
             name="G",
         )
-        assert [r["check_type"] for r in fv._results] == ["guard"]
+        assert [r["check_type"] for r in run.records] == ["guard"]
 
     def test_no_state_bleed_between_tests(self, pytester):
         pytester.makepyfile("""
@@ -155,7 +154,7 @@ class TestFixtureTeardown:
 
 
 class TestFixtureAllCheckMethods:
-    """Smoke test that all 20 methods work through the fixture path."""
+    """Smoke test that all 21 methods work through the fixture path."""
 
     def test_equal(self, verify):
         assert verify.equal(1, 1, name="X")["passed"] is True
@@ -218,14 +217,17 @@ class TestFixtureAllCheckMethods:
         cases = {"1": build_equal(10, 10, name="case1")}
         assert verify.conditional(1, cases=cases, name="M")["passed"] is True
 
-    def test_fail(self):
-        # verify.fail always returns passed=False — test via module-level to
-        # avoid fixture teardown error
-        from pytest_verify._verify import Verify
-        from pytest_verify._evaluator import evaluate
-        v = Verify()
-        result = v.fail("intentional")
-        assert evaluate(result) is False
+    def test_guard(self, verify):
+        check = verify.guard(
+            branches=[(False, "off", verify.fail("unused")), (True, "on", verify.is_true(1, name="On"))],
+            name="G",
+        )
+        assert check["passed"] is True
+
+    @pytest.mark.xfail(raises=ChecksFailedError, strict=True)
+    def test_fail(self, verify):
+        # The failed check is recorded and the test fails after its body.
+        assert verify.fail("intentional")["passed"] is False
 
 
 class TestUnconditionalStashWrite:
