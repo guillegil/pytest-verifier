@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-01
+
+Reorganizes the internals around one class per check type, and adds lazy composite children,
+`verify.record()` and a way for other plugins to read results without importing pytest-verify.
+Apart from callable `guard` conditions (see **Changed**), checks made the 0.4.0 way behave as
+before.
+
+### Added
+
+- Lazy children. A `conditional` case or default, and a `guard` check or default, can be a function with no arguments that returns the check, such as a `lambda`. Only the selected one is called, so the other branches never touch values they cannot use. In the recorded check, a lazy child that was not called is `None`. If the selected function raises, or returns something that is not a check, the composite fails with an `error` note.
+- `guard` conditions can be functions too. They are called in order until one is true; the conditions after it are not called and are recorded as `None`. A condition function that returns a check, which is always truthy, makes the guard fail with an error.
+- `verify.record(check)` on the fixture records a check built elsewhere, for example by a helper that uses the module-level `verify`. A check the fixture already recorded is returned as is, and a composite absorbs the fixture checks passed to it. On the module-level `verify` it raises `RuntimeError`.
+- Every recorded check has a `phase` key: `"setup"`, `"call"` or `"teardown"`, the test phase that made it.
+- A `pytest_verify_results(item, when, checks, passed)` hook, called when a test phase ends with checks to judge. Plugins implement it with `@pytest.hookimpl(optionalhook=True)` and need not import pytest-verify.
+- Test reports carry the checks judged in their phase as `report.verify_checks`. They are JSON-safe, so they survive pytest-xdist.
+- A contract test suite (`tests/test_contracts.py`) driven by the check-type registry. Every check type needs passing, failing and hostile examples, and each one must record JSON-safe results, get the same verdict from the fixture and from `evaluate()`, render without raising and stay unchanged when the checked values change later.
+
+### Changed
+
+- A `guard` condition that is callable is now called, and its result picks the branch. In 0.4.0 a function, class or mock used as a condition counted as true without being called.
+- `CheckDescriptor` marks `check_type`, `name` and `description` as required keys, so type checkers know every check has them.
+- For type checkers, `CheckDescriptor["cases"]` values, `GuardBranch["check"]` and `GuardBranch["condition"]` may be `None` (a lazy child or condition that was not called).
+- The error for a `conditional` case, `guard` check or default that is not a check now says it may also be a function that returns one.
+- Internals: each check type is one class in `pytest_verify/_checks/` that builds, judges and renders it; the module-level and fixture `verify` are the same `Verify` class with a different sink; per-attempt state lives in `pytest_verify/_run.py`. Private helpers such as `pytest_verify._descriptors.build_equal` are gone; build checks with the module-level `verify`.
+
 ## [0.4.0] - 2026-10-01
 
 Fixes all 45 bugs listed in [`bugs-0.3.1.md`](bugs-0.3.1.md). Some fixes change behaviour that
@@ -124,7 +149,8 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/guillegil/pytest_verify/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/guillegil/pytest_verify/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/guillegil/pytest_verify/compare/v0.2.1...v0.3.0

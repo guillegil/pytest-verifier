@@ -5,7 +5,7 @@ Covers both the normative structure (the ``N of M checks failed`` header, the
 and the per-type ``expected … got …`` / compact detail rendering.
 """
 
-from pytest_verify._descriptors import (
+from tests._builders import (
     build_approx,
     build_between,
     build_conditional,
@@ -109,63 +109,63 @@ class TestChecksFailedErrorPerTypeDetail:
         assert self._line(r) == "  ✓ [0] Mode output [mode=1 → Active] — 3.29V == 3.3V ± 0.1V"
 
     def test_not_equal_failed(self):
-        from pytest_verify._descriptors import build_not_equal
+        from tests._builders import build_not_equal
 
         r = build_not_equal(5, 5, name="Code")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Code — expected ≠ 5, got 5"
 
     def test_less_equal_passed(self):
-        from pytest_verify._descriptors import build_less_equal
+        from tests._builders import build_less_equal
 
         r = build_less_equal(50, 50, name="Ripple", units="mV")
         r["passed"] = True
         assert self._line(r) == "  ✓ [0] Ripple — 50mV <= 50mV"
 
     def test_is_not_none_failed_shows_repr(self):
-        from pytest_verify._descriptors import build_is_not_none
+        from tests._builders import build_is_not_none
 
         r = build_is_not_none(None, name="Response")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Response — expected not None, got None"
 
     def test_matches_failed_shows_pattern_and_repr(self):
-        from pytest_verify._descriptors import build_matches
+        from tests._builders import build_matches
 
         r = build_matches("abc", r"\d+", name="Firmware")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Firmware — expected to match /\\d+/, got 'abc'"
 
     def test_all_satisfy_failed_counts_children(self):
-        from pytest_verify._descriptors import build_all_satisfy
+        from tests._builders import build_all_satisfy
 
         r = build_all_satisfy([1, -2, 3, -4], lambda x: build_greater(x, 0, name=f"i{x}"), name="Positives")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Positives — expected all 4 to pass, got 2 failed"
 
     def test_fail_renders_msg(self):
-        from pytest_verify._descriptors import build_fail
+        from tests._builders import build_fail
 
         r = build_fail("power rail down", name="Rail")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Rail — FAIL: power rail down"
 
     def test_is_false_failed(self):
-        from pytest_verify._descriptors import build_is_false
+        from tests._builders import build_is_false
 
         r = build_is_false(True, name="No error")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] No error — expected False, got True"
 
     def test_is_none_failed_shows_repr(self):
-        from pytest_verify._descriptors import build_is_none
+        from tests._builders import build_is_none
 
         r = build_is_none(5, name="Err")
         r["passed"] = False
         assert self._line(r) == "  ✗ [0] Err — expected None, got 5"
 
     def test_not_contains_failed(self):
-        from pytest_verify._descriptors import build_not_contains
+        from tests._builders import build_not_contains
 
         r = build_not_contains("CRITICAL log", "CRITICAL", name="Errors")
         r["passed"] = False
@@ -181,7 +181,7 @@ class TestChecksFailedErrorPerTypeDetail:
         assert self._line(r) == "  ✗ [0] Mode [mode=99 → no match]"
 
     def test_conditional_default_branch(self):
-        from pytest_verify._descriptors import build_fail
+        from tests._builders import build_fail
 
         child = build_approx(3.29, 3.3, abs_tol=0.1, name="Active", units="V")
         r = _evaluated(
@@ -195,7 +195,7 @@ class TestChecksFailedErrorPerTypeDetail:
         assert self._line(r) == "  ✗ [0] Mode [mode=99 → Fallback] — FAIL: unknown mode"
 
     def test_guard_matched_branch(self):
-        from pytest_verify._descriptors import build_guard
+        from tests._builders import build_guard
 
         r = build_guard(
             [(False, "below floor", build_equal(1, 2, name="lo")),
@@ -206,7 +206,7 @@ class TestChecksFailedErrorPerTypeDetail:
         assert self._line(r) == "  ✓ [0] Sensor output [→ in range] — 5 == 5"
 
     def test_guard_default_branch(self):
-        from pytest_verify._descriptors import build_guard
+        from tests._builders import build_guard
 
         r = build_guard(
             [(False, "below floor", build_equal(1, 2, name="lo"))],
@@ -217,7 +217,7 @@ class TestChecksFailedErrorPerTypeDetail:
         assert self._line(r) == "  ✓ [0] Sensor output [→ default] — 10.2ns == 10.0ns ± 0.5ns"
 
     def test_guard_no_match_no_default(self):
-        from pytest_verify._descriptors import build_guard
+        from tests._builders import build_guard
 
         r = build_guard([(False, "below floor", build_equal(1, 2, name="lo"))], name="Sensor output")
         r["passed"] = False
@@ -225,7 +225,7 @@ class TestChecksFailedErrorPerTypeDetail:
 
     def test_guard_matched_index_zero(self):
         # Index 0 must render (regression guard against `if matched` vs `is not None`).
-        from pytest_verify._descriptors import build_guard
+        from tests._builders import build_guard
 
         r = build_guard([(True, "only", build_equal(1, 2, name="x"))], name="Sensor")
         r["passed"] = False

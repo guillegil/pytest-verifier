@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pytest_verify._descriptors import (
+from tests._builders import (
     build_all_satisfy,
     build_approx,
     build_between,

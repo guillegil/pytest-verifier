@@ -146,10 +146,10 @@ class TestFixtureTeardown:
     def test_composite_records_only_parent_not_children(self):
         """A composite consumes its child descriptors; the children must not
         remain as independent recorded results."""
-        from pytest_verify._fixture import _FixtureVerify, _Run
+        from pytest_verify._run import Run, recording_verify
 
-        run = _Run()
-        fv = _FixtureVerify(run)
+        run = Run()
+        fv = recording_verify(run)
         fv.guard(
             branches=[
                 (False, "bad", fv.equal(1, 2, name="bad")),
@@ -226,12 +226,12 @@ class TestFixtureAllCheckMethods:
         assert verify.length([1, 2, 3], 3, name="X")["passed"] is True
 
     def test_all_satisfy(self, verify):
-        from pytest_verify._descriptors import build_greater
+        from tests._builders import build_greater
         factory = lambda x: build_greater(x, 0, name=f"item_{x}")
         assert verify.all_satisfy([1, 2, 3], factory, name="Pos")["passed"] is True
 
     def test_conditional(self, verify):
-        from pytest_verify._descriptors import build_equal
+        from tests._builders import build_equal
         cases = {"1": build_equal(10, 10, name="case1")}
         assert verify.conditional(1, cases=cases, name="M")["passed"] is True
 

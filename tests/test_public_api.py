@@ -215,12 +215,12 @@ class TestCompositeSchemaThroughReader:
     def test_all_satisfy_parent_only_with_nested_children(self, pytester):
         pytester.makepyfile("""
             from pytest_verify import get_check_results
-            from pytest_verify._descriptors import build_greater
+            from pytest_verify import verify as checks
 
             def test_a(request, verify):
                 verify.all_satisfy(
                     [1, 2, 3],
-                    lambda x: build_greater(x, 0, name=f"item_{x}"),
+                    lambda x: checks.greater(x, 0, name=f"item_{x}"),
                     name="Positives",
                 )
                 results = get_check_results(request.node)

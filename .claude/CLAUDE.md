@@ -26,7 +26,9 @@ pytest-verify (this plugin)          pytest-reporter (separate plugin)
          │                                        │
          │  pytest-verify never imports reporter. │
          │  Reporter reads results through        │
-         │  pytest_verify.get_check_results(item).│
+         │  pytest_verify.get_check_results(item),│
+         │  the pytest_verify_results hook, or    │
+         │  report.verify_checks.                 │
          └────────────────────────────────────────┘
 ```
 
@@ -36,7 +38,8 @@ pytest-verify (this plugin)          pytest-reporter (separate plugin)
 - **verify module is the secondary API.** `from pytest_verify import verify` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `verify.evaluate()`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
-- **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verify.get_check_results(item)`; there is no reporter detection.
+- **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verify.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
+- **One class per check type.** Everything specific to a `check_type` (build, compare, detail, children) lives in its class in `_checks/`. No other module branches on `check_type`; they dispatch through `REGISTRY`.
 
 ## Package Structure
 
@@ -45,18 +48,32 @@ pytest_verify/
 ├── __init__.py              # Exports: verify, Verify, CheckDescriptor, GuardBranch,
 │                            #   ChecksFailedError, get_check_results
 ├── py.typed                 # PEP 561 marker — REQUIRED
-├── _verify.py               # Verify class: typed public signatures and docstrings
-├── _descriptors.py          # CheckDescriptor TypedDict, builders, argument validation,
-│                            #   conditional case matching
-├── _evaluator.py            # judge() (never raises), evaluate(), evaluate_detailed()
+├── _verify.py               # Verify class: typed public signatures and docstrings; each
+│                            #   method builds a descriptor and hands it to a Sink
+├── _checks/                 # One CheckType class per check_type, registered in REGISTRY
+│   ├── _base.py             #   CheckType, CompositeType, REGISTRY, judge() (never raises),
+│   │                        #   render_detail()
+│   ├── _values.py           #   The 18 leaf check types (build, compare, detail)
+│   └── _composites.py       #   all_satisfy, conditional, guard (children, lazy children)
+├── _descriptors.py          # CheckDescriptor/GuardBranch TypedDicts, argument validation,
+│                            #   conditional case matching, shared formatting
+├── _evaluator.py            # evaluate(), evaluate_detailed()
 ├── _render.py               # Exception-safe str/repr/format, JSON-safe snapshots
 ├── _settle.py               # Turns a descriptor into a recorded result (verdict, detail,
 │                            #   snapshots, child verdicts)
-├── _fixture.py              # Plugin entry point: verify fixture, per-attempt run state,
-│                            #   runtest hook wrappers that raise ChecksFailedError
+├── _run.py                  # Run (per-attempt, thread-safe state) and Recorder (the
+│                            #   fixture's Sink: judges, records, absorbs children)
+├── _fixture.py              # Plugin entry point: verify fixture, runtest hook wrappers that
+│                            #   raise ChecksFailedError, report.verify_checks
+├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
 └── _exceptions.py           # ChecksFailedError, failure summary rendering
 ```
+
+Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
+`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`),
+registered with `register()`; a `Verify` method that passes its descriptor to the sink; and
+examples in `tests/test_contracts.py`, which fails until every registered type has them.
 
 ## Key Types
 
@@ -68,6 +85,7 @@ class CheckDescriptor(TypedDict, total=False):
     description: str         # Required: pre-formatted verification statement
     passed: bool             # Present only when returned from fixture (evaluated)
     detail: str              # Fixture only: rendered "expected … got …" clause
+    phase: str               # Fixture only: "setup", "call" or "teardown"
     error: str               # Why the check could not be evaluated (it then fails)
     actual: Any              # Check-type-specific
     expected: Any            # Check-type-specific
@@ -88,10 +106,14 @@ class CheckDescriptor(TypedDict, total=False):
 1. **On each `verify.*()` call:**
    - Build the descriptor dict from the arguments (usage errors raise here)
    - Judge it once; a raising comparison is a failed check with an `error` note
-   - Record a copy with `passed`, `detail` and JSON-safe snapshots of the values
+   - Record a copy with `passed`, `detail`, `phase` and JSON-safe snapshots of the values
    - A composite absorbs every recorded check passed to it as a child, by identity, whenever
      it was built (`dict(check)` keeps a copy standalone); each evaluated child carries its
      own `passed`, unselected children carry none
+   - A lazy child (a callable) is just called: the checks it records go to the top level, and
+     the composite then absorbs the one it returned like an eager child. If building the
+     composite raises (a usage error, or `pytest.skip` in a lazy child), the checks passed
+     to the call are absorbed; the ones a factory or lazy child made so far stay standalone
    - Return the recorded dict
 
 2. **At the end of each phase (runtest hook wrappers):**
@@ -103,6 +125,8 @@ class CheckDescriptor(TypedDict, total=False):
      instead of raising them, so the call phase reads that list too
    - `ChecksFailedError` message format: failed checks first, then passed, with `[seq]` indices
      (their index among all the test's records, so teardown checks continue the numbering)
+   - The judged checks go to the `pytest_verify_results` hook and to that phase's report as
+     `report.verify_checks`
 
 3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 
@@ -110,6 +134,8 @@ class CheckDescriptor(TypedDict, total=False):
 
 Other plugins call `pytest_verify.get_check_results(item)`. A `StashKey` works by identity, so a
 key created by another plugin can never see these results; the key in `_stash.py` is private.
+Plugins that must not import pytest-verify implement `pytest_verify_results(item, when, checks,
+passed)` with `optionalhook=True`, or read `report.verify_checks` (JSON-safe, survives xdist).
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
 
@@ -124,7 +150,7 @@ Implementation requirements:
 - Docstrings on all public methods
 - Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (21 functions)
+## Function Catalog (21 check functions, plus `record`)
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -163,9 +189,12 @@ Implementation requirements:
 | `verify.is_instance(actual, expected_type, *, name)` | `"is_instance"` | Store type as string in descriptor |
 | `verify.length(actual, expected, *, name)` | `"length"` | Stores `actual_length` in descriptor |
 | `verify.all_satisfy(items, descriptor_factory, *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored |
-| `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated |
-| `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated |
+| `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated; a case/default may be a callable, called only if selected |
+| `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated; checks, default and conditions may be callables |
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
+
+`verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
+the module-level `verify`; on the module-level instance it raises `RuntimeError`.
 
 ## Evaluation Logic
 
@@ -243,6 +272,8 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 - Test `conditional`: case matching, default fallback, no-match-no-default
 - Test `all_satisfy`: all pass, some fail, empty list
 - Test `fail()`: always fails, name defaults to msg
+- `tests/test_contracts.py` runs every registered check type through the shared contracts (JSON
+  safety, fixture/`evaluate()` parity, rendering, snapshots); a new type needs examples there
 
 ## Common Pitfalls
 
@@ -250,6 +281,7 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 - **`name` is required on all checks** (except `fail` where it defaults to `msg`). Raise `TypeError` if missing.
 - **`approx` needs at least one tolerance.** Raise `ValueError` if neither `abs_tol` nor `rel_tol` provided.
 - **`all_satisfy` callable is invoked at call time.** The resulting `child_checks` list is stored, not the callable.
+- **Lazy children are stored as built.** A `conditional`/`guard` callable that was selected is replaced by the check it returned; one that was not is stored as `None`, and so is a guard condition that was not called.
 - **`conditional` keys match by equality.** Enum members compare by value, and an `int` matches its decimal string. Keys are stored as strings; keys that would collide raise `ValueError`.
 - **`is_instance` stores type as string.** The descriptor contains `"expected_type": "dict"`, not the actual type object.
 - **Fixture vs module:** The fixture evaluates and stores. The module just builds descriptors. Don't mix up which does what.

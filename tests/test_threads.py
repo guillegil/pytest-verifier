@@ -11,7 +11,8 @@ from typing import Any, Iterator
 
 import pytest
 
-from pytest_verify._fixture import _FixtureVerify, _Run
+from pytest_verify import Verify
+from pytest_verify._run import Run, recording_verify
 
 THREADS = 8
 PER_THREAD = 40
@@ -47,7 +48,7 @@ def _run_threads(target: Any, *args: Any) -> None:
     assert errors == []
 
 
-def _record_mixed(tid: int, fv: _FixtureVerify) -> None:
+def _record_mixed(tid: int, fv: Verify) -> None:
     for i in range(PER_THREAD):
         fv.equal(i, i, name=f"plain-{tid}-{i}")
         fv.guard(
@@ -62,8 +63,8 @@ def _record_mixed(tid: int, fv: _FixtureVerify) -> None:
 
 def test_m15_every_check_from_every_thread_is_recorded_once() -> None:
     for _ in range(ROUNDS):
-        run = _Run()
-        _run_threads(_record_mixed, _FixtureVerify(run))
+        run = Run()
+        _run_threads(_record_mixed, recording_verify(run))
 
         names = sorted(record["name"] for record in run.records)
         expected = sorted(

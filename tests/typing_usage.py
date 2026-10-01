@@ -77,13 +77,36 @@ def module_api() -> None:
     branches: List[GuardBranch] = guarded.get("branches", [])
     assert branches[0]["label"] == "only"
 
+    # Children (and guard conditions) can be callables, so only the selected one is built.
+    lazy = verify.conditional(
+        "fast",
+        cases={"fast": lambda: verify.less(12, 20, name="Latency", units="ms")},
+        default=lambda: verify.fail("unknown speed"),
+        name="Speed",
+    )
+    verify.guard(
+        branches=[(lambda: True, "powered", lambda: verify.is_true(True, name="Power"))],
+        default=verify.fail("no power"),
+        name="LazyGuard",
+    )
+
+    # check_type, name and description are always present.
+    check_type: str = lazy["check_type"]
+    description: str = lazy["description"]
+    assert check_type == "conditional" and description == "Verify 'Speed' [mode=fast]"
+
 
 def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     result = fixture.equal(200, 200, name="Status")
     passed: bool | None = result.get("passed")
     assert passed is True
+    # A check built by a helper with the module-level verify can be recorded too.
+    helper = fixture.record(verify.greater(5, 1, name="Helper"))
+    assert helper.get("passed") is True
     recorded: List[CheckDescriptor] = get_check_results(request.node)
-    assert recorded[-1]["name"] == "Status"
+    assert [r["name"] for r in recorded][-2:] == ["Status", "Helper"]
+    phase: str | None = recorded[-1].get("phase")
+    assert phase == "call"
 
 
 def error_api(error: ChecksFailedError) -> AssertionError:
@@ -98,3 +121,5 @@ def misuse() -> None:
     verify.approx(1.0, 1.0, abs_tol="0.1", name="Tol")  # type: ignore[arg-type]
     verify.greater(1, 0, "positional name")  # type: ignore[call-arg]
     verify.guard(branches=[(True, verify.is_true(True, name="T"))], name="G")  # type: ignore[list-item]
+    verify.conditional(1, cases={1: 5}, name="C")  # type: ignore[dict-item]
+    verify.record("not a check")  # type: ignore[arg-type]
