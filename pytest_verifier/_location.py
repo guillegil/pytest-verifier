@@ -11,9 +11,9 @@ import functools
 import os
 import sys
 from types import CodeType, FrameType
-from typing import AbstractSet, Optional, Tuple
+from typing import AbstractSet, Mapping, Optional, Tuple
 
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
+_PACKAGE = __name__.partition(".")[0]
 
 #: How many frames past the caller to search for the test function.
 _SEARCH_DEPTH = 100
@@ -22,6 +22,17 @@ _SEARCH_DEPTH = 100
 Site = Tuple[Optional[str], Optional[str]]
 
 NOWHERE: Site = (None, None)
+
+
+def ours(frame: FrameType) -> bool:
+    """Whether *frame* runs code of this package.
+
+    By module, not file name: pytest rewrites this package, and its cached code keeps the path
+    it was compiled from, which differs from ``__file__`` once the venv is moved or reached
+    through a symlink.
+    """
+    name = frame.f_globals.get("__name__")
+    return isinstance(name, str) and (name == _PACKAGE or name.startswith(_PACKAGE + "."))
 
 
 @functools.lru_cache(maxsize=256)
@@ -41,24 +52,58 @@ def _where(frame: FrameType, rootdir: Optional[str]) -> str:
     return f"{display_path(frame.f_code.co_filename, rootdir)}:{frame.f_lineno}"
 
 
-def locate(rootdir: Optional[str], test_codes: AbstractSet[CodeType]) -> Site:
+class FunctionCode:
+    """The code of a test function: what :func:`locate` treats as the test itself.
+
+    Code objects match by identity (hashing one walks its bytecode and constants), and the
+    code objects are kept alive, so their ids are not reused while the run lasts. A function
+    also matches by file and name, for a test wrapped by a decorator that hides it (no
+    ``functools.wraps``).
+    """
+
+    __slots__ = ("codes", "ids", "names")
+
+    def __init__(
+        self,
+        codes: AbstractSet[CodeType] = frozenset(),
+        names: Optional[Mapping[str, AbstractSet[str]]] = None,
+    ) -> None:
+        self.codes = codes
+        self.ids = frozenset(id(code) for code in codes)
+        #: Function name -> the files it is defined in.
+        self.names: Mapping[str, AbstractSet[str]] = names or {}
+
+    def __bool__(self) -> bool:
+        return bool(self.ids or self.names)
+
+    def matches(self, code: CodeType) -> bool:
+        if id(code) in self.ids:
+            return True
+        files = self.names.get(code.co_name)
+        return files is not None and code.co_filename in files
+
+
+def locate(rootdir: Optional[str], test: FunctionCode) -> Site:
     """The site of the check being recorded now. Never raises."""
     try:
         frame: Optional[FrameType] = sys._getframe(1)
-        while frame is not None and frame.f_code.co_filename.startswith(_PACKAGE_DIR):
+        while frame is not None and ours(frame):
             frame = frame.f_back
         if frame is None:
             return NOWHERE
         location = _where(frame, rootdir)
-        if not test_codes or frame.f_code in test_codes:
+        if not test or test.matches(frame.f_code):
             return location, None
         outer = frame.f_back
         for _ in range(_SEARCH_DEPTH):
             if outer is None:
                 break
-            if outer.f_code in test_codes:
+            if test.matches(outer.f_code):
                 called_from = _where(outer, rootdir)
-                return location, None if called_from == location else called_from
+                if called_from == location or (rootdir and os.path.isabs(called_from)):
+                    # The same line (a lambda), or library code outside the project.
+                    return location, None
+                return location, called_from
             outer = outer.f_back
         return location, None
     except Exception:  # pragma: no cover - a location must never break a check

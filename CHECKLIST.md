@@ -4,7 +4,7 @@ Every item from [`bugs-0.3.1.md`](bugs-0.3.1.md) and [`improvements-and-ideas.md
 
 Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0). Improvements are taken only when they are small and touch the same code as a fix. Ideas and items marked *discuss* wait for a conversation.
 
-Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 as proposed in `next-steps.md`.
+Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 (agreed with the user after 0.7.0).
 
 ## Release tasks
 
@@ -52,17 +52,17 @@ Every release follows the same steps, written down before any code changes:
 
 ### 0.8.0 Locations, strictness and PyPI
 
-- [ ] Record where each check was made (`location`, and `called_from` when a helper made it) and show it on failed summary lines (FEAT-1)
-- [ ] Point the one-line crash entry (`--tb=line`, `-r`) at the test line of the first failed check (FEAT-1)
-- [ ] A self-contained first line: `N of M checks failed: <first failure> (+k more)` (FEAT-3)
-- [ ] `verify.require`: a check that stops the test when it fails, as `verify.require(check)` or `verify.require.<check>(...)` (FEAT-3)
-- [ ] Fail-fast option: `--verify-fail-fast` and the `verify_fail_fast` ini setting (FEAT-3)
-- [ ] `pytest_verifier.__version__` (DX-2)
-- [ ] Release workflow: build once, `twine check`, test the wheel with the oldest and newest pytest, publish to PyPI or TestPyPI with Trusted Publishing, then the GitHub release; re-runnable after a partial failure (DX-2)
-- [ ] PyPI metadata and a README that renders there (absolute links, `pip install pytest-verifier`)
-- [ ] README, CHANGELOG, CLAUDE.md
+- [x] ~~Record where each check was made (`location`, and `called_from` when a helper made it) and show it on failed summary lines~~ (FEAT-1)
+- [x] ~~Point the one-line crash entry (`--tb=line`, `-r`) at the test line of the first failed check~~ (FEAT-1)
+- [x] ~~A self-contained first line: `N of M checks failed: <first failure> (+k more)`~~ (FEAT-3)
+- [x] ~~`verify.require`: a check that stops the test when it fails, as `verify.require(check)` or `verify.require.<check>(...)`~~ (FEAT-3)
+- [x] ~~Fail-fast option: `--verify-fail-fast` and the `verify_fail_fast` ini setting~~ (FEAT-3)
+- [x] ~~`pytest_verifier.__version__`~~ (DX-2)
+- [x] ~~Release workflow: build once, `twine check`, test the wheel with the oldest and newest pytest, publish to PyPI or TestPyPI with Trusted Publishing, then the GitHub release; re-runnable after a partial failure~~ (DX-2)
+- [x] ~~PyPI metadata and a README that renders there (absolute links, `pip install pytest-verifier`)~~
+- [x] ~~README, CHANGELOG, CLAUDE.md~~
 - [ ] Full test matrix, mypy, build, fuzz and performance scripts
-- [ ] Independent review and fixes
+- [x] ~~Independent review and fixes~~ (40 confirmed findings, each fixed with a test)
 - [ ] Trial upload to TestPyPI (needs the pending publisher on test.pypi.org)
 - [ ] PR, CI green, merge, release v0.8.0 to PyPI and GitHub
 
@@ -180,9 +180,9 @@ Every release follows the same steps, written down before any code changes:
 
 Not implemented until we discuss them.
 
-- [ ] **FEAT-1** Record where each check was called · 0.8.0
+- [x] ~~**FEAT-1** Record where each check was called~~ · done in 0.8.0
 - [ ] **FEAT-2** `verify.raises` and error-tolerant checks · idea, discuss
-- [ ] **FEAT-3** Strictness controls · 0.8.0 (fail-fast, `require`, first line; the warning level waits)
+- [ ] **FEAT-3** Strictness controls · partly done in 0.8.0 (fail-fast, `require`, first line); the warning level waits
 - [ ] **FEAT-4** Export results · idea, discuss
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
 - [ ] **FEAT-6** `pytest.approx` interop · idea, discuss
@@ -198,7 +198,7 @@ Not implemented until we discuss them.
 Not implemented until we discuss them.
 
 - [x] ~~**DX-1** Rename before publishing to PyPI~~ · done in 0.6.0 (`pytest-verifier`, chosen by the user)
-- [ ] **DX-2** Tag-driven release workflow with Trusted Publishing · 0.8.0
+- [x] ~~**DX-2** Tag-driven release workflow with Trusted Publishing~~ · done in 0.8.0
 - [ ] **DX-3** Turn CI into a quality-gate matrix · idea, discuss
 - [ ] **DX-4** Typing contract tests · idea, discuss
 - [ ] **DX-5** Property-based tests against an independent oracle · idea, discuss

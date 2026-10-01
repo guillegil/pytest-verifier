@@ -11,17 +11,21 @@ recorded, it absorbs its children: they are taken out of the top level, by ident
 a callable made but did not return stays on its own, and if building the composite is
 interrupted (``pytest.skip`` in an ``all_satisfy`` factory), the checks made so far still count.
 
-A check made through ``verify.require``, or any check when fail-fast is on, stops the test when
-it fails: :meth:`Run.stop` raises ``ChecksFailedError`` for the checks made so far. It does not
-judge them, so the end of the phase still does: a test that catches the error still fails.
+A check made through ``verify.require``, or any check when fail-fast is on (except in
+teardown), stops the test when it fails: :meth:`Run.stop` raises ``ChecksFailedError`` for the
+checks made so far. It does not judge them, so the end of the phase still does: a test that
+catches the error still fails. The error is marked ``stops_test``, so that a composite building
+a lazy child lets it through instead of taking it for an error of that child.
+
+This module's frames hide themselves from tracebacks of such errors (``__tracebackhide__``), so
+``--pdb`` opens in the test.
 """
 from __future__ import annotations
 
 import os
+import sys
 import threading
-from types import CodeType
 from typing import (
-    AbstractSet,
     Any,
     Callable,
     Dict,
@@ -36,8 +40,8 @@ from typing import (
 from . import _unused
 from ._checks import child_checks
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
-from ._exceptions import ChecksFailedError
-from ._location import NOWHERE, Site, locate
+from ._exceptions import ChecksFailedError, hide_stop_frames
+from ._location import NOWHERE, FunctionCode, Site, locate
 from ._settle import settle
 from ._verify import Sink, Verify
 
@@ -51,6 +55,9 @@ _FORKED = (
     "worker), so it could never reach the test's results. Make the check in the test's own "
     "process, for example on a value the worker returns."
 )
+
+
+_NO_TEST = FunctionCode()
 
 
 class _Entry:
@@ -72,7 +79,7 @@ class Run:
     def __init__(
         self,
         rootdir: Optional[str] = None,
-        test_codes: AbstractSet[CodeType] = frozenset(),
+        test: Optional[FunctionCode] = None,
         *,
         fail_fast: bool = False,
         max_passed: Optional[int] = None,
@@ -90,13 +97,13 @@ class Run:
         self.judged: Dict[str, List[CheckDescriptor]] = {}
         #: Where locations are relative to, and the code of the test function.
         self.rootdir = rootdir
-        self.test_codes = test_codes
+        self.test = test if test is not None else FunctionCode()
         #: Whether every failed check stops the test, as ``verify.require`` does.
         self.fail_fast = fail_fast
         #: How many passed checks a summary lists.
         self.max_passed = max_passed
-        #: The errors :meth:`stop` raised.
-        self.stops: List[ChecksFailedError] = []
+        #: The errors :meth:`stop` raised, each with the check that made it stop.
+        self._stops: List[Tuple[ChecksFailedError, CheckDescriptor]] = []
         self._entries: Dict[int, _Entry] = {}
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
@@ -113,7 +120,9 @@ class Run:
 
     def locate(self) -> Site:
         """Where the check being recorded now was made."""
-        return locate(self.rootdir, self.test_codes)
+        # The test function runs only in the call phase: in setup and teardown, searching the
+        # stack for it would walk every frame for nothing.
+        return locate(self.rootdir, self.test if self.phase == "call" else _NO_TEST)
 
     def add(
         self,
@@ -129,7 +138,8 @@ class Run:
             self.ensure_open()
             self.absorb(absorb)
             record["phase"] = self.phase
-            record.pop("location", None)  # a copy of another record brings its own
+            # A copy of another record brings that record's site; this one may have none.
+            record.pop("location", None)
             record.pop("called_from", None)
             if location is not None:
                 record["location"] = location
@@ -184,28 +194,79 @@ class Run:
                     pending.append(dict(record, passed=entry.passed))
             return len(self.records) - len(pending), pending  # type: ignore[return-value]
 
-    def stop(self) -> NoReturn:
-        """Stop the test: raise ``ChecksFailedError`` for the checks not judged yet.
+    def pending(self, record: CheckDescriptor) -> bool:
+        """Whether *record* is a top-level check that the end of this phase will judge."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            return (
+                entry is not None
+                and entry.record is record
+                and entry.top_level
+                and not entry.judged
+            )
+
+    def stop(self, trigger: CheckDescriptor) -> NoReturn:
+        """Stop the test at the failed check *trigger*: raise ``ChecksFailedError`` for the
+        checks not judged yet.
 
         They stay unjudged, so the end of the phase judges them as usual (see
         :meth:`raised`).
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         with self.lock:
             start, pending = self._unjudged(take=False)
-            error = ChecksFailedError(pending, start=start, max_passed=self.max_passed)
-            self.stops.append(error)
+            error = ChecksFailedError(
+                pending,
+                start=start,
+                max_passed=self.max_passed,
+                stopped_at=self._index(trigger),
+            )
+            error.stops_test = True
+            handled = sys.exc_info()[1]
+            if self.raised(handled):
+                # Raised while an earlier stop unwinds (a check in ``finally``): this error
+                # lists its checks too, so chain to what it was chained to instead of
+                # repeating its summary.
+                error.__cause__ = cause_of(handled)  # type: ignore[arg-type]
+                error.__suppress_context__ = True
+            self._stops.append((error, trigger))
         raise error
 
     def raised(self, exc: Optional[BaseException]) -> bool:
         """Whether *exc* is an error :meth:`stop` raised."""
-        return exc is not None and any(exc is error for error in self.stops)
+        return exc is not None and any(exc is error for error, _ in self._stops)
+
+    def stopped_at(self, exc: BaseException) -> Optional[int]:
+        """The index now of the check that made :meth:`stop` raise *exc*, if it is still at
+        the top level (a composite made later can absorb it, and the checks after it move)."""
+        with self.lock:
+            for error, trigger in self._stops:
+                if error is exc:
+                    return self._index(trigger)
+            return None
+
+    def _index(self, record: CheckDescriptor) -> Optional[int]:
+        """The index of *record* in :attr:`records`; it is usually one of the last."""
+        records = self.records
+        for index in range(len(records) - 1, -1, -1):
+            if records[index] is record:
+                return index
+        return None
+
+
+def cause_of(exc: BaseException) -> Optional[BaseException]:
+    """What *exc* is chained to, so that an error raised in its place keeps that chain."""
+    if exc.__cause__ is not None or exc.__suppress_context__:
+        return exc.__cause__
+    return exc.__context__
 
 
 class Recorder(Sink):
     """The fixture's sink: judges, snapshots and records every check in a :class:`Run`.
 
     A *hard* recorder (``verify.require``) stops the test when a check fails; with fail-fast
-    on, every recorder does.
+    on, every recorder does, except in teardown: the test is over by then, and stopping would
+    only cut a fixture's cleanup short.
     """
 
     def __init__(self, run: Run, hard: bool = False) -> None:
@@ -215,21 +276,27 @@ class Recorder(Sink):
     def hard(self) -> Sink:
         return self if self._hard else Recorder(self._run, hard=True)
 
-    def _enforce(self, passed: bool) -> None:
-        if not passed and (self._hard or self._run.fail_fast):
-            self._run.stop()
+    def _enforce(self, record: CheckDescriptor, passed: bool) -> None:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        if passed:
+            return
+        run = self._run
+        if self._hard or (run.fail_fast and run.phase != "teardown"):
+            run.stop(record)
 
     def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
         run.ensure_open()
         record, passed = settle(descriptor, run.known)
         run.add(record, passed, site=run.locate())
-        self._enforce(passed)
+        self._enforce(record, passed)
         return record
 
     def composite(
         self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
     ) -> CheckDescriptor:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
         run.ensure_open()
         try:
@@ -245,10 +312,11 @@ class Recorder(Sink):
         _unused.used(*child_checks(descriptor))
         record, passed = settle(descriptor, run.known)
         run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
-        self._enforce(passed)
+        self._enforce(record, passed)
         return record
 
     def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         require_descriptor(descriptor, "record() argument")
         run = self._run
         run.ensure_open()
@@ -256,12 +324,17 @@ class Recorder(Sink):
         if hit is not None:
             passed, record = hit
             if self._hard and not passed:  # fail-fast already stopped when it was recorded
-                run.stop()
+                if not run.pending(record):
+                    # A composite absorbed it, or an earlier phase judged it: record a copy,
+                    # so that the error names it and this phase fails too.
+                    record = dict(record)  # type: ignore[assignment]
+                    run.add(record, False, site=run.locate())
+                run.stop(record)
             return record
         _unused.used(descriptor)
         record, passed = settle(descriptor, run.known)
         run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
-        self._enforce(passed)
+        self._enforce(record, passed)
         return record
 
 

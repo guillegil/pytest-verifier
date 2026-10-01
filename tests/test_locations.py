@@ -7,9 +7,10 @@ from typing import Any, Dict, List
 
 import pytest
 
+import pytest_verifier
 from pytest_verifier import checks
 from pytest_verifier._exceptions import format_summary
-from pytest_verifier._location import display_path, split
+from pytest_verifier._location import FunctionCode, display_path, locate, split
 from pytest_verifier._run import Run, recording_verify
 
 
@@ -165,6 +166,117 @@ class TestRecordedLocation:
         assert first["location"] == "test_record.py:5"
         assert copy["location"] == "test_record.py:7"
 
+    def test_a_copy_recorded_in_the_test_body_drops_the_helpers_caller(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        pytester.makepyfile(
+            test_copy="""
+            def helper(verify):
+                return verify.equal(1, 2, name="h")
+
+            def test_copy(verify):
+                original = helper(verify)
+                verify.record(dict(original))
+            """
+        )
+        original, copy = _records(pytester)["test_copy"]
+        assert original["location"] == "test_copy.py:2"
+        assert original["called_from"] == "test_copy.py:5"
+        assert copy["location"] == "test_copy.py:6"
+        assert "called_from" not in copy
+
+    def test_a_decorator_that_hides_the_test(self, pytester: pytest.Pytester) -> None:
+        # No functools.wraps: pytest sees the signature, but not the function behind it.
+        pytester.makepyfile(
+            test_hidden="""
+            import inspect
+
+            def logged(fn):
+                def wrapper(*args, **kwargs):
+                    return fn(*args, **kwargs)
+                wrapper.__signature__ = inspect.signature(fn)
+                return wrapper
+
+            def helper(verify):
+                verify.is_true(0, name="h")
+
+            @logged
+            def test_hidden(verify):
+                verify.is_true(0, name="body")
+                helper(verify)
+            """
+        )
+        body, helper = _records(pytester)["test_hidden"]
+        assert body["location"] == "test_hidden.py:14"
+        assert "called_from" not in body
+        assert helper["location"] == "test_hidden.py:10"
+        assert helper["called_from"] == "test_hidden.py:15"
+
+    def test_comprehensions_in_the_test_body(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            test_comp="""
+            def test_comp(verify):
+                values = [
+                    verify.equal(x, 1, name=f"v{x}")
+                    for x in [1, 2]
+                ]
+                found = {
+                    x: verify.equal(x, 3, name="d") for x in [3]
+                }
+                total = sum(
+                    1 for x in [4]
+                    if verify.equal(x, 4, name="g")["passed"]
+                )
+            """
+        )
+        records = _records(pytester)["test_comp"]
+        assert [(r["name"], r["location"]) for r in records] == [
+            ("v1", "test_comp.py:3"),
+            ("v2", "test_comp.py:3"),
+            ("d", "test_comp.py:7"),
+            ("g", "test_comp.py:11"),
+        ]
+        assert not any("called_from" in record for record in records)
+
+    def test_test_code_matches_by_identity(self) -> None:
+        # Two copies of the same function have equal code objects: only the test's own counts.
+        source = "def test_x(helper):\n    return helper()\n"
+        first: Dict[str, Any] = {}
+        second: Dict[str, Any] = {}
+        exec(compile(source, "/a/test_x.py", "exec"), first)
+        exec(compile(source, "/b/test_x.py", "exec"), second)
+        code = first["test_x"].__code__
+        assert code == second["test_x"].__code__
+        location, called_from = second["test_x"](lambda: locate(None, FunctionCode({code})))
+        assert location is not None and called_from is None
+        assert first["test_x"](lambda: locate(None, FunctionCode({code})))[1] == "/a/test_x.py:2"
+
+    def test_this_package_is_recognized_by_module_name(self) -> None:
+        source = "def fake():\n    return locate(None, FunctionCode())\n"
+        # A plugin frame whose file name is not where the package is now (a moved venv).
+        moved: Dict[str, Any] = {"__name__": "pytest_verifier._fake"}
+        moved.update(locate=locate, FunctionCode=FunctionCode)
+        exec(compile(source, "/elsewhere/pytest_verifier/_fake.py", "exec"), moved)
+        path, _ = split(moved["fake"]()[0]) or ("", 0)
+        assert os.path.samefile(path, __file__)
+        # A user's module is the caller, whatever its file name.
+        inside = os.path.join(os.path.dirname(pytest_verifier.__file__), "_user.py")
+        user: Dict[str, Any] = {"__name__": "user_helpers"}
+        user.update(locate=locate, FunctionCode=FunctionCode)
+        exec(compile(source, inside, "exec"), user)
+        assert user["fake"]()[0] == f"{inside}:2"
+
+    def test_a_caller_outside_the_rootdir_is_left_out(self) -> None:
+        # Library code that runs the test (a wrapper without functools.wraps) is no caller to
+        # show.
+        library: Dict[str, Any] = {}
+        exec(compile("def wrapper(fn):\n    return fn()\n", "/outside/lib.py", "exec"), library)
+        test = FunctionCode({library["wrapper"].__code__})
+        root = os.path.dirname(os.path.abspath(__file__))
+        location, called_from = library["wrapper"](lambda: locate(root, test))
+        assert (location or "").startswith("test_locations.py:") and called_from is None
+        assert library["wrapper"](lambda: locate(None, test))[1] == "/outside/lib.py:2"
+
     def test_built_checks_and_evaluate_have_no_location(self) -> None:
         built = checks.equal(1, 2, name="x")
         assert "location" not in built
@@ -238,6 +350,25 @@ class TestSummaryShowsLocations:
         [line] = [text for text in format_summary([odd]).splitlines() if "[0]" in text]
         assert "a\\nb.py:1" in line and len(line) < 300
 
+    @pytest.mark.parametrize("length", [1, 500])
+    def test_an_odd_caller_is_escaped_and_bounded(self, length: int) -> None:
+        forged = "x\n  ✗ [9] forged:" + "9" * length
+        odd = self._failed(location="lib/a.py:1", called_from=forged)
+        lines = format_summary([odd]).splitlines()
+        [line] = [text for text in lines if "[0]" in text]
+        assert len(lines) == 3 and not any("[9]" in text for text in lines if text != line)
+        assert len(line) < 300
+        if length == 1:
+            assert "called from x\\n  ✗ [9] forged:9)" in line
+
+    def test_a_long_location_keeps_the_file_and_line(self) -> None:
+        deep = "/" + "d/" * 150 + "rails.py:8"
+        record = self._failed(location=deep, called_from="/" + "e/" * 150 + "test_psu.py:3")
+        [line] = [text for text in format_summary([record]).splitlines() if "[0]" in text]
+        assert "d/d/rails.py:8, called from ..." in line
+        assert line.endswith("e/e/test_psu.py:3) — expected 2, got 1")
+        assert len(line) < 500
+
 
 class TestCrashLine:
     def test_tb_line_and_r_point_at_the_failed_check(self, pytester: pytest.Pytester) -> None:
@@ -264,6 +395,90 @@ class TestCrashLine:
                 "*test_crash.py:9: 1 of 2 checks failed: v — expected 1, got 2",
             ]
         )
+
+    def test_a_helper_in_the_test_file(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            test_same="""
+            def check(verify, v):
+                verify.equal(v, 1, name="v")
+
+            def test_helper(verify):
+                check(verify, 1)
+                check(verify, 2)
+            """
+        )
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            ["*test_same.py:6: 1 of 2 checks failed: v — expected 1, got 2"]
+        )
+
+    def test_the_line_of_the_check_the_message_names(self, pytester: pytest.Pytester) -> None:
+        # The first failure comes from a fixture: the def line, not the line of a later one.
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture
+            def psu(verify):
+                verify.equal(5.0, 3.3, name="PSU setpoint")
+            """
+        )
+        pytester.makepyfile(
+            test_mix="""
+            def test_mix(psu, verify):
+                verify.equal(1, 1, name="ok")
+                verify.equal(1, 2, name="later")
+            """
+        )
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line")
+        result.stdout.fnmatch_lines(["*test_mix.py:1: 2 of 3 checks failed: PSU setpoint *"])
+
+    def test_the_check_that_stopped_the_test(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            test_stop="""
+            def test_stop(verify):
+                verify.equal(1, 2, name="soft")
+                verify.require.equal(1, 2, name="hard")
+            """
+        )
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line")
+        result.stdout.fnmatch_lines(
+            ["*test_stop.py:3: 2 of 2 checks failed, stopped at ?1?: hard *"]
+        )
+
+    def test_an_inherited_test(self, pytester: pytest.Pytester) -> None:
+        # The test function lives in another file than the item: lines are paired with it.
+        pytester.makepyfile(
+            base_suite="""
+            class BaseRailTests:
+                def measure(self, verify):
+                    pass
+
+                def test_rail(self, verify):
+                    verify.is_true(True, name="powered")
+                    self.measure(verify)
+            """,
+            test_board="""
+            from base_suite import BaseRailTests
+            #
+            #
+            #
+            #
+            #
+            #
+            #
+            #
+            #
+            class TestBoard(BaseRailTests):
+                def measure(self, verify):
+                    verify.between(3.6, 3.2, 3.4, name="3V3", units="V")
+            """,
+        )
+        pytester.syspathinsert()
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line", "test_board.py")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*base_suite.py:7: 1 of 2 checks failed: 3V3 *"])
 
     def test_a_fixture_check_keeps_the_def_line(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(

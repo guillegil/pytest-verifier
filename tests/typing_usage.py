@@ -18,6 +18,7 @@ from pytest_verifier import (
     CheckDescriptor,
     ChecksFailedError,
     GuardBranch,
+    Require,
     Verify,
     checks,
     get_check_results,
@@ -116,8 +117,15 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     link: CheckDescriptor = fixture.require.is_not_none(object(), name="Link")
     built: CheckDescriptor = fixture.require(checks.equal(1, 1, name="Built"))
     assert link.get("passed") is True and built.get("passed") is True
+    assert _connect(fixture.require).get("passed") is True
     version: str = pytest_verifier.__version__
     assert version
+
+
+def _connect(require: Require) -> CheckDescriptor:
+    """A helper that receives ``verify.require``."""
+    require.is_true(True, name="Powered")
+    return require(checks.is_true(True, name="Link up"))
 
 
 def error_api(error: ChecksFailedError) -> AssertionError:

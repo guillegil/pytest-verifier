@@ -1,6 +1,7 @@
 """FEAT-3: required checks, fail-fast, and a first line that says what failed."""
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List
 
 import pytest
@@ -12,6 +13,15 @@ from pytest_verifier._run import Run, recording_verify
 
 def _run(pytester: pytest.Pytester, *args: str) -> pytest.RunResult:
     return pytester.runpytest("-p", "no:cacheprovider", *args)
+
+
+#: Lines that would show that a stop error was swallowed, repeated or never raised.
+_NEVER = ("*never reached*", "*Soft assertion failures*", "*raised ChecksFailedError*")
+
+
+def _never(result: pytest.RunResult) -> None:
+    for pattern in _NEVER:
+        result.stdout.no_fnmatch_line(pattern)
 
 
 class TestRequire:
@@ -28,14 +38,14 @@ class TestRequire:
         result.assert_outcomes(failed=1)
         result.stdout.fnmatch_lines(
             [
-                "2 of 2 checks failed: soft — expected 2, got 1 (+1 more)",
+                "2 of 2 checks failed, stopped at ?1?: link — expected not None, got None"
+                " (+1 more)",
                 "",
                 "  ✗ ?0? soft (*.py:2) — expected 2, got 1",
                 "  ✗ ?1? link (*.py:3) — expected not None, got None",
             ]
         )
-        result.stdout.no_fnmatch_line("*never reached*")
-        result.stdout.no_fnmatch_line("*Soft assertion failures*")
+        _never(result)
 
     def test_a_passed_required_check_goes_on(self) -> None:
         verify = recording_verify(Run())
@@ -52,32 +62,45 @@ class TestRequire:
             def test_built(verify):
                 with pytest.raises(ChecksFailedError) as caught:
                     verify.require(checks.equal(1, 2, name="built"))
+                    raise AssertionError("never reached")
                 assert [r["name"] for r in caught.value.results] == ["built"]
 
             def test_recorded(verify):
                 check = verify.equal(1, 2, name="recorded")
                 with pytest.raises(ChecksFailedError):
                     verify.require(check)
+                    raise AssertionError("never reached")
             """
         )
         # The checks stay recorded: catching the error does not make the tests pass.
-        result = _run(pytester)
+        result = _run(pytester, "-rf")
         result.assert_outcomes(failed=2)
-        result.stdout.fnmatch_lines(["*::test_built - 1 of 1 checks failed: built*"])
+        result.stdout.fnmatch_lines(
+            [
+                "FAILED *::test_built - 1 of 1 checks failed: built — expected 2, got 1",
+                "FAILED *::test_recorded - 1 of 1 checks failed: recorded — expected 2, got 1",
+            ]
+        )
+        _never(result)
 
     def test_a_test_that_catches_the_error_still_fails(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
+            from pytest_verifier import ChecksFailedError
+
             def test_swallowed(verify):
+                stopped = False
                 try:
                     verify.require.equal(1, 2, name="first")
-                except Exception:
-                    pass
+                except ChecksFailedError:
+                    stopped = True
+                assert stopped, "require did not stop"
                 verify.equal(3, 4, name="later")
             """
         )
         result = _run(pytester)
         result.assert_outcomes(failed=1)
+        # The test went on, so nothing stopped it in the end.
         result.stdout.fnmatch_lines(
             [
                 "2 of 2 checks failed: first — expected 2, got 1 (+1 more)",
@@ -86,6 +109,7 @@ class TestRequire:
                 "  ✗ ?1? later *",
             ]
         )
+        result.stdout.no_fnmatch_line("*require did not stop*")
 
     def test_checks_made_before_reraising_join_the_error(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
@@ -100,8 +124,52 @@ class TestRequire:
         )
         result = _run(pytester)
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["2 of 2 checks failed: first *(+1 more)"])
-        result.stdout.no_fnmatch_line("*Soft assertion failures*")
+        result.stdout.fnmatch_lines(["2 of 2 checks failed, stopped at ?0?: first *(+1 more)"])
+        # The first stop error is replaced, not printed as the cause of the second.
+        result.stdout.no_fnmatch_line("1 of 1 checks failed*")
+        _never(result)
+
+    def test_a_stop_in_finally_after_a_stop(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            def test_finally(verify):
+                try:
+                    verify.equal(1, 2, name="first")
+                finally:
+                    verify.equal(3, 4, name="cleanup")
+                    raise AssertionError("never reached")
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            ["2 of 2 checks failed, stopped at ?1?: cleanup — expected 4, got 3 (+1 more)"]
+        )
+        result.stdout.no_fnmatch_line("1 of 1 checks failed*")
+        result.stdout.no_fnmatch_line("*During handling*")
+        _never(result)
+
+    def test_the_error_a_stop_was_raised_from_stays_visible(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        pytester.makepyfile(
+            """
+            def test_context(verify):
+                try:
+                    try:
+                        raise OSError("port busy")
+                    except OSError:
+                        verify.require.equal(1, 2, name="link")
+                finally:
+                    verify.equal(3, 4, name="cleanup")
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            ["*port busy*", "*direct cause*", "2 of 2 checks failed, stopped at ?0?: link *"]
+        )
+        result.stdout.no_fnmatch_line("1 of 1 checks failed*")
 
     def test_results_and_report_carry_the_checks_once(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
@@ -158,14 +226,14 @@ class TestRequire:
         result.stdout.fnmatch_lines(
             [
                 "*ERROR at setup of test_setup*",
-                "1 of 1 checks failed: supply on — expected 2, got 1",
+                "1 of 1 checks failed, stopped at ?0?: supply on — expected 2, got 1",
                 "*ERROR at teardown of test_teardown*",
-                "1 of 1 checks failed: supply off — expected 2, got 1",
+                "1 of 1 checks failed, stopped at ?0?: supply off — expected 2, got 1",
             ]
         )
-        result.stdout.no_fnmatch_line("*never reached*")
+        _never(result)
 
-    def test_composites(self, pytester: pytest.Pytester) -> None:
+    def test_a_required_composite(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
             def test_items(verify):
@@ -177,8 +245,68 @@ class TestRequire:
         )
         result = _run(pytester)
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["1 of 1 checks failed: items *"])
-        result.stdout.no_fnmatch_line("*never reached*")
+        result.stdout.fnmatch_lines(["1 of 1 checks failed, stopped at ?0?: items *"])
+        _never(result)
+
+    _INSIDE_COMPOSITES = """
+        def test_factory(verify):
+            verify.all_satisfy(
+                [1, 5, 2], lambda x: verify.require.less(x, 3, name=f"x{x}"), name="items"
+            )
+            raise AssertionError("never reached")
+
+        def test_lazy_case(verify):
+            verify.conditional(
+                1, cases={1: lambda: verify.require.equal(3.0, 3.3, name="Active")}, name="mode"
+            )
+            raise AssertionError("never reached")
+
+        def test_lazy_default(verify):
+            verify.conditional(
+                9,
+                cases={1: lambda: verify.equal(1, 1, name="one")},
+                default=lambda: verify.require.fail("Unknown mode"),
+                name="mode",
+            )
+            raise AssertionError("never reached")
+
+        def test_lazy_branch(verify):
+            verify.guard(
+                [(True, "on", lambda: verify.require.equal(1, 2, name="lit"))], name="sensor"
+            )
+            raise AssertionError("never reached")
+
+        def test_lazy_condition(verify):
+            verify.guard(
+                [
+                    (
+                        lambda: verify.require.is_true(False, name="powered")["passed"],
+                        "on",
+                        lambda: verify.equal(1, 1, name="x"),
+                    )
+                ],
+                name="sensor",
+            )
+            raise AssertionError("never reached")
+        """
+
+    def test_inside_lazy_children_factories_and_conditions(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        pytester.makepyfile(self._INSIDE_COMPOSITES)
+        result = _run(pytester, "-rf")
+        result.assert_outcomes(failed=5)
+        result.stdout.fnmatch_lines(
+            [
+                "FAILED *::test_factory - 1 of 2 checks failed, stopped at ?1?: x5 *",
+                "FAILED *::test_lazy_case - 1 of 1 checks failed, stopped at ?0?: Active"
+                " — expected 3.3, got 3.0",
+                "FAILED *::test_lazy_default - 1 of 1 checks failed, stopped at ?0?: Unknown mode*",
+                "FAILED *::test_lazy_branch - 1 of 1 checks failed, stopped at ?0?: lit *",
+                "FAILED *::test_lazy_condition - 1 of 1 checks failed, stopped at ?0?: powered *",
+            ]
+        )
+        _never(result)
 
     def test_xfail_raises_assertion_error(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
@@ -199,6 +327,8 @@ class TestRequire:
             """
             import threading
 
+            from pytest_verifier import ChecksFailedError
+
             def test_thread(verify):
                 errors = []
 
@@ -211,12 +341,241 @@ class TestRequire:
                 worker = threading.Thread(target=work)
                 worker.start()
                 worker.join()
-                assert len(errors) == 1
+                assert [type(e) for e in errors] == [ChecksFailedError], errors
             """
         )
         result = _run(pytester)
         result.assert_outcomes(failed=1)
         result.stdout.fnmatch_lines(["1 of 1 checks failed: in thread *"])
+        _never(result)
+
+    def test_a_check_a_composite_absorbed(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            import pytest
+            from pytest_verifier import ChecksFailedError
+
+            def test_unselected(verify):
+                standby = verify.equal(0.0, 3.3, name="standby")
+                verify.conditional(
+                    1, cases={1: verify.equal(1, 1, name="active"), 2: standby}, name="mode"
+                )
+                with pytest.raises(ChecksFailedError) as caught:
+                    verify.require(standby)
+                assert [r["name"] for r in caught.value.results] == ["mode", "standby"]
+                assert str(caught.value).startswith(
+                    "1 of 2 checks failed, stopped at [1]: standby — "
+                )
+            """
+        )
+        # A copy is recorded, so catching the error does not make the test pass.
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            ["1 of 2 checks failed: standby — expected 3.3, got 0.0", "", "  ✗ ?1? standby *"]
+        )
+
+    def test_a_check_an_earlier_phase_judged(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture
+            def link(verify):
+                state = {}
+                yield state
+                verify.require(state["link"])
+            """
+        )
+        pytester.makepyfile(
+            """
+            def test_it(link, verify):
+                link["link"] = verify.is_not_none(None, name="link up")
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1, errors=1)
+        result.stdout.fnmatch_lines(
+            [
+                "*ERROR at teardown of test_it*",
+                "1 of 1 checks failed, stopped at ?1?: link up — expected not None, got None",
+            ]
+        )
+        result.stdout.no_fnmatch_line("*0 of * checks failed*")
+
+    def test_a_later_composite_absorbing_checks_of_the_stop(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        pytester.makepyfile(
+            """
+            def test_it(verify):
+                a = verify.equal(1, 2, name="a")
+                try:
+                    verify.require.equal(1, 2, name="b")
+                finally:
+                    verify.all_satisfy([a], lambda c: c, name="group")
+            """
+        )
+        # As many checks as the stop error listed, but not the same ones: "a" now belongs to
+        # "group", and the stopping check moved to index 0.
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            [
+                "2 of 2 checks failed, stopped at ?0?: b — expected 2, got 1 (+1 more)",
+                "",
+                "  ✗ ?0? b *",
+                "  ✗ ?1? group *",
+            ]
+        )
+        result.stdout.no_fnmatch_line("  ✗ ?1? a *")
+
+    def test_a_stop_lists_at_most_ten_passed_checks(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            def test_many(verify):
+                for i in range(12):
+                    verify.equal(i, i, name=f"ok{i}")
+                verify.require.equal(1, 2, name="bad")
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["  ✓ … 2 more passed checks (-vv shows them)"])
+        result.stdout.no_fnmatch_line("*ok11*")
+
+    def test_a_stop_in_teardown_continues_the_numbering(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            import json
+
+            import pytest
+            from pytest_verifier import ChecksFailedError
+
+            @pytest.fixture
+            def supply(verify):
+                yield
+                try:
+                    verify.require.equal(1, 2, name="off")
+                except ChecksFailedError as error:
+                    seen = [error.start, error.stopped_at, str(error).splitlines()[0]]
+                    with open("seen.json", "w", encoding="utf-8") as out:
+                        json.dump(seen, out)
+                    raise
+            """
+        )
+        pytester.makepyfile(
+            """
+            def test_it(supply, verify):
+                verify.equal(1, 1, name="a")
+                verify.equal(2, 2, name="b")
+            """
+        )
+        _run(pytester).assert_outcomes(passed=1, errors=1)
+        seen = json.loads((pytester.path / "seen.json").read_text(encoding="utf-8"))
+        assert seen == [2, 2, "1 of 1 checks failed, stopped at [2]: off — expected 2, got 1"]
+
+    def test_a_users_checks_failed_error_is_not_a_stop(self, pytester: pytest.Pytester) -> None:
+        # Only the errors verify.require raised are stops; any other ChecksFailedError keeps
+        # the soft failures in their own section.
+        pytester.makepyfile(
+            """
+            from pytest_verifier import ChecksFailedError, checks
+
+            def test_it(verify):
+                verify.equal(1, 2, name="soft")
+                raise ChecksFailedError([dict(checks.equal(3, 4, name="batch"), passed=False)])
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            [
+                "1 of 1 checks failed: batch *",
+                "*Soft assertion failures*",
+                "1 of 1 checks failed: soft *",
+                "",
+                "  ✗ ?0? soft (*.py:4) *",
+            ]
+        )
+
+    def test_raised_matches_by_identity(self) -> None:
+        run = Run()
+        verify = recording_verify(run)
+        with pytest.raises(ChecksFailedError) as caught:
+            verify.require.equal(1, 2, name="x")
+        assert run.raised(caught.value)
+        assert not run.raised(ChecksFailedError(caught.value.results))
+        assert not run.raised(None)
+
+    _TESTCASE = """
+        import unittest
+
+        import pytest
+
+        class TestStop(unittest.TestCase):
+            @pytest.fixture(autouse=True)
+            def _verify(self, verify):
+                self.verify = verify
+
+            def test_required(self):
+                self.verify.equal(1, 1, name="Fine")
+                self.verify.require.equal(1, 2, name="Req")
+                raise RuntimeError("never reached")
+        """
+
+    @pytest.mark.parametrize("fail_fast", [False, True], ids=["require", "fail-fast"])
+    def test_a_testcase_stop_is_reported_once(
+        self, pytester: pytest.Pytester, fail_fast: bool
+    ) -> None:
+        source = self._TESTCASE
+        args = []
+        if fail_fast:
+            source = source.replace("self.verify.require.equal", "self.verify.equal")
+            args.append("--verify-fail-fast")
+        pytester.makepyfile(source)
+        result = _run(pytester, *args)
+        result.assert_outcomes(failed=1)
+        summaries = [line for line in result.outlines if line.startswith("1 of 2 checks failed")]
+        assert len(summaries) == 1, result.outlines
+        result.stdout.fnmatch_lines(["1 of 2 checks failed, stopped at ?1?: Req *"])
+        _never(result)
+
+    def test_pdb_opens_in_the_test(self, pytester: pytest.Pytester) -> None:
+        # pytest's debugger starts at the last frame whose locals have no true
+        # ``__tracebackhide__``; record that frame for every failure.
+        pytester.makeconftest(
+            """
+            def pytest_exception_interact(node, call, report):
+                frames = []
+                tb = call.excinfo._excinfo[2]
+                while tb is not None:
+                    frames.append(tb.tb_frame)
+                    tb = tb.tb_next
+                i = len(frames) - 1
+                while i and frames[i].f_locals.get("__tracebackhide__", False):
+                    i -= 1
+                with open("frames.txt", "a", encoding="utf-8") as out:
+                    out.write(frames[i].f_code.co_name + "\\n")
+            """
+        )
+        pytester.makepyfile(
+            """
+            def test_required(verify):
+                verify.require.equal(1, 2, name="a")
+
+            def test_record(verify):
+                verify.require(verify.equal(1, 2, name="b"))
+
+            def test_fail_fast(verify, request):
+                if request.config.getoption("verify_fail_fast"):
+                    verify.all_satisfy([1], lambda x: x, name="c")
+            """
+        )
+        _run(pytester).assert_outcomes(failed=2, passed=1)
+        _run(pytester, "--verify-fail-fast", "-k", "fail_fast").assert_outcomes(failed=1)
+        frames = (pytester.path / "frames.txt").read_text(encoding="utf-8").split()
+        assert frames == ["test_required", "test_record", "test_fail_fast"]
 
     def test_require_is_cached_and_idempotent(self) -> None:
         verify = recording_verify(Run())
@@ -268,13 +627,15 @@ class TestFailFast:
         pytester.makepyfile(self._TEST)
         result = _run(pytester, "--verify-fail-fast")
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["1 of 2 checks failed: first — expected 2, got 1"])
+        result.stdout.fnmatch_lines(
+            ["1 of 2 checks failed, stopped at ?1?: first — expected 2, got 1"]
+        )
         result.stdout.no_fnmatch_line("*second*")
 
     def test_the_ini_setting(self, pytester: pytest.Pytester) -> None:
         pytester.makeini("[pytest]\nverify_fail_fast = true\n")
         pytester.makepyfile(self._TEST)
-        _run(pytester).stdout.fnmatch_lines(["1 of 2 checks failed: first *"])
+        _run(pytester).stdout.fnmatch_lines(["1 of 2 checks failed, stopped at ?1?: first *"])
 
     def test_the_option_is_listed_in_help(self, pytester: pytest.Pytester) -> None:
         result = _run(pytester, "--help")
@@ -298,12 +659,110 @@ class TestFailFast:
                     },
                     name="mode",
                 )
+
+            def test_eager_default(verify):
+                verify.conditional(
+                    1,
+                    cases={1: lambda: verify.equal(1, 1, name="one")},
+                    default=verify.fail("Unknown mode"),
+                    name="mode",
+                )
+
+            def test_lazy_default(verify):
+                verify.conditional(
+                    1,
+                    cases={1: lambda: verify.equal(1, 1, name="one")},
+                    default=lambda: verify.fail("Unknown mode"),
+                    name="mode",
+                )
             """
         )
         result = _run(pytester, "--verify-fail-fast")
-        # A child made eagerly is judged when it is made, before the conditional chooses.
-        result.assert_outcomes(failed=1, passed=1)
-        result.stdout.fnmatch_lines(["*_ test_eager _*", "1 of 2 checks failed: two — *"])
+        # A child made eagerly, a default too, is judged when it is made, before the
+        # conditional chooses.
+        result.assert_outcomes(failed=2, passed=2)
+        result.stdout.fnmatch_lines(
+            [
+                "*_ test_eager _*",
+                "1 of 2 checks failed, stopped at ?1?: two — *",
+                "*_ test_eager_default _*",
+                "1 of 1 checks failed, stopped at ?0?: Unknown mode*",
+            ]
+        )
+
+    def test_a_failed_lazy_child_stops_the_test(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            def test_lazy(verify):
+                verify.conditional(
+                    1,
+                    cases={
+                        1: lambda: verify.equal(3.0, 3.3, name="Active"),
+                        2: lambda: verify.equal(0, 1, name="Standby"),
+                    },
+                    name="mode",
+                )
+                raise AssertionError("never reached")
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            ["1 of 1 checks failed, stopped at ?0?: Active — expected 3.3, got 3.0"]
+        )
+        _never(result)
+
+    def test_fixture_teardown_stays_soft(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            import pytest
+
+            @pytest.fixture
+            def supply(verify):
+                yield
+                verify.equal(1, 2, name="off")
+                open("cleaned.txt", "w").close()
+                verify.equal(3, 4, name="discharged")
+
+            @pytest.fixture
+            def strict_supply(verify):
+                yield
+                verify.require.equal(1, 2, name="must be off")
+                open("not-cleaned.txt", "w").close()
+
+            @pytest.fixture
+            def broken_setup(verify):
+                verify.equal(1, 2, name="on")
+                open("set-up.txt", "w").close()
+                yield
+            """
+        )
+        pytester.makepyfile(
+            """
+            def test_soft_teardown(supply):
+                pass
+
+            def test_required_teardown(strict_supply):
+                pass
+
+            def test_setup(broken_setup):
+                open("body.txt", "w").close()
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(passed=2, errors=3)
+        result.stdout.fnmatch_lines(
+            [
+                "*ERROR at teardown of test_soft_teardown*",
+                "2 of 2 checks failed: off — expected 2, got 1 (+1 more)",
+                "*ERROR at teardown of test_required_teardown*",
+                "1 of 1 checks failed, stopped at ?0?: must be off *",
+                "*ERROR at setup of test_setup*",
+                "1 of 1 checks failed, stopped at ?0?: on *",
+            ]
+        )
+        made = {path.name for path in pytester.path.iterdir() if path.suffix == ".txt"}
+        assert made == {"cleaned.txt"}
 
 
 class TestFirstLine:
@@ -324,6 +783,20 @@ class TestFirstLine:
     )
     def test_the_first_failure_is_repeated(self, passed: Any, first: str) -> None:
         assert format_summary(self._records(*passed)).splitlines()[0] == first
+
+    @pytest.mark.parametrize(
+        "stopped_at, start, first",
+        [
+            (2, 0, "2 of 3 checks failed, stopped at [2]: c2 — d2 (+1 more)"),
+            (7, 5, "2 of 3 checks failed, stopped at [7]: c2 — d2 (+1 more)"),
+            (1, 0, "2 of 3 checks failed: c0 — d0 (+1 more)"),  # a passed check
+            (9, 0, "2 of 3 checks failed: c0 — d0 (+1 more)"),  # not in the list
+        ],
+    )
+    def test_the_check_that_stopped_the_test(self, stopped_at: int, start: int, first: str) -> None:
+        records = self._records(False, True, False)
+        summary = format_summary(records, start=start, stopped_at=stopped_at)
+        assert summary.splitlines()[0] == first
 
     def test_the_first_line_is_bounded(self) -> None:
         [record] = self._records(False)
@@ -351,7 +824,12 @@ class TestFirstLine:
             """
         )
         result = _run(pytester, "-rf", "--junitxml=out.xml")
-        result.stdout.fnmatch_lines(["FAILED *::test_rail - 2 of 2 checks failed: ra*"])
+        result.stdout.fnmatch_lines(
+            [
+                "FAILED *::test_rail - 2 of 2 checks failed: rail — expected ?3.2V, 3.4V?, "
+                "got 3.6V (+1 more)"
+            ]
+        )
         xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
         assert (
             'message="2 of 2 checks failed: rail — expected [3.2V, 3.4V], got 3.6V (+1 more)'
@@ -361,6 +839,8 @@ class TestFirstLine:
     def test_pickled_errors_keep_the_first_line(self) -> None:
         import pickle
 
-        error = ChecksFailedError(self._records(False, True))
+        error = ChecksFailedError(self._records(False, True, False), start=3, stopped_at=5)
         copy = pickle.loads(pickle.dumps(error))
-        assert str(copy).splitlines()[0] == "1 of 2 checks failed: c0 — d0"
+        assert str(copy).splitlines()[0] == str(error).splitlines()[0]
+        assert str(copy).startswith("2 of 3 checks failed, stopped at [5]: c2 — d2")
+        assert (copy.start, copy.stopped_at) == (3, 5)

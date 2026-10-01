@@ -3,6 +3,9 @@
 Each method builds a descriptor with its check type and hands it to the instance's sink. The
 sink of ``pytest_verifier.checks`` returns it unevaluated; the fixture's sink judges and records
 it (see :mod:`pytest_verifier._run`).
+
+Methods that hand a check to the sink set ``__tracebackhide__``: when a required check stops
+the test, pytest's tracebacks and ``--pdb`` show the test's line, not these frames.
 """
 from __future__ import annotations
 
@@ -49,6 +52,7 @@ from ._checks import (
 from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
 from ._evaluator import evaluate_detailed as _evaluate_detailed
+from ._exceptions import hide_stop_frames
 
 #: The type of the items an ``all_satisfy`` factory receives.
 _Item = TypeVar("_Item")
@@ -137,7 +141,9 @@ class Verify:
     No check raises because of the value it checks: a comparison that raises, or whose
     result has no clear truth value (a numpy array), makes the check fail with an ``error``
     note. Only invalid arguments (a missing ``name``, ``approx`` without a tolerance, a
-    negative tolerance) raise ``TypeError``/``ValueError``.
+    negative tolerance) raise ``TypeError``/``ValueError``. A failed check stops the test
+    (raises ``ChecksFailedError``) only when it is made through the fixture's
+    :attr:`require`, or with ``--verify-fail-fast``.
     """
 
     #: Where the built checks go; the fixture's instance has a recording sink.
@@ -161,6 +167,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(EQUAL.build(actual, expected, name=name, units=units))
 
     def not_equal(
@@ -177,6 +184,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(NOT_EQUAL.build(actual, expected, name=name, units=units))
 
     def approx(
@@ -207,6 +215,7 @@ class Verify:
         Raises:
             ValueError: If neither *abs_tol* nor *rel_tol* is provided.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(
             APPROX.build(actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units)
         )
@@ -229,6 +238,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(GREATER.build(actual, threshold, name=name, units=units))
 
     def greater_equal(
@@ -245,6 +255,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(GREATER_EQUAL.build(actual, threshold, name=name, units=units))
 
     def less(
@@ -261,6 +272,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(LESS.build(actual, threshold, name=name, units=units))
 
     def less_equal(
@@ -277,6 +289,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(LESS_EQUAL.build(actual, threshold, name=name, units=units))
 
     def between(
@@ -302,6 +315,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(
             BETWEEN.build(actual, low, high, inclusive=inclusive, name=name, units=units)
         )
@@ -320,6 +334,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(IS_TRUE.build(actual, name=name))
 
     def is_false(self, actual: Any, *, name: str) -> CheckDescriptor:
@@ -332,6 +347,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(IS_FALSE.build(actual, name=name))
 
     def is_none(self, actual: Any, *, name: str) -> CheckDescriptor:
@@ -344,6 +360,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(IS_NONE.build(actual, name=name))
 
     def is_not_none(self, actual: Any, *, name: str) -> CheckDescriptor:
@@ -356,6 +373,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(IS_NOT_NONE.build(actual, name=name))
 
     # ------------------------------------------------------------------
@@ -375,6 +393,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(CONTAINS.build(haystack, needle, name=name))
 
     def not_contains(
@@ -390,6 +409,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(NOT_CONTAINS.build(haystack, needle, name=name))
 
     def matches(
@@ -406,6 +426,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(MATCHES.build(actual, pattern, name=name))
 
     # ------------------------------------------------------------------
@@ -430,6 +451,7 @@ class Verify:
         Raises:
             TypeError: If *expected_type* is not something ``isinstance`` accepts.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(IS_INSTANCE.build(actual, expected_type, name=name))
 
     def length(self, actual: Sized, expected: int, *, name: str) -> CheckDescriptor:
@@ -443,6 +465,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(LENGTH.build(actual, expected, name=name))
 
     def all_satisfy(
@@ -469,6 +492,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.composite(
             lambda: ALL_SATISFY.build(items, descriptor_factory, name=name), ()
         )
@@ -505,6 +529,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.composite(
             lambda: CONDITIONAL.build(switch_value, cases=cases, default=default, name=name),
             (cases, default),
@@ -537,6 +562,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.composite(
             lambda: GUARD.build(branches, default=default, name=name),
             (branches, default),
@@ -552,6 +578,7 @@ class Verify:
         Returns:
             A :class:`CheckDescriptor` dict.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.check(FAIL.build(msg, name=name))
 
     def record(self, check: CheckDescriptor) -> CheckDescriptor:
@@ -571,6 +598,7 @@ class Verify:
             TypeError: If *check* is not a check descriptor.
             RuntimeError: When called on ``pytest_verifier.checks``.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.record(check)
 
     @property
@@ -584,10 +612,10 @@ class Verify:
         ``verify.require(check)`` records it like :meth:`record` and stops the same way.
 
         The checks stay recorded: if the test catches the error and goes on, it still fails at
-        the end of the phase.
+        the end of the phase. A required check stops the test from inside a lazy child or an
+        ``all_satisfy`` factory too.
 
-        Raises:
-            RuntimeError: When used on ``pytest_verifier.checks``.
+        On ``pytest_verifier.checks``, its checks and calling it raise ``RuntimeError``.
         """
         required = self.__dict__.get("_required")
         if required is None:
@@ -644,6 +672,7 @@ class Require(Verify):
             TypeError: If *check* is not a check descriptor.
             RuntimeError: When used on ``pytest_verifier.checks``.
         """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.record(check)
 
     @property

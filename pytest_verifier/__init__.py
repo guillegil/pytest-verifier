@@ -28,7 +28,7 @@ from ._descriptors import CheckDescriptor, GuardBranch
 from ._exceptions import ChecksFailedError
 from ._stash import check_results_key
 from ._unused import UnusedCheckWarning
-from ._verify import Verify
+from ._verify import Require, Verify
 
 #: The pytest plugin. The ``pytest_verifier`` entry point names this package, which loads it.
 pytest_plugins = ["pytest_verifier.plugin"]
@@ -37,6 +37,7 @@ __all__ = [
     "CheckDescriptor",
     "ChecksFailedError",
     "GuardBranch",
+    "Require",
     "UnusedCheckWarning",
     "Verify",
     "__version__",

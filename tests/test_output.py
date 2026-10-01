@@ -686,6 +686,27 @@ class TestEncodings:
         assert "  ✗ [0] rail (test_a_terminal_that_cannot_show_the_symbols.py:2) — " in xml
         assert "  ✗ [0] n (test_a_terminal_that_cannot_show_the_symbols.py:6) — " in xml
 
+    def test_short_summary_and_crash_lines(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # pytest would escape the whole line, backslashes included: 'D:\\\\tmp'.
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+        pytester.makepyfile(
+            test_paths=r"""
+            def test_path(verify):
+                verify.equal("C:\\tmp", "D:\\tmp", name="path")
+            """
+        )
+        result = pytester.runpytest_subprocess(
+            "-p", "no:cacheprovider", "-rf", "--tb=line", "--junitxml=out.xml"
+        )
+        result.assert_outcomes(failed=1)
+        line = r"1 of 1 checks failed: path \u2014 expected 'D:\\tmp', got 'C:\\tmp'"
+        result.stdout.fnmatch_lines([f"*test_paths.py:2: {line}", f"FAILED *::test_path - {line}"])
+        result.stdout.no_fnmatch_line(r"*\\\\tmp*")
+        xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
+        assert "message=\"1 of 1 checks failed: path — expected" in xml
+
     def test_reports_keep_the_summary_as_it_is(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
             """

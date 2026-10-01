@@ -6,10 +6,11 @@
 [![pytest](https://img.shields.io/badge/pytest-7%2B-0a9edc)](https://docs.pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/guillegil/pytest_verify/blob/main/LICENSE)
 
-A pytest plugin providing **soft assertions** for test verification. Failed checks never stop
-the test — all checks run to completion, and failures are reported together at test end.
+A pytest plugin providing **soft assertions** for test verification. Failed checks don't stop
+the test unless you ask them to: all checks run to completion, and failures are reported
+together at test end.
 
-Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](#upgrading-from-pytest-verify).
+Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](https://github.com/guillegil/pytest_verify#upgrading-from-pytest-verify).
 
 ## Installation
 
@@ -41,7 +42,8 @@ def test_power_supply(verify):
 ```
 
 If any check fails, the test continues running. When the test body ends, all failures are
-reported together in a single `ChecksFailedError`.
+reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
+the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check).
 
 ## Failure Output
 
@@ -83,7 +85,7 @@ How values read in the summary:
   are escaped (`\n`).
 - At most 10 passed checks are listed, followed by `✓ … N more passed checks`. Run pytest with
   `-vv` to list them all. Every check is still recorded (see
-  [Reading Results from Another Plugin](#reading-results-from-another-plugin)).
+  [Reading Results from Another Plugin](https://github.com/guillegil/pytest_verify#reading-results-from-another-plugin)).
 - On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
   `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
   terminal output changes: reports such as junitxml keep the summary as it is.
@@ -101,9 +103,11 @@ How values read in the summary:
   unittest `TestCase`s too.
 - A skip after a failed check does not hide the failure: `pytest.skip()`, `unittest.SkipTest`
   and `TestCase.skipTest()` alike.
-- `--pdb` opens the debugger when the failure is raised, after the test body has finished, so
-  the test's local variables are gone. To inspect them, check the returned result,
-  e.g. `if not check["passed"]: breakpoint()`.
+- `--pdb` opens the debugger when the failure is raised. For soft checks that is after the
+  test body has finished, so the test's local variables are gone. To inspect them, check the
+  returned result, e.g. `if not check["passed"]: breakpoint()`, or make the check required
+  (`verify.require`, or `--verify-fail-fast` for every check): then `--pdb` opens in the test,
+  at the line of the failed check.
 - Rerun filters match exceptions by name, so use `--only-rerun ChecksFailedError` with
   pytest-rerunfailures.
 
@@ -121,10 +125,19 @@ def test_link(verify):
     verify.equal(link.status(), "ready", name="Status")
 ```
 
+The first line of the summary then names the check that stopped the test, and `--tb=line`
+points at its line:
+
+```text
+2 of 3 checks failed, stopped at [2]: Link — expected not None, got None (+1 more)
+```
+
 `verify.require(check)` does the same for a check made earlier or built with `checks`, for
 example `verify.require(verify.equal(reply, "OK", name="Reply"))`. The check stays recorded, so
-a test that catches the error still fails. In a fixture, a required check that fails is an
-error in the test's setup or teardown, like a failed `assert` there.
+a test that catches the error still fails. A required check stops the test from inside a lazy
+child or an `all_satisfy` factory too. In a fixture, a required check that fails is an error in
+the test's setup or teardown, like a failed `assert` there. To pass `verify.require` to a
+helper, annotate the parameter as `pytest_verifier.Require`.
 
 To stop every test at its first failed check, for example while bringing up new hardware, run
 pytest with `--verify-fail-fast`, or turn it on in the configuration:
@@ -134,16 +147,23 @@ pytest with `--verify-fail-fast`, or turn it on in the configuration:
 verify_fail_fast = true
 ```
 
+Fail-fast leaves checks made while fixtures are torn down soft, so a fixture's cleanup after a
+failed check still runs; use `verify.require` to stop there. In a fixture's setup, a failed
+check stops like an `assert`: if that happens before `yield`, the fixture's teardown does not
+run either, so put cleanup that must run in `try`/`finally` or `request.addfinalizer`.
+
 Every check is judged when it is made. With fail-fast, a check passed directly as a
-`conditional` case or a `guard` branch is judged before the composite chooses, so a failed one
-stops the test even when its branch would not be selected. Pass such children as functions
-(see [Lazy children](#lazy-children--build-only-the-selected-branch)) so that only the selected
-one is judged.
+`conditional` case or default, or a `guard` branch or default, is judged before the composite
+chooses, so a failed one stops the test even when it would not be selected. That includes
+`default=verify.fail(...)`, which always fails, and the checks an `all_satisfy` factory makes.
+Pass cases, branches and defaults as functions (see [Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch))
+so that only the selected one is judged.
 
 ### Checks that cannot be evaluated
 
-Problems with the checked data never stop the test. If a comparison raises, the check fails and
-the error is shown, for example comparing `None` with a number:
+A comparison that raises never stops the test by itself: the check fails and the error is
+shown (a required or fail-fast check then stops the test like any failed check), for example
+comparing `None` with a number:
 
 ```text
   ✗ [1] Reading — expected > 100, got None (TypeError: '>' not supported between instances of 'NoneType' and 'int')
@@ -192,7 +212,7 @@ With `units="%"`, the tolerance says whether it is absolute or relative: `50% ±
 
 These compare numbers, or other values that order themselves such as version tuples and dates.
 Text compared with text fails (see
-[Checks that cannot be evaluated](#checks-that-cannot-be-evaluated)).
+[Checks that cannot be evaluated](https://github.com/guillegil/pytest_verify#checks-that-cannot-be-evaluated)).
 
 ### Boolean & Identity
 
@@ -223,9 +243,9 @@ Text compared with text fails (see
 | `verify.fail(msg, *, name=None)` | Unconditional failure |
 
 The fixture also has `verify.record(check)`, which records a check built elsewhere (see
-[Recording checks built by helpers](#recording-checks-built-by-helpers)), and `verify.require`,
+[Recording checks built by helpers](https://github.com/guillegil/pytest_verify#recording-checks-built-by-helpers)), and `verify.require`,
 whose checks stop the test when they fail (see
-[Stopping a test at a failed check](#stopping-a-test-at-a-failed-check)).
+[Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check)).
 
 ## Usage Examples
 
@@ -251,9 +271,13 @@ def test_output_by_mode(verify):
             1: verify.approx(output, 3.3, abs_tol=0.1, name="Active", units="V"),
             2: verify.approx(output, 5.0, abs_tol=0.1, name="Boost", units="V"),
         },
-        default=verify.fail(f"Unknown mode: {mode}"),
+        default=lambda: verify.fail(f"Unknown mode: {mode}"),
     )
 ```
+
+The default is a function, so it fails only when it is selected (see
+[Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch)).
+With `--verify-fail-fast`, make the cases functions too.
 
 ### `guard` — if / elif / else with arbitrary conditions
 
@@ -276,8 +300,8 @@ def test_sensor_output(verify):
 ```
 
 Conditions can be any truthy or falsy value, and a condition that is a function is called
-(see [Lazy children](#lazy-children--build-only-the-selected-branch)). A failed guard reports
-the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`, or the
+(see [Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch)).
+A failed guard reports the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`, or the
 labels it tried when none matched: `[→ no branch matched: shutter closed, below floor]`. When a
 condition raises, the guard fails with `[→ no branch chosen]` and the error. Passing a
 check as a condition raises `TypeError`, because a check is always truthy. Use its result
@@ -324,7 +348,7 @@ so it should not depend on values that only its own branch can use. A child that
 just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
-A composite built with `checks` (see [Building checks without the fixture](#building-checks-without-the-fixture))
+A composite built with `checks` (see [Building checks without the fixture](https://github.com/guillegil/pytest_verify#building-checks-without-the-fixture))
 is never recorded, so fixture checks passed to it stay separate checks.
 
 ### Lazy children — build only the selected branch
@@ -367,7 +391,9 @@ verify.is_instance(reading, (int, float), name="Reading is a number")
 ### `fail` — force a failure
 
 Useful as the `default` branch of a `conditional`, or to mark an unreachable path.
-`name` defaults to the message.
+`name` defaults to the message. As a default, pass it as a function,
+`default=lambda: verify.fail("...")`: a check made directly is recorded as failed at once, and
+with `--verify-fail-fast` it stops the test even when a case matches.
 
 ```python
 verify.fail(f"Unexpected state: {state}")
@@ -477,8 +503,8 @@ so they also reach the main process under pytest-xdist.
   matched the whole line `N of M checks failed` should match its start instead.
 - Failed checks show where they were made, and recorded checks have the new keys `location`
   and `called_from`.
-- With `--tb=line`, the line shown is the test's line that made the first failed check instead
-  of the `def` line.
+- With `--tb=line`, the line shown is the test's line that made the check the first line names
+  instead of the `def` line.
 
 ## Upgrading from 0.6
 
@@ -491,7 +517,7 @@ Most of 0.7 changes how failures read. A few changes can affect existing tests:
   `lambda` is checked against the type of the items.
 - The summary text has new formats (quoted strings, type hints, at most 10 passed checks
   unless `-vv`). Code that needs the results should read them with
-  [`get_check_results()` or `report.verify_checks`](#reading-results-from-another-plugin)
+  [`get_check_results()` or `report.verify_checks`](https://github.com/guillegil/pytest_verify#reading-results-from-another-plugin)
   rather than parse the text.
 
 Every change is listed in the
@@ -547,8 +573,14 @@ workflow
 ([`.github/workflows/release.yml`](https://github.com/guillegil/pytest_verify/blob/main/.github/workflows/release.yml)).
 It builds the sdist and wheel once, runs the tests against the wheel with the oldest and the
 newest pytest, tags the commit, uploads to PyPI with Trusted Publishing, and publishes a GitHub
-release with the CHANGELOG notes. Run it with the `testpypi` target to try an upload on
-TestPyPI first.
+release with the CHANGELOG notes. It only releases commits that are on `main`. Run it with the
+`testpypi` target, from any branch, to try an upload on TestPyPI first. If a run fails half way,
+use **Re-run failed jobs**, which reuses the files it built: an index never accepts other files
+for a version it already has.
+
+Publishing needs a one-time setup: on pypi.org and test.pypi.org, add this repository's
+`release.yml` as a trusted publisher with the environment `pypi` (or `testpypi`), and in the
+repository's Settings > Environments, limit `pypi` to the `main` branch and `v*` tags.
 
 ## Known Issues and Roadmap
 

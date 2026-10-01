@@ -20,6 +20,14 @@ class TestGetCheckResultsExported:
 
         assert "get_check_results" in pytest_verifier.__all__
 
+    def test_every_type_in_a_public_signature_is_exported(self):
+        import pytest_verifier
+
+        for name in ("Verify", "Require", "CheckDescriptor", "GuardBranch", "ChecksFailedError"):
+            assert name in pytest_verifier.__all__
+            assert hasattr(pytest_verifier, name)
+        assert isinstance(pytest_verifier.checks.require, pytest_verifier.Require)
+
 
 class TestGetCheckResultsReturnsDescriptors:
     """R1.2, R1.3, R1.4 — Return semantics."""
@@ -259,3 +267,20 @@ class TestVersion:
 
         monkeypatch.setattr(metadata, "version", missing)
         assert pytest_verifier._installed_version() == "0+unknown"
+
+
+class TestReadme:
+    def test_links_work_on_pypi(self):
+        # PyPI shows the README without heading anchors and outside the repository: every link
+        # must be absolute.
+        import re
+        from pathlib import Path
+
+        import pytest
+
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        if not readme.exists():
+            pytest.skip("no README next to the tests")
+        targets = re.findall(r"\]\(([^)\s]+)\)", readme.read_text(encoding="utf-8"))
+        assert targets
+        assert [t for t in targets if not t.startswith("https://")] == []
