@@ -36,6 +36,7 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 ## Core Principles
 
 - **verify fixture is the primary API.** It evaluates checks immediately, records results, returns descriptor dicts, and raises `ChecksFailedError` once the phase that recorded a failed check ends (after the test body; after teardown for checks made in teardown). No imports needed — it's a pytest fixture.
+- **`verify.require` is the one exception to soft.** A `Require` (a `Verify` subclass, also callable with a check) whose failed checks stop the test at once; `--verify-fail-fast`/`verify_fail_fast` makes every check behave so. `Run.stop()` raises without judging, so the phase end still judges (a swallowed stop still fails the test) and keeps the stop error instead of adding a duplicate section.
 - **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and still unused when the test's teardown ends gives an `UnusedCheckWarning` (`_unused.py`; tracking pauses in fixtures, setup, teardown, unittest tests and nested sessions, and keeps only labels, never the checks). `pytest_verifier.verify` is a deprecated alias of `checks`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
@@ -47,7 +48,8 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 ```
 pytest_verifier/
 ├── __init__.py              # Exports: checks, Verify, CheckDescriptor, GuardBranch,
-│                            #   ChecksFailedError, UnusedCheckWarning, get_check_results;
+│                            #   ChecksFailedError, UnusedCheckWarning, get_check_results,
+│                            #   __version__ (installed metadata);
 │                            #   pytest_plugins = ["pytest_verifier.plugin"]
 ├── py.typed                 # PEP 561 marker — REQUIRED
 ├── _verify.py               # Verify class: typed public signatures and docstrings; each
@@ -64,8 +66,10 @@ pytest_verifier/
 │                            #   rendering (render_value, escape), JSON-safe snapshots
 ├── _settle.py               # Turns a descriptor into a recorded result (verdict, detail,
 │                            #   snapshots, child verdicts)
-├── _run.py                  # Run (per-attempt, thread-safe state) and Recorder (the
-│                            #   fixture's Sink: judges, records, absorbs children)
+├── _run.py                  # Run (per-attempt, thread-safe state, stop()) and Recorder (the
+│                            #   fixture's Sink: judges, records, absorbs children, stops
+│                            #   when hard or fail-fast)
+├── _location.py             # Where a recorded check was made: location, called_from
 ├── plugin.py                # The pytest plugin: verify fixture, runtest hook wrappers that
 │                            #   raise ChecksFailedError, report.verify_checks
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
@@ -94,6 +98,8 @@ class CheckDescriptor(TypedDict, total=False):
     passed: bool             # Present only when returned from fixture (evaluated)
     detail: str              # Fixture only: rendered "expected … got …" clause
     phase: str               # Fixture only: "setup", "call" or "teardown"
+    location: str            # Fixture only: "path:line" that made it, rootdir-relative, "/"
+    called_from: str         # Fixture only: test function line that led to it, if another
     error: str               # Why the check could not be evaluated (it then fails)
     actual: Any              # Check-type-specific
     expected: Any            # Check-type-specific
@@ -114,7 +120,10 @@ class CheckDescriptor(TypedDict, total=False):
 1. **On each `verify.*()` call:**
    - Build the descriptor dict from the arguments (usage errors raise here)
    - Judge it once; a raising comparison is a failed check with an `error` note
-   - Record a copy with `passed`, `detail`, `phase` and JSON-safe snapshots of the values
+   - Record a copy with `passed`, `detail`, `phase`, `location` (first frame outside the
+     package; `called_from` when that is not the test function and the test function is on the
+     stack) and JSON-safe snapshots of the values
+   - With `verify.require` or fail-fast, a failed check raises `ChecksFailedError` right there
    - A composite absorbs every recorded check passed to it as a child, by identity, whenever
      it was built (`dict(check)` keeps a copy standalone); each evaluated child carries its
      own `passed`, unselected children carry none
@@ -131,8 +140,10 @@ class CheckDescriptor(TypedDict, total=False):
      "Soft assertion failures" section (a skip, including `unittest.SkipTest`, never hides a
      failed check). A unittest `TestCase` records its failures and skips in `item._excinfo`
      instead of raising them, so the call phase reads that list too
-   - `ChecksFailedError` message format: failed checks first, then passed, with `[seq]` indices
+   - `ChecksFailedError` message format: a first line `N of M checks failed: <first failure>
+     (+k more)`, then failed checks (with their location) before passed, with `[seq]` indices
      (their index among all the test's records, so teardown checks continue the numbering)
+   - The crash line (`--tb=line`) points at the test file's line of the first failed check
    - The judged checks go to the `pytest_verify_results` hook and to that phase's report as
      `report.verify_checks`
 
@@ -144,6 +155,16 @@ Other plugins call `pytest_verifier.get_check_results(item)`. A `StashKey` works
 key created by another plugin can never see these results; the key in `_stash.py` is private.
 Plugins that must not import pytest-verifier implement `pytest_verify_results(item, when, checks,
 passed)` with `optionalhook=True`, or read `report.verify_checks` (JSON-safe, survives xdist).
+Records carry `location`/`called_from` strings; readers must not require them (hand-built and
+`checks` descriptors have none).
+
+## Releases
+
+`.github/workflows/release.yml` builds once, runs `twine check` and the sdist's tests against the
+wheel (pytest 7.0.1 and newest), then tags, uploads to PyPI (Trusted Publishing, environment
+`pypi`; `testpypi` for the trial target) and publishes the GitHub release from CHANGELOG. The
+CHANGELOG needs a dated `## [X.Y.Z] - YYYY-MM-DD` heading. Re-runs accept an existing tag on the
+same commit, files already on PyPI and an existing release.
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
 
@@ -202,7 +223,8 @@ Implementation requirements:
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-`checks`; `checks.record()` raises `RuntimeError`.
+`checks`; `checks.record()` raises `RuntimeError`. `verify.require` has every check method and is
+callable like `record`; its failed checks stop the test. `checks.require` raises `RuntimeError`.
 
 ## Evaluation Logic
 

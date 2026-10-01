@@ -58,6 +58,11 @@ _RECORD_NEEDS_FIXTURE = (
     "the 'verify' fixture in the test and call verify.record() on it."
 )
 
+_REQUIRE_NEEDS_FIXTURE = (
+    "checks.require cannot stop a test: pytest_verifier.checks only builds checks. Request the "
+    "'verify' fixture in the test and use verify.require on it."
+)
+
 
 class Sink:
     """Where a :class:`Verify` sends the checks it builds.
@@ -91,8 +96,33 @@ class Sink:
         _unused.used(descriptor)  # the error below already says what went wrong
         raise RuntimeError(_RECORD_NEEDS_FIXTURE)
 
+    def hard(self) -> Sink:
+        """The sink of ``require``: its checks stop the test when they fail."""
+        return _NO_REQUIRE
+
+
+class _NoRequire(Sink):
+    """``checks.require``: only the fixture can stop a test."""
+
+    def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
+    def composite(
+        self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
+    ) -> CheckDescriptor:
+        _unused.used(*loose_children(*arguments))
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
+    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        _unused.used(descriptor)
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
+    def hard(self) -> Sink:
+        return self
+
 
 _BUILD_ONLY = Sink()
+_NO_REQUIRE = _NoRequire()
 
 
 class Verify:
@@ -543,6 +573,29 @@ class Verify:
         """
         return self._sink.record(check)
 
+    @property
+    def require(self) -> Require:
+        """The same checks, made required: a failed one stops the test at once.
+
+        Use it for a check whose failure makes the rest of the test meaningless, such as a
+        connection that could not be opened. ``verify.require.is_not_none(conn, name="Link")``
+        records the check like ``verify.is_not_none`` and, if it failed, raises
+        ``ChecksFailedError`` right away with every check made so far. Called with a check,
+        ``verify.require(check)`` records it like :meth:`record` and stops the same way.
+
+        The checks stay recorded: if the test catches the error and goes on, it still fails at
+        the end of the phase.
+
+        Raises:
+            RuntimeError: When used on ``pytest_verifier.checks``.
+        """
+        required = self.__dict__.get("_required")
+        if required is None:
+            required = Require()
+            required._sink = self._sink.hard()
+            self.__dict__["_required"] = required
+        return required
+
     # ------------------------------------------------------------------
     # Evaluation helpers (pytest_verifier.checks)
     # ------------------------------------------------------------------
@@ -567,3 +620,33 @@ class Verify:
         when the check could not be evaluated.
         """
         return _evaluate_detailed(*descriptors)
+
+
+class Require(Verify):
+    """``verify.require``: every check it makes stops the test when it fails.
+
+    It has the methods of :class:`Verify`, and calling it with a check records that check the
+    way :meth:`Verify.record` does, then stops the test if the check failed.
+    """
+
+    def __call__(self, check: CheckDescriptor) -> CheckDescriptor:
+        """Record *check* and stop the test if it failed.
+
+        Args:
+            check: A check descriptor, for example the result of a ``verify.*`` call or one
+                built with ``pytest_verifier.checks``.
+
+        Returns:
+            The recorded check, with ``passed`` set to ``True``.
+
+        Raises:
+            ChecksFailedError: If the check failed. The error lists every check made so far.
+            TypeError: If *check* is not a check descriptor.
+            RuntimeError: When used on ``pytest_verifier.checks``.
+        """
+        return self._sink.record(check)
+
+    @property
+    def require(self) -> Require:
+        """This object: its checks are already required."""
+        return self

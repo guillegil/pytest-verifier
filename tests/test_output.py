@@ -28,10 +28,14 @@ from pytest_verifier._run import Run, recording_verify
 
 
 def _record(build: Any) -> Any:
-    """Record the check *build* makes with a fixture-like ``verify``."""
+    """Record the check *build* makes with a fixture-like ``verify``, without its location
+    (tests of locations are in tests/test_locations.py)."""
     run = Run()
     run.phase = "call"
-    return build(recording_verify(run))
+    record = build(recording_verify(run))
+    record.pop("location", None)
+    record.pop("called_from", None)
+    return record
 
 
 def _detail(check: Any) -> str:
@@ -458,7 +462,7 @@ class TestEscapingAndBounds:
         record = _record(lambda v: v.equal("ok\n  ✗ [99] fake — forged", "ok", name="reply"))
         summary = format_summary([record])
         assert summary.splitlines() == [
-            "1 of 1 checks failed",
+            "1 of 1 checks failed: reply — expected 'ok', got 'ok\\n  ✗ [99] fake — forged'",
             "",
             "  ✗ [0] reply — expected 'ok', got 'ok\\n  ✗ [99] fake — forged'",
         ]
@@ -639,7 +643,7 @@ class TestEncodings:
         result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-n", "2")
         result.assert_outcomes(failed=1)
         result.stdout.fnmatch_lines(
-            ["  x ?0? rail \\u2014 expected ?1\\xb5A, 3\\xb5A?, got 5\\xb5A"]
+            ["  x ?0? rail (*.py:2) \\u2014 expected ?1\\xb5A, 3\\xb5A?, got 5\\xb5A"]
         )
 
     def test_a_terminal_that_cannot_show_the_symbols(
@@ -661,9 +665,9 @@ class TestEncodings:
         result.assert_outcomes(failed=2)
         result.stdout.fnmatch_lines(
             [
-                "1 of 2 checks failed",
+                "1 of 2 checks failed: rail \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
                 "",
-                "  x ?0? rail \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
+                "  x ?0? rail (*.py:2) \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
                 "",
                 "  ok ?1? alive \\u2014 1 (truthy)",
             ]
@@ -672,15 +676,15 @@ class TestEncodings:
         result.stdout.fnmatch_lines(
             [
                 "*Soft assertion failures*",
-                "1 of 1 checks failed",
+                "1 of 1 checks failed: n \\u2014 expected 2, got 1",
                 "",
-                "  x ?0? n \\u2014 expected 2, got 1",
+                "  x ?0? n (*.py:6) \\u2014 expected 2, got 1",
             ]
         )
         # Only the terminal gets the ASCII form: reports keep the summary as it is.
         xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
-        assert "  ✗ [0] rail — expected [1µV, 3µV], got 5µV" in xml
-        assert "  ✗ [0] n — expected 2, got 1" in xml
+        assert "  ✗ [0] rail (test_a_terminal_that_cannot_show_the_symbols.py:2) — " in xml
+        assert "  ✗ [0] n (test_a_terminal_that_cannot_show_the_symbols.py:6) — " in xml
 
     def test_reports_keep_the_summary_as_it_is(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
@@ -715,8 +719,9 @@ class TestEncodings:
         before, terminal, after = (
             (pytester.path / "texts.txt").read_text(encoding="utf-8").split("\n=====\n")
         )
-        assert "  ✗ [0] rail — expected [1µV, 3µV], got 5µV" in before
-        assert "  x [0] rail \\u2014 expected [1\\xb5V, 3\\xb5V], got 5\\xb5V" in terminal
+        site = "(test_reports_keep_the_summary_as_it_is.py:2)"
+        assert f"  ✗ [0] rail {site} — expected [1µV, 3µV], got 5µV" in before
+        assert f"  x [0] rail {site} \\u2014 expected [1\\xb5V, 3\\xb5V], got 5\\xb5V" in terminal
         assert after == before
 
 

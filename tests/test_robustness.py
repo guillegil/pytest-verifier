@@ -226,7 +226,7 @@ class TestDataErrorsFailTheCheck:
             [
                 "*2 of 3 checks failed*",
                 "*Forgot return*did you forget `return`?*",
-                "*Missing reading — expected > 1, got None (TypeError:*",
+                "*Missing reading (*.py:3) — expected > 1, got None (TypeError:*",
                 "*Still runs — 1 == 1",
             ]
         )
@@ -486,7 +486,7 @@ class TestRendering:
             dict(mverify.equal(1, 1, name="Good"), passed=True),
         ]
         summary = format_summary(results)
-        assert summary.splitlines()[0] == "1 of 2 checks failed"
+        assert summary.splitlines()[0] == "1 of 2 checks failed: Bad — expected 2, got 1"
         assert summary.index("✗ [0] Bad") < summary.index("✓ [1] Good")
         error = ChecksFailedError(results)
         assert str(error) == summary

@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-01
+
+The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were
+made, a check can stop the test when it fails, and the first line of a failure says what
+failed.
+
+### Added
+
+- Published on PyPI as `pytest-verifier`. Releases up to 0.7.0 stay installable from Git tags.
+- Every check the `verify` fixture records has a `location`, the file and line that made it,
+  relative to the rootdir (`"tests/test_psu.py:17"`). When a helper or a lazy child made it,
+  `called_from` holds the line of the test function that led to it. Failed checks show both in
+  the summary: `✗ [1] Rail (lib/rails.py:8, called from tests/test_psu.py:22) — …`, or
+  `called from line 22` in the same file. Passed checks stay as they were.
+- `verify.require`, with the same methods as `verify`: a check made with it that fails stops
+  the test at once with `ChecksFailedError`, listing every check made so far.
+  `verify.require(check)` does the same for a check made earlier or built with `checks`. The
+  checks stay recorded, so a test that catches the error still fails at the end of the phase.
+  `checks.require` raises `RuntimeError`.
+- `--verify-fail-fast` and the `verify_fail_fast` ini setting stop each test at its first
+  failed check.
+- `pytest_verifier.__version__`.
+- The release workflow builds once, checks the metadata with `twine check`, runs the sdist's
+  tests against the wheel with pytest 7.0.1 and with the newest pytest, and uploads to PyPI with
+  Trusted Publishing before publishing the GitHub release. A `testpypi` target uploads to
+  TestPyPI only, and a run that failed half way can be run again.
+
+### Changed
+
+- The first line of a failure names the first failed check, so `-r` summaries and junit
+  messages say what failed: `2 of 5 checks failed: Vout — expected 3.3V ± 0.05V, got 3.8V
+  (+1 more)`. It was `2 of 5 checks failed`. The first failure is cut at about 300 characters.
+- With `--tb=line`, the line shown for a soft failure is the line of the test that made the
+  first failed check (or called the helper that made it), instead of the test's `def` line.
+- The README renders on PyPI: links point at GitHub.
+
 ## [0.7.0] - 2026-10-01
 
 Makes failures easier to read: values show their type when it matters, long values say where
@@ -205,7 +241,8 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/guillegil/pytest_verify/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/guillegil/pytest_verify/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/guillegil/pytest_verify/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...v0.5.0

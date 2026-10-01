@@ -1,9 +1,10 @@
 # pytest-verifier
 
+[![PyPI](https://img.shields.io/pypi/v/pytest-verifier)](https://pypi.org/project/pytest-verifier/)
 [![CI](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest_verify)
 [![pytest](https://img.shields.io/badge/pytest-7%2B-0a9edc)](https://docs.pytest.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/guillegil/pytest_verify/blob/main/LICENSE)
 
 A pytest plugin providing **soft assertions** for test verification. Failed checks never stop
 the test — all checks run to completion, and failures are reported together at test end.
@@ -12,23 +13,21 @@ Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](#upgra
 
 ## Installation
 
-Not published on PyPI — install from Git:
-
 ```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git"
-```
-
-Or, to pin a release:
-
-```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
+pip install pytest-verifier
 ```
 
 This installs the `pytest-verifier` distribution and the `pytest_verifier` package. pytest loads
 the plugin automatically. When plugin autoloading is disabled (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`),
 load it with `-p pytest_verifier`; to turn it off for one run, use `-p no:pytest_verifier`.
 
-Requires Python 3.9+, pytest 7+ and pluggy 1.2+.
+Requires Python 3.9+, pytest 7+ and pluggy 1.2+. Releases up to 0.7.0 were not on PyPI; to
+install one of them, or the development version, use Git:
+
+```bash
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
+pip install "git+https://github.com/guillegil/pytest_verify.git"
+```
 
 ## Quick Start
 
@@ -46,18 +45,24 @@ reported together in a single `ChecksFailedError`.
 
 ## Failure Output
 
-When one or more checks fail, the test is reported as **failed** with a summary
-listing the failed checks (`✗`) before the passed ones (`✓`), each with its index,
-name, and an `expected … got …` detail:
+When one or more checks fail, the test is reported as **failed** with a summary. Its first line
+names the first failed check, so `-r` summaries and junit reports say what failed. Then it lists
+the failed checks (`✗`) before the passed ones (`✓`), each with its index, name, where a failed
+check was made, and an `expected … got …` detail:
 
 ```text
-1 of 3 checks failed
+1 of 3 checks failed: Vout — expected 3.3V ± 0.05V, got 3.8V
 
-  ✗ [1] Vout — expected 3.3V ± 0.05V, got 3.8V
+  ✗ [1] Vout (tests/test_psu.py:3) — expected 3.3V ± 0.05V, got 3.8V
 
   ✓ [0] PSU stable — True
   ✓ [2] Throughput — 120Mbps > 100Mbps
 ```
+
+A failed check shows the file and line that made it, relative to the rootdir. When a helper
+made it, the line of the test that called the helper follows:
+`(lib/rails.py:8, called from tests/test_psu.py:22)`, or `called from line 22` when both are in
+the same file. With `--tb=line`, pytest points at that line of the test.
 
 How values read in the summary:
 
@@ -101,6 +106,39 @@ How values read in the summary:
   e.g. `if not check["passed"]: breakpoint()`.
 - Rerun filters match exceptions by name, so use `--only-rerun ChecksFailedError` with
   pytest-rerunfailures.
+
+### Stopping a test at a failed check
+
+Some failures make the rest of a test meaningless, such as a link that could not be opened.
+Make that check required: `verify.require` has the same methods as `verify`, and a check made
+with it that fails stops the test at once with `ChecksFailedError`, listing every check made so
+far.
+
+```python
+def test_link(verify):
+    link = open_link()
+    verify.require.is_not_none(link, name="Link")   # stops here when there is no link
+    verify.equal(link.status(), "ready", name="Status")
+```
+
+`verify.require(check)` does the same for a check made earlier or built with `checks`, for
+example `verify.require(verify.equal(reply, "OK", name="Reply"))`. The check stays recorded, so
+a test that catches the error still fails. In a fixture, a required check that fails is an
+error in the test's setup or teardown, like a failed `assert` there.
+
+To stop every test at its first failed check, for example while bringing up new hardware, run
+pytest with `--verify-fail-fast`, or turn it on in the configuration:
+
+```toml
+[tool.pytest.ini_options]
+verify_fail_fast = true
+```
+
+Every check is judged when it is made. With fail-fast, a check passed directly as a
+`conditional` case or a `guard` branch is judged before the composite chooses, so a failed one
+stops the test even when its branch would not be selected. Pass such children as functions
+(see [Lazy children](#lazy-children--build-only-the-selected-branch)) so that only the selected
+one is judged.
 
 ### Checks that cannot be evaluated
 
@@ -185,7 +223,9 @@ Text compared with text fails (see
 | `verify.fail(msg, *, name=None)` | Unconditional failure |
 
 The fixture also has `verify.record(check)`, which records a check built elsewhere (see
-[Recording checks built by helpers](#recording-checks-built-by-helpers)).
+[Recording checks built by helpers](#recording-checks-built-by-helpers)), and `verify.require`,
+whose checks stop the test when they fail (see
+[Stopping a test at a failed check](#stopping-a-test-at-a-failed-check)).
 
 ## Usage Examples
 
@@ -404,8 +444,10 @@ def pytest_runtest_makereport(item, call):
 ```
 
 It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
-`passed`, `detail` and `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
-it), and holds JSON-safe copies of the checked values taken when the check was made, so
+`passed`, `detail`, `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
+it) and `location` (`"tests/test_psu.py:3"`, where it was made, relative to the rootdir). When
+a helper made the check, `called_from` holds the line of the test function that led to it. Each
+check holds JSON-safe copies of the checked values taken when the check was made, so
 `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
 this to render verification cards.
@@ -427,6 +469,17 @@ def pytest_verify_results(item, when, checks, passed):
 The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
 so they also reach the main process under pytest-xdist.
 
+## Upgrading from 0.7
+
+- pytest-verifier is on PyPI: `pip install pytest-verifier`.
+- The first line of a failure now names the first failed check:
+  `2 of 5 checks failed: Vout — expected 3.3V ± 0.05V, got 3.8V (+1 more)`. A tool that
+  matched the whole line `N of M checks failed` should match its start instead.
+- Failed checks show where they were made, and recorded checks have the new keys `location`
+  and `called_from`.
+- With `--tb=line`, the line shown is the test's line that made the first failed check instead
+  of the `def` line.
+
 ## Upgrading from 0.6
 
 Most of 0.7 changes how failures read. A few changes can affect existing tests:
@@ -441,7 +494,8 @@ Most of 0.7 changes how failures read. A few changes can affect existing tests:
   [`get_check_results()` or `report.verify_checks`](#reading-results-from-another-plugin)
   rather than parse the text.
 
-Every change is listed in the [CHANGELOG](CHANGELOG.md).
+Every change is listed in the
+[CHANGELOG](https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md).
 
 ## Upgrading from pytest-verify
 
@@ -453,7 +507,7 @@ First uninstall the old distribution, then install the new one:
 
 ```bash
 pip uninstall pytest-verify
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
+pip install pytest-verifier
 ```
 
 If pytest-verify is still installed, for example after `pip install -U` from the same git URL,
@@ -483,25 +537,31 @@ uv run pytest
 Type-check with `uv run --with mypy mypy` (strict mode, configured in `pyproject.toml`).
 
 CI runs on every push to `main` and every pull request targeting `main`
-(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It runs the test suite on
+(see [`.github/workflows/ci.yml`](https://github.com/guillegil/pytest_verify/blob/main/.github/workflows/ci.yml)). It runs the test suite on
 Python 3.9–3.13 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
 `mypy --strict` and the tests of the built sdist.
 
 To release, bump `version` in `pyproject.toml`, move the `[Unreleased]` CHANGELOG entries under
-the new version, merge, then push a `vX.Y.Z` tag or run the **Release** workflow
-([`.github/workflows/release.yml`](.github/workflows/release.yml)). It publishes a GitHub
-release with the CHANGELOG notes and the built sdist and wheel.
+a dated heading for the new version, merge, then push a `vX.Y.Z` tag or run the **Release**
+workflow
+([`.github/workflows/release.yml`](https://github.com/guillegil/pytest_verify/blob/main/.github/workflows/release.yml)).
+It builds the sdist and wheel once, runs the tests against the wheel with the oldest and the
+newest pytest, tags the commit, uploads to PyPI with Trusted Publishing, and publishes a GitHub
+release with the CHANGELOG notes. Run it with the `testpypi` target to try an upload on
+TestPyPI first.
 
 ## Known Issues and Roadmap
 
 Version 0.4.0 fixed every bug found by the review of 0.3.1. The report is in
-[`bugs-0.3.1.md`](bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
+[`bugs-0.3.1.md`](https://github.com/guillegil/pytest_verify/blob/main/bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
 for each bug.
 
 Planned improvements and feature ideas are collected in
-[`improvements-and-ideas.md`](improvements-and-ideas.md). [`CHECKLIST.md`](CHECKLIST.md) tracks
-every item and the release that handles it. See [`CHANGELOG.md`](CHANGELOG.md) for what each
-release changed.
+[`improvements-and-ideas.md`](https://github.com/guillegil/pytest_verify/blob/main/improvements-and-ideas.md).
+[`CHECKLIST.md`](https://github.com/guillegil/pytest_verify/blob/main/CHECKLIST.md) tracks every
+item and the release that handles it. See
+[`CHANGELOG.md`](https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md) for what
+each release changed.
 
 ## License
 

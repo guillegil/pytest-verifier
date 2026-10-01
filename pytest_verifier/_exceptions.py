@@ -16,6 +16,10 @@ __all__ = ["ChecksFailedError", "format_summary", "render_detail"]
 #: Longest detail a summary line shows; each value in a detail is bounded already.
 _DETAIL_LIMIT = 2000
 
+#: Longest first failure the header line repeats, and longest location shown.
+_HEADER_LIMIT = 300
+_SITE_LIMIT = 200
+
 #: The summary's own markers, and their stand-ins where a terminal cannot show them.
 _ASCII = {"✗": "x", "✓": "ok", "…": "..."}
 
@@ -74,12 +78,47 @@ def _terminal_line(line: str, codec: str) -> str:
     return " ".join(head) + " " + _encodable(line[match.end() :], codec)
 
 
-def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
-    name = render_text(result.get("name", ""))
+def _detail(result: Mapping[str, Any], passed: bool) -> str:
     stored = result.get("detail")
     detail = stored if isinstance(stored, str) else render_detail(result, passed)
-    detail = shorten(escape(detail), _DETAIL_LIMIT)
-    return f"  {marker} [{idx}] {name}{summary_separator(result)}{detail}"
+    return shorten(escape(detail), _DETAIL_LIMIT)
+
+
+def _site(result: Mapping[str, Any]) -> str:
+    """`` (path:line)`` or `` (path:line, called from path:line)`` (``line N`` in the same
+    file), or ``""``."""
+    location, called_from = result.get("location"), result.get("called_from")
+    if not isinstance(location, str):
+        return ""
+    site = shorten(escape(location), _SITE_LIMIT)
+    if isinstance(called_from, str):
+        path, _, line = called_from.rpartition(":")
+        same_file = path == location.rpartition(":")[0] and line.isdigit()
+        caller = f"line {line}" if same_file else shorten(escape(called_from), _SITE_LIMIT)
+        site += f", called from {caller}"
+    return f" ({site})"
+
+
+def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
+    name = render_text(result.get("name", ""))
+    site = "" if passed else _site(result)
+    return f"  {marker} [{idx}] {name}{site}{summary_separator(result)}{_detail(result, passed)}"
+
+
+def _header(failed: List[Any], total: int) -> str:
+    """``N of M checks failed``, followed by the first failure, so that the first line, which
+    ``-r`` summaries and junit messages show, says what failed."""
+    header = f"{len(failed)} of {total} checks failed"
+    if not failed:
+        return header
+    try:
+        result = failed[0][1]
+        name = render_text(result.get("name", ""))
+        first = shorten(f"{name}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT)
+    except Exception:
+        return header
+    more = f" (+{len(failed) - 1} more)" if len(failed) > 1 else ""
+    return f"{header}: {first}{more}"
 
 
 def format_summary(
@@ -90,9 +129,10 @@ def format_summary(
 ) -> str:
     """The ``N of M checks failed`` summary of spec §7. Never raises.
 
-    Checks are numbered from *start*, their index among all the checks of the test. Every
-    failed check is listed; at most *max_passed* passed checks are (all when ``None``), then a
-    line says how many more passed.
+    The first line repeats the first failure. Checks are numbered from *start*, their index
+    among all the checks of the test. Every failed check is listed, with where it was made when
+    the record says; at most *max_passed* passed checks are (all when ``None``), then a line
+    says how many more passed.
     """
     results = list(results)
     failed = [(i, r) for i, r in enumerate(results, start) if r.get("passed") is not True]
@@ -104,7 +144,7 @@ def format_summary(
         except Exception as exc:
             return f"  {marker} [{idx}] <check could not be rendered: {describe_error(exc)}>"
 
-    lines: List[str] = [f"{len(failed)} of {len(results)} checks failed", ""]
+    lines: List[str] = [_header(failed, len(results)), ""]
     lines.extend(line("✗", idx, r, False) for idx, r in failed)
     if passed:
         shown = passed if max_passed is None else passed[: max(max_passed, 0)]
@@ -122,15 +162,17 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
 
     The ``verify`` fixture raises it at the end of the phase in which the checks were recorded:
     after the test body for checks made in fixtures' setup and in the test, and after teardown
-    for checks made while fixtures are torn down. It is an ``AssertionError``, so
-    ``pytest.raises(AssertionError)`` and ``xfail(raises=AssertionError)`` catch it. Rerun
+    for checks made while fixtures are torn down. A check made through ``verify.require``, or
+    any check with ``--verify-fail-fast``, raises it as soon as it fails. It is an
+    ``AssertionError``, so ``pytest.raises(AssertionError)`` and
+    ``xfail(raises=AssertionError)`` catch it. Rerun
     filters that match by name need ``ChecksFailedError``. pytest prints only its message,
     without a traceback.
 
-    The message follows spec §7: a ``N of M checks failed`` header, then the
-    failed checks (``✗``) before the passed checks (``✓``), each prefixed with
-    its ``[seq]`` index in evaluation order, its name, and a per-type
-    ``expected … got …`` (failed) or compact (passed) detail clause.
+    The message follows spec §7: a ``N of M checks failed`` header that repeats the first
+    failure, then the failed checks (``✗``) before the passed checks (``✓``), each prefixed
+    with its ``[seq]`` index in evaluation order, its name, where a failed check was made, and
+    a per-type ``expected … got …`` (failed) or compact (passed) detail clause.
 
     Args:
         results: The check descriptors to summarize.

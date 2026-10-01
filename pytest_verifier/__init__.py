@@ -39,9 +39,23 @@ __all__ = [
     "GuardBranch",
     "UnusedCheckWarning",
     "Verify",
+    "__version__",
     "checks",
     "get_check_results",
 ]
+
+
+def _installed_version() -> str:
+    try:
+        from importlib import metadata
+
+        return metadata.version("pytest-verifier")
+    except Exception:  # running from a source tree that is not installed
+        return "0+unknown"
+
+
+#: The installed version of pytest-verifier, e.g. ``"0.8.0"``.
+__version__: str = _installed_version()
 
 #: Builds checks without recording them: every method returns an unevaluated descriptor.
 #: In a test, use the ``verify`` fixture instead; it records the checks that decide the outcome.

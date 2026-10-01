@@ -42,7 +42,8 @@ class CheckDescriptor(_CheckIdentity, total=False):
     can be evaluated later. Descriptors recorded by the ``verify`` fixture are already judged:
     they carry ``passed``, a rendered ``detail``, an ``error`` when the check could not be
     evaluated, the test ``phase`` they were made in (``"setup"``, ``"call"`` or
-    ``"teardown"``), and JSON-safe snapshots of the checked values.
+    ``"teardown"``), where they were made (``location``, and ``called_from`` when a helper made
+    them), and JSON-safe snapshots of the checked values.
     """
 
     # --- set when recorded (fixture path) ---
@@ -50,6 +51,10 @@ class CheckDescriptor(_CheckIdentity, total=False):
     detail: str
     error: Optional[str]
     phase: str
+    #: ``"path:line"`` of the call that made the check, relative to the rootdir.
+    location: str
+    #: ``"path:line"`` in the test function that led to it, when that is another line.
+    called_from: str
 
     # --- check-type-specific ---
     actual: Any

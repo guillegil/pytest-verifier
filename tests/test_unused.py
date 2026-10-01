@@ -327,7 +327,7 @@ def test_checks_a_fixture_records_in_teardown_count(pytester: pytest.Pytester) -
     """)
     result = pytester.runpytest(*_ERROR)
     result.assert_outcomes(passed=3, errors=1)
-    result.stdout.fnmatch_lines(["*✗ ?0? c — expected 2, got 1*"])
+    result.stdout.fnmatch_lines(["*✗ ?0? c (*.py:9) — expected 2, got 1*"])
     _no_warning(result)
 
 

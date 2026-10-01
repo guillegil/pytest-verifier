@@ -22,22 +22,29 @@ afterwards, so the call phase reads that record too.
 The checks judged at the end of a phase are also passed to the ``pytest_verify_results`` hook
 and attached to that phase's report as ``report.verify_checks``.
 
+A check made through ``verify.require``, or any check with ``--verify-fail-fast``, raises
+``ChecksFailedError`` as soon as it fails (see :mod:`pytest_verifier._run`). The end of the phase
+then keeps that error instead of adding the same summary as a section.
+
 Checks built with ``pytest_verifier.checks`` in the test body and still unused when the test's
 teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`).
 """
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
 import re
 import sys
-from typing import Any, Dict, Generator, Iterator, List, Optional
+from types import CodeType
+from typing import Any, Dict, FrozenSet, Generator, Iterator, List, Optional, Set
 
 import pytest
 
 from . import _unused
 from ._descriptors import CheckDescriptor
 from ._exceptions import ChecksFailedError, for_terminal, format_summary
+from ._location import display_path, split
 from ._run import Run, recording_verify
 from ._stash import check_results_key
 from ._verify import Verify
@@ -80,6 +87,31 @@ def _old_plugin_will_load(pluginmanager: pytest.PytestPluginManager) -> bool:
     )
 
 
+_FAIL_FAST_HELP = (
+    "Stop each test at its first failed check, as if every check were made with "
+    "verify.require."
+)
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("pytest-verifier", "soft assertions (pytest-verifier)")
+    group.addoption(
+        "--verify-fail-fast",
+        action="store_true",
+        default=None,
+        dest="verify_fail_fast",
+        help=_FAIL_FAST_HELP + " Default: the verify_fail_fast ini setting (false).",
+    )
+    parser.addini("verify_fail_fast", _FAIL_FAST_HELP, type="bool", default=False)
+
+
+def _fail_fast(config: pytest.Config) -> bool:
+    option = config.getoption("verify_fail_fast", None)
+    if option is not None:
+        return bool(option)
+    return bool(config.getini("verify_fail_fast"))
+
+
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
     """Register ``pytest_verify_results`` for plugins that read results without importing us."""
     from . import _hookspecs
@@ -113,6 +145,11 @@ def _close_phase(
     if passed:
         return None
     options = _summary_options(item.config)
+    if run.raised(exc):  # a required check stopped the phase; its error lists the checks
+        stopped: ChecksFailedError = exc  # type: ignore[assignment]
+        if stopped.start == start and len(stopped.results) == len(pending):
+            return None
+        return ChecksFailedError(pending, start=start, **options)  # also checks made after it
     if exc is None or _is_skip(exc):
         return ChecksFailedError(pending, start=start, **options)
     run.sections[when] = format_summary(pending, start=start, **options)
@@ -228,10 +265,32 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
 def pytest_runtest_setup(item: pytest.Item) -> Generator[None, Any, Any]:
     """Start a fresh run for every attempt (pytest-rerunfailures reuses the item)."""
     _finish_tracking(item, warn=False)  # left over by an attempt that did not reach teardown
-    run = Run()
+    config = item.config
+    run = Run(
+        str(config.rootpath),
+        _test_codes(item),
+        fail_fast=_fail_fast(config),
+        **_summary_options(config),
+    )
     item.stash[_run_key] = run
     item.stash[check_results_key] = run.records
     return (yield from _run_phase(item, "setup"))
+
+
+def _test_codes(item: pytest.Item) -> FrozenSet[CodeType]:
+    """The code of the test function, also behind decorators, to tell a helper's checks from
+    the test's own."""
+    codes: Set[CodeType] = set()
+    for name in ("function", "obj"):
+        try:
+            function = getattr(item, name, None)
+            for candidate in (function, inspect.unwrap(function) if callable(function) else None):
+                code = getattr(getattr(candidate, "__func__", candidate), "__code__", None)
+                if isinstance(code, CodeType):
+                    codes.add(code)
+        except Exception:  # an item whose function cannot be read: no ``called_from``
+            pass
+    return frozenset(codes)
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
@@ -333,7 +392,7 @@ def _decorate_report(
 _SECTION = "Soft assertion failures"
 
 #: The first line of a ``ChecksFailedError`` message.
-_HEADER = re.compile(r"\d+ of \d+ checks failed$")
+_HEADER = re.compile(r"\d+ of \d+ checks failed(: .*)?$")
 
 
 @pytest.hookimpl(tryfirst=True)
@@ -407,8 +466,9 @@ def _point_crash_line_at_test(
 ) -> None:
     """Point the one-line crash entry (``--tb=line``, ``-r`` summaries) at the test.
 
-    Its location becomes the test's line instead of this plugin's, and its message the
-    ``N of M checks failed`` summary without the exception's module path, as in 0.3.1.
+    Its location becomes the line in the test's file that made the first failed check (else
+    the test's ``def`` line) instead of this plugin's, and its message the ``N of M checks
+    failed`` summary without the exception's module path, as in 0.3.1.
     """
     longrepr = report.longrepr
     if not hasattr(longrepr, "reprcrash"):
@@ -424,7 +484,20 @@ def _point_crash_line_at_test(
     if lineno is None:
         return
     crash.path = str(path)
-    crash.lineno = lineno + 1
+    crash.lineno = _first_failed_line(item, excinfo.value) or lineno + 1
+
+
+def _first_failed_line(item: pytest.Item, error: Any) -> Optional[int]:
+    """The line in the test's file that made the first failed check, if any."""
+    test_file = display_path(str(item.path), str(item.config.rootpath))
+    for result in getattr(error, "results", ()):
+        if result.get("passed") is True:
+            continue
+        for key in ("called_from", "location"):
+            site = split(result.get(key))
+            if site is not None and site[0] == test_file:
+                return site[1]
+    return None
 
 
 @pytest.fixture()

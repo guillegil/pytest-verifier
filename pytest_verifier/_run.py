@@ -10,16 +10,34 @@ at the top level when it is made, including the ones a child callable (a lazy
 recorded, it absorbs its children: they are taken out of the top level, by identity. So a check
 a callable made but did not return stays on its own, and if building the composite is
 interrupted (``pytest.skip`` in an ``all_satisfy`` factory), the checks made so far still count.
+
+A check made through ``verify.require``, or any check when fail-fast is on, stops the test when
+it fails: :meth:`Run.stop` raises ``ChecksFailedError`` for the checks made so far. It does not
+judge them, so the end of the phase still does: a test that catches the error still fails.
 """
 from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from types import CodeType
+from typing import (
+    AbstractSet,
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    NoReturn,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from . import _unused
 from ._checks import child_checks
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
+from ._exceptions import ChecksFailedError
+from ._location import NOWHERE, Site, locate
 from ._settle import settle
 from ._verify import Sink, Verify
 
@@ -51,7 +69,14 @@ class _Entry:
 class Run:
     """The checks of one attempt to run one test item. Thread-safe."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        rootdir: Optional[str] = None,
+        test_codes: AbstractSet[CodeType] = frozenset(),
+        *,
+        fail_fast: bool = False,
+        max_passed: Optional[int] = None,
+    ) -> None:
         self.lock = threading.RLock()
         #: Top-level records, in order. The same list object is the results stash.
         self.records: List[CheckDescriptor] = []
@@ -63,6 +88,15 @@ class Run:
         self.sections: Dict[str, str] = {}
         #: Checks judged at the end of each phase, waiting to be attached to its report.
         self.judged: Dict[str, List[CheckDescriptor]] = {}
+        #: Where locations are relative to, and the code of the test function.
+        self.rootdir = rootdir
+        self.test_codes = test_codes
+        #: Whether every failed check stops the test, as ``verify.require`` does.
+        self.fail_fast = fail_fast
+        #: How many passed checks a summary lists.
+        self.max_passed = max_passed
+        #: The errors :meth:`stop` raised.
+        self.stops: List[ChecksFailedError] = []
         self._entries: Dict[int, _Entry] = {}
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
@@ -77,13 +111,30 @@ class Run:
         if os.getpid() != self.pid:
             raise RuntimeError(_FORKED)
 
-    def add(self, record: CheckDescriptor, passed: bool, absorb: Iterable[Any] = ()) -> None:
+    def locate(self) -> Site:
+        """Where the check being recorded now was made."""
+        return locate(self.rootdir, self.test_codes)
+
+    def add(
+        self,
+        record: CheckDescriptor,
+        passed: bool,
+        absorb: Iterable[Any] = (),
+        site: Site = NOWHERE,
+    ) -> None:
         """Record a check at the top level, first absorbing the children of a composite (see
         :meth:`absorb`)."""
+        location, called_from = site
         with self.lock:
             self.ensure_open()
             self.absorb(absorb)
             record["phase"] = self.phase
+            record.pop("location", None)  # a copy of another record brings its own
+            record.pop("called_from", None)
+            if location is not None:
+                record["location"] = location
+            if called_from is not None:
+                record["called_from"] = called_from
             self._entries[id(record)] = _Entry(record, passed)
             self.records.append(record)
 
@@ -121,26 +172,59 @@ class Run:
         Returns the index of the first of them in :attr:`records` too. They always come last:
         records are appended, and a phase judges every record made before its end.
         """
+        return self._unjudged(take=True)
+
+    def _unjudged(self, take: bool) -> Tuple[int, List[CheckDescriptor]]:
         with self.lock:
             pending = []
             for record in self.records:
                 entry = self._entries[id(record)]
                 if not entry.judged:
-                    entry.judged = True
+                    entry.judged = take
                     pending.append(dict(record, passed=entry.passed))
             return len(self.records) - len(pending), pending  # type: ignore[return-value]
 
+    def stop(self) -> NoReturn:
+        """Stop the test: raise ``ChecksFailedError`` for the checks not judged yet.
+
+        They stay unjudged, so the end of the phase judges them as usual (see
+        :meth:`raised`).
+        """
+        with self.lock:
+            start, pending = self._unjudged(take=False)
+            error = ChecksFailedError(pending, start=start, max_passed=self.max_passed)
+            self.stops.append(error)
+        raise error
+
+    def raised(self, exc: Optional[BaseException]) -> bool:
+        """Whether *exc* is an error :meth:`stop` raised."""
+        return exc is not None and any(exc is error for error in self.stops)
+
 
 class Recorder(Sink):
-    """The fixture's sink: judges, snapshots and records every check in a :class:`Run`."""
+    """The fixture's sink: judges, snapshots and records every check in a :class:`Run`.
 
-    def __init__(self, run: Run) -> None:
+    A *hard* recorder (``verify.require``) stops the test when a check fails; with fail-fast
+    on, every recorder does.
+    """
+
+    def __init__(self, run: Run, hard: bool = False) -> None:
         self._run = run
+        self._hard = hard
+
+    def hard(self) -> Sink:
+        return self if self._hard else Recorder(self._run, hard=True)
+
+    def _enforce(self, passed: bool) -> None:
+        if not passed and (self._hard or self._run.fail_fast):
+            self._run.stop()
 
     def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
-        self._run.ensure_open()
-        record, passed = settle(descriptor, self._run.known)
-        self._run.add(record, passed)
+        run = self._run
+        run.ensure_open()
+        record, passed = settle(descriptor, run.known)
+        run.add(record, passed, site=run.locate())
+        self._enforce(passed)
         return record
 
     def composite(
@@ -160,7 +244,8 @@ class Recorder(Sink):
             raise
         _unused.used(*child_checks(descriptor))
         record, passed = settle(descriptor, run.known)
-        run.add(record, passed, absorb=child_checks(descriptor))
+        run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
+        self._enforce(passed)
         return record
 
     def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
@@ -169,10 +254,14 @@ class Recorder(Sink):
         run.ensure_open()
         hit = run.known(descriptor)
         if hit is not None:
-            return hit[1]
+            passed, record = hit
+            if self._hard and not passed:  # fail-fast already stopped when it was recorded
+                run.stop()
+            return record
         _unused.used(descriptor)
         record, passed = settle(descriptor, run.known)
-        run.add(record, passed, absorb=child_checks(descriptor))
+        run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
+        self._enforce(passed)
         return record
 
 

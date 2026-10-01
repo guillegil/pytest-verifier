@@ -261,7 +261,7 @@ class TestUnittest:
         """)
         result = pytester.runpytest("--tb=line")
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["*.py:*: 1 of 1 checks failed"])
+        result.stdout.fnmatch_lines(["*.py:*: 1 of 1 checks failed: Bad — expected 2, got 1"])
 
     _TESTCASE = """
         import unittest
@@ -305,8 +305,8 @@ class TestUnittest:
         ])
         result.stdout.fnmatch_lines_random([
             "*.py:*: AssertionError: 3 != 4",
-            "*.py:*: 1 of 1 checks failed",
-            "*.py:*: 1 of 1 checks failed",
+            "*.py:*: 1 of 1 checks failed: *",
+            "*.py:*: 1 of 1 checks failed: *",
         ])
 
     def test_testcase_hard_failure_shows_the_soft_summary(self, pytester):

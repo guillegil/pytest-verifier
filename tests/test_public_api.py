@@ -232,3 +232,30 @@ class TestCompositeSchemaThroughReader:
         """)
         result = pytester.runpytest()
         result.assert_outcomes(passed=1)
+
+
+class TestVersion:
+    def test_version_is_the_installed_one(self):
+        from importlib import metadata
+
+        import pytest
+
+        import pytest_verifier
+
+        assert "__version__" in pytest_verifier.__all__
+        try:
+            installed = metadata.version("pytest-verifier")
+        except metadata.PackageNotFoundError:
+            pytest.skip("pytest-verifier is not installed")
+        assert pytest_verifier.__version__ == installed
+
+    def test_an_uninstalled_tree_says_so(self, monkeypatch):
+        from importlib import metadata
+
+        import pytest_verifier
+
+        def missing(name):
+            raise metadata.PackageNotFoundError(name)
+
+        monkeypatch.setattr(metadata, "version", missing)
+        assert pytest_verifier._installed_version() == "0+unknown"
