@@ -7,6 +7,7 @@ goes through this module, so a misbehaving value can never stop a test or crash 
 """
 from __future__ import annotations
 
+import collections
 import enum
 import math
 import reprlib
@@ -18,6 +19,12 @@ _SNAPSHOT_NODE_LIMIT = 10_000
 
 #: Deepest nesting a snapshot copies before it falls back to a bounded repr string.
 _SNAPSHOT_MAX_DEPTH = 50
+
+#: Longest text :func:`bounded_format` returns.
+_TEXT_LIMIT = 1000
+
+#: Containers whose ``format()`` is their ``repr()``, rendered with the bounded repr instead.
+_CONTAINERS = (list, tuple, dict, set, frozenset, collections.deque)
 
 _bounded = reprlib.Repr()
 _bounded.maxlevel = 6
@@ -68,6 +75,19 @@ def bounded_repr(value: object) -> str:
         return _bounded.repr(value)
     except Exception:
         return safe_repr(value)
+
+
+def bounded_format(value: object) -> str:
+    """:func:`safe_format`, with large containers and long text shortened.
+
+    Built-in containers get the bounded ``repr`` (what ``format`` would show, with the items
+    past the first 100 elided), and any other text longer than 1000 characters is cut, so one
+    huge value cannot blow up a summary or a recorded ``detail``.
+    """
+    if isinstance(value, _CONTAINERS):
+        return bounded_repr(value)
+    text = safe_format(value)
+    return text if len(text) <= _TEXT_LIMIT else text[: _TEXT_LIMIT - 3] + "..."
 
 
 def describe_error(exc: BaseException) -> str:

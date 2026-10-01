@@ -10,19 +10,20 @@ examined, and if any failed, :class:`ChecksFailedError` is raised from that phas
 - after setup, only when setup itself is skipped (a skip never hides a failed check).
 
 When the phase already failed with another exception, that exception is kept and the soft
-summary is added to its report as a "Soft assertion failures" section.
+summary is added to its report as a "Soft assertion failures" section. A unittest ``TestCase``
+does not raise its failures and skips: pytest records them on the item and reports them
+afterwards, so the call phase reads that record too.
 """
 from __future__ import annotations
 
-import functools
 import os
+import sys
 import threading
 from typing import Any, Callable, Generator, Iterable, Mapping, Optional, Sequence
 
 import pytest
 
 from ._descriptors import (
-    COMPOSITE_TYPES,
     CheckDescriptor,
     ClassInfo,
     build_all_satisfy,
@@ -76,12 +77,11 @@ _FORKED = (
 class _Entry:
     """What the run knows about one recorded descriptor."""
 
-    __slots__ = ("record", "passed", "seq", "top_level", "judged")
+    __slots__ = ("record", "passed", "top_level", "judged")
 
-    def __init__(self, record: CheckDescriptor, passed: bool, seq: int) -> None:
+    def __init__(self, record: CheckDescriptor, passed: bool) -> None:
         self.record = record
         self.passed = passed
-        self.seq = seq
         self.top_level = True
         self.judged = False
 
@@ -98,11 +98,6 @@ class _Run:
         #: Soft summaries waiting to be attached to the report of a phase that also errored.
         self.sections: dict[str, str] = {}
         self._entries: dict[int, _Entry] = {}
-        self._next_seq = 0
-
-    def mark(self) -> int:
-        """Sequence number the next recorded check will get."""
-        return self._next_seq
 
     def known(self, descriptor: Any) -> Optional[tuple[bool, CheckDescriptor]]:
         entry = self._entries.get(id(descriptor))
@@ -121,24 +116,22 @@ class _Run:
         record: CheckDescriptor,
         passed: bool,
         absorb: Iterable[Any] = (),
-        since: Optional[int] = None,
     ) -> None:
         """Record a top-level check, first absorbing its children (see :meth:`absorb`)."""
         with self.lock:
             self.ensure_open()
-            self.absorb(absorb, since)
-            entry = _Entry(record, passed, self._next_seq)
-            self._next_seq += 1
+            self.absorb(absorb)
+            entry = _Entry(record, passed)
             self._entries[id(record)] = entry
             self.records.append(record)
 
-    def absorb(self, children: Iterable[Any], since: Optional[int]) -> None:
-        """Remove from the top level the children that were recorded for a composite.
+    def absorb(self, children: Iterable[Any]) -> None:
+        """Remove from the top level the recorded checks passed to a composite as children.
 
-        A child is absorbed only if it was recorded at or after *since*: the sequence number
-        taken when the composite method was looked up, which Python does before evaluating
-        the call's arguments. A check recorded earlier and only reused as a child stays a
-        top-level check (its verdict still counts).
+        A child belongs to the composite whenever it was recorded, so building ``cases`` or
+        ``branches`` in a variable before the call works like building them inline. To keep a
+        check on its own as well, pass a copy (``dict(check)``): only the recorded object
+        itself is absorbed.
         """
         with self.lock:
             ids = set()
@@ -146,19 +139,21 @@ class _Run:
                 entry = self._entries.get(id(child))
                 if entry is None or entry.record is not child or not entry.top_level:
                     continue
-                if since is not None and entry.seq < since:
-                    continue
                 entry.top_level = False
                 ids.add(id(child))
-            # Absorbed children are the most recent records, so search from the end.
+            # Children are usually the most recent records, so search from the end.
             index = len(self.records)
             while ids and index > 0:
                 index -= 1
                 if id(self.records[index]) in ids:
                     ids.discard(id(self.records.pop(index)))
 
-    def take_unjudged(self) -> list[CheckDescriptor]:
-        """Top-level checks not judged by an earlier phase, each with its private verdict."""
+    def take_unjudged(self) -> tuple[int, list[CheckDescriptor]]:
+        """Top-level checks not judged by an earlier phase, each with its private verdict.
+
+        Returns the index of the first of them in :attr:`records` too. They always come last:
+        records are appended, and a phase judges every record made before its end.
+        """
         with self.lock:
             pending = []
             for record in self.records:
@@ -166,12 +161,10 @@ class _Run:
                 if not entry.judged:
                     entry.judged = True
                     pending.append(dict(record, passed=entry.passed))
-            return pending  # type: ignore[return-value]
+            return len(self.records) - len(pending), pending  # type: ignore[return-value]
 
 
 _run_key = pytest.StashKey[_Run]()
-
-_COMPOSITE_METHODS = COMPOSITE_TYPES
 
 
 def _loose_children(*containers: Any) -> list[Any]:
@@ -204,15 +197,6 @@ class _FixtureVerify(Verify):
     def __init__(self, run: _Run) -> None:
         self._run = run
 
-    def __getattribute__(self, name: str) -> Any:
-        attribute = super().__getattribute__(name)
-        if name in _COMPOSITE_METHODS:
-            # Remember how many checks existed before this composite's arguments are
-            # evaluated: only checks recorded from now on are its own children.
-            run: _Run = super().__getattribute__("_run")
-            return functools.partial(attribute, _since=run.mark())
-        return attribute
-
     # ------------------------------------------------------------------
     # Recording
     # ------------------------------------------------------------------
@@ -225,7 +209,7 @@ class _FixtureVerify(Verify):
         return record
 
     def _record_composite(
-        self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any], since: Optional[int]
+        self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
     ) -> CheckDescriptor:
         """Build, judge and store a composite, absorbing the children made for it."""
         self._run.ensure_open()
@@ -234,10 +218,10 @@ class _FixtureVerify(Verify):
         except Exception:
             # Invalid arguments: the children built for this call must not linger as
             # standalone checks.
-            self._run.absorb(_loose_children(*arguments), since)
+            self._run.absorb(_loose_children(*arguments))
             raise
         record, passed = settle(descriptor, self._run.known)
-        self._run.add(record, passed, absorb=child_checks(descriptor), since=since)
+        self._run.add(record, passed, absorb=child_checks(descriptor))
         return record
 
     # ------------------------------------------------------------------
@@ -327,10 +311,9 @@ class _FixtureVerify(Verify):
         descriptor_factory: Callable[[Any], CheckDescriptor],
         *,
         name: str,
-        _since: Optional[int] = None,
     ) -> CheckDescriptor:
         return self._record_composite(
-            lambda: build_all_satisfy(items, descriptor_factory, name=name), (), _since
+            lambda: build_all_satisfy(items, descriptor_factory, name=name), ()
         )
 
     def conditional(
@@ -340,12 +323,10 @@ class _FixtureVerify(Verify):
         cases: Mapping[Any, CheckDescriptor],
         default: Optional[CheckDescriptor] = None,
         name: str,
-        _since: Optional[int] = None,
     ) -> CheckDescriptor:
         return self._record_composite(
             lambda: build_conditional(switch_value, cases=cases, default=default, name=name),
             (cases, default),
-            _since,
         )
 
     def guard(
@@ -354,10 +335,9 @@ class _FixtureVerify(Verify):
         *,
         default: Optional[CheckDescriptor] = None,
         name: str,
-        _since: Optional[int] = None,
     ) -> CheckDescriptor:
         return self._record_composite(
-            lambda: build_guard(branches, default=default, name=name), (branches, default), _since
+            lambda: build_guard(branches, default=default, name=name), (branches, default)
         )
 
     def fail(self, msg: str, *, name: Optional[str] = None) -> CheckDescriptor:
@@ -376,13 +356,41 @@ def _close_phase(run: _Run, when: str, exc: Optional[BaseException]) -> Optional
     summary is kept for that phase's report instead, except after a skip: a skip must not
     hide a failed check, so the failure is raised in its place.
     """
-    pending = run.take_unjudged()
+    start, pending = run.take_unjudged()
     if all(record.get("passed") is True for record in pending):
         return None
-    if exc is None or isinstance(exc, pytest.skip.Exception):
-        return ChecksFailedError(pending)
-    run.sections[when] = format_summary(pending)
+    if exc is None or _is_skip(exc):
+        return ChecksFailedError(pending, start=start)
+    run.sections[when] = format_summary(pending, start=start)
     return None
+
+
+def _is_skip(exc: BaseException) -> bool:
+    """Whether *exc* skips the test: ``pytest.skip`` or unittest's ``SkipTest``."""
+    if isinstance(exc, pytest.skip.Exception):
+        return True
+    unittest = sys.modules.get("unittest")  # nothing can raise SkipTest before it is imported
+    return unittest is not None and isinstance(exc, unittest.SkipTest)
+
+
+def _unittest_outcome(item: pytest.Item) -> Optional[BaseException]:
+    """The failure or skip a unittest ``TestCase`` recorded instead of raising it, if any.
+
+    pytest's unittest support stores them in ``item._excinfo`` and reports the first one.
+    """
+    recorded = getattr(item, "_excinfo", None)
+    if isinstance(recorded, list) and recorded:
+        return getattr(recorded[0], "value", None)
+    return None
+
+
+def _replace_unittest_outcome(item: pytest.Item, error: ChecksFailedError, skip: BaseException) -> None:
+    """Raise *error* and report it in place of the skip the ``TestCase`` recorded."""
+    try:
+        raise error from skip
+    except ChecksFailedError:
+        item._excinfo[0] = pytest.ExceptionInfo.from_current()  # type: ignore[attr-defined]
+        raise
 
 
 def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
@@ -401,8 +409,11 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
     if when == "teardown":
         run.closed = True
     if when != "setup":  # checks made in setup are judged with the test body
-        error = _close_phase(run, when, None)
+        recorded = _unittest_outcome(item) if when == "call" else None
+        error = _close_phase(run, when, recorded)
         if error is not None:
+            if recorded is not None:
+                _replace_unittest_outcome(item, error, recorded)
             raise error
     return result
 

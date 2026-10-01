@@ -16,7 +16,7 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 - [x] ~~**H-1** A check that raises stops the test and is never recorded~~ · done in 0.4.0
 - [x] ~~**H-2** `guard` and `conditional` evaluate every branch, not just the matched one~~ · done in 0.4.0
 - [x] ~~**H-3** Composite checks re-judge their children and can contradict them~~ · done in 0.4.0
-- [x] ~~**H-4** Reusing a recorded check inside a composite deletes it~~ · done in 0.4.0
+- [x] ~~**H-4** Reusing a recorded check inside a composite deletes it~~ · done in 0.4.0 as a documented rule: a check passed to a composite belongs to it; `dict(check)` keeps a copy on its own
 - [x] ~~**H-5** Module-level `is_instance` matches by class name only~~ · done in 0.4.0
 - [x] ~~**H-6** `conditional` matches cases with `str()`, so results depend on the Python version~~ · done in 0.4.0
 - [x] ~~**H-7** Checks recorded during teardown are ignored~~ · done in 0.4.0
@@ -79,7 +79,7 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 - [ ] **IMP-9** Show types when values look the same · discuss (changes output)
 - [ ] **IMP-10** Show the actual value for `is_true` and `is_false` · discuss (changes output)
 - [ ] **IMP-11** Say which items or branches failed · discuss (changes output)
-- [ ] **IMP-12** Escape and truncate the summary · discuss (changes output)
+- [ ] **IMP-12** Escape and truncate the summary · 0.4.0 part done (a detail shows at most 100 items and 1000 characters per value, found by the PR review); escaping, a tighter limit and capping the passed section: discuss (changes output)
 - [ ] **IMP-13** Keep descriptions small · discuss (changes output)
 - [ ] **IMP-14** Readable output on non-UTF-8 terminals · discuss (changes output)
 - [ ] **IMP-15** Tell absolute and relative tolerances apart when units are `%` · discuss (changes output)

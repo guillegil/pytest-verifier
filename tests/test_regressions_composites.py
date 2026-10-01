@@ -2,7 +2,7 @@
 
 Every test here asserts the correct behaviour for a bug found by the 0.3.1 review
 (see ``bugs-0.3.1.md``) and fixed in 0.4.0. Each one failed on 0.3.1 and keeps the bug
-from coming back.
+from coming back, except the H-4 tests, which pin the documented rule that replaced that fix.
 """
 from __future__ import annotations
 
@@ -300,36 +300,63 @@ def test_h3_failure_summary_counts_recorded_child_verdicts(pytester):
 
 # ======================================================================
 # H-4: a recorded check reused inside a composite is silently deleted
+#
+# Resolved in 0.4.0 as a documented rule rather than as the report proposed: a check passed to
+# a composite belongs to it whenever it was built, because building ``cases`` or ``branches``
+# in a variable first is common and looks exactly like reuse. A copy (``dict(check)``) keeps
+# a check on its own as well.
 # ======================================================================
 
-def test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails(pytester):
-    """A standalone check that failed must keep failing the test even if the same
-    descriptor is later passed to a guard branch that is not taken."""
+@pytest.mark.parametrize("composite", ["conditional", "guard"])
+def test_h4_children_built_before_the_call_belong_to_the_composite(pytester, composite):
+    """Building the children in a variable first works like building them inline: an
+    unselected child does not count (0.3.1 behaviour, kept)."""
+    call = {
+        "conditional": "verify.conditional(1, cases=children, name='Output')",
+        "guard": "verify.guard(children, name='Output')",
+    }[composite]
+    children = {
+        "conditional": """{
+                0: verify.approx(3.3, 0.0, abs_tol=0.01, name="Standby", units="V"),
+                1: verify.approx(3.3, 3.3, abs_tol=0.1, name="Active", units="V"),
+            }""",
+        "guard": """[
+                (False, "standby", verify.approx(3.3, 0.0, abs_tol=0.01, name="Standby")),
+                (True, "active", verify.approx(3.3, 3.3, abs_tol=0.1, name="Active")),
+            ]""",
+    }[composite]
+    pytester.makepyfile(f"""
+        from pytest_verify import get_check_results
+
+        def test_output(verify, request):
+            children = {children}
+            {call}
+            assert [c["name"] for c in get_check_results(request.node)] == ["Output"]
+    """)
+    result = pytester.runpytest()
+    result.assert_outcomes(passed=1)
+
+
+def test_h4_a_copy_keeps_a_reused_check_on_its_own(pytester):
+    """To use a recorded check on its own and inside a composite, pass a copy. The failing
+    standalone check keeps failing the test, and the copy keeps its recorded verdict."""
     pytester.makepyfile("""
-        def test_reuse(verify):
+        from pytest_verify import get_check_results
+
+        def test_reuse(verify, request):
             vout = verify.approx(4.1, 3.3, abs_tol=0.05, name="Vout", units="V")  # fails
-            verify.guard(
-                [(False, "powered", vout)],
+            guard = verify.guard(
+                [(True, "powered", dict(vout))],
                 default=verify.is_true(True, name="unpowered ok"),
                 name="Power check",
             )
+            assert guard["passed"] is False  # the copy kept the recorded verdict
+            names = [c["name"] for c in get_check_results(request.node)]
+            assert names == ["Vout", "Power check"]
     """)
     result = pytester.runpytest()
     result.assert_outcomes(failed=1)
-
-
-def test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails(pytester):
-    pytester.makepyfile("""
-        def test_reuse(verify):
-            limit_check = verify.less(120, 100, name="Temperature limit")  # fails
-            verify.conditional(
-                "normal",
-                cases={"hot": limit_check, "normal": verify.equal(1, 1, name="ok")},
-                name="Mode",
-            )
-    """)
-    result = pytester.runpytest()
-    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*2 of 2 checks failed*"])
 
 
 # ======================================================================

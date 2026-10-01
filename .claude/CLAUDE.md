@@ -89,16 +89,20 @@ class CheckDescriptor(TypedDict, total=False):
    - Build the descriptor dict from the arguments (usage errors raise here)
    - Judge it once; a raising comparison is a failed check with an `error` note
    - Record a copy with `passed`, `detail` and JSON-safe snapshots of the values
-   - A composite absorbs the child checks built for it (only those recorded after the
-     composite method was looked up), and each evaluated child carries its own `passed`
+   - A composite absorbs every recorded check passed to it as a child, by identity, whenever
+     it was built (`dict(check)` keeps a copy standalone); each evaluated child carries its
+     own `passed`, unselected children carry none
    - Return the recorded dict
 
 2. **At the end of each phase (runtest hook wrappers):**
    - Checks recorded in setup and in the test body are judged after the test body; checks
      recorded in teardown after teardown. Any failure → raise `ChecksFailedError`
    - If the phase already raised, keep that error and add the summary to its report as a
-     "Soft assertion failures" section (a skip never hides a failed check)
+     "Soft assertion failures" section (a skip, including `unittest.SkipTest`, never hides a
+     failed check). A unittest `TestCase` records its failures and skips in `item._excinfo`
+     instead of raising them, so the call phase reads that list too
    - `ChecksFailedError` message format: failed checks first, then passed, with `[seq]` indices
+     (their index among all the test's records, so teardown checks continue the numbering)
 
 3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 

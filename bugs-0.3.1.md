@@ -1,6 +1,7 @@
 # Known bugs in pytest-verify 0.3.1
 
-> **Status: all 45 bugs are fixed in 0.4.0.** See [`CHANGELOG.md`](CHANGELOG.md) for what
+> **Status: all 45 bugs are fixed in 0.4.0.** H-4 was resolved as a documented rule rather
+> than as proposed; its entry explains why. See [`CHANGELOG.md`](CHANGELOG.md) for what
 > changed and [`CHECKLIST.md`](CHECKLIST.md) for the status of every review item. The entries
 > below describe 0.3.1 as it was reviewed; line numbers refer to that version.
 
@@ -41,7 +42,7 @@ Non-bug findings (design improvements, API ideas, tooling) are in
 | [H-1](#h-1-a-check-that-raises-stops-the-test-and-is-never-recorded) | High | A check that raises stops the test and is never recorded | 0.4.0 |
 | [H-2](#h-2-guard-and-conditional-evaluate-every-branch-not-just-the-matched-one) | High | `guard` and `conditional` evaluate every branch, not just the matched one | 0.4.0 |
 | [H-3](#h-3-composite-checks-re-judge-their-children-and-can-contradict-them) | High | Composite checks re-judge their children and can contradict them | 0.4.0 |
-| [H-4](#h-4-reusing-a-recorded-check-inside-a-composite-deletes-it) | High | Reusing a recorded check inside a composite deletes it, so the test passes | 0.4.0 |
+| [H-4](#h-4-reusing-a-recorded-check-inside-a-composite-deletes-it) | High | Reusing a recorded check inside a composite deletes it, so the test passes | 0.4.0 (documented rule) |
 | [H-5](#h-5-module-level-is_instance-matches-by-class-name-only) | High | Module-level `is_instance` matches by class name only | 0.4.0 |
 | [H-6](#h-6-conditional-matches-cases-with-str-so-results-depend-on-the-python-version) | High | `conditional` matches cases with `str()`, so results depend on the Python version | 0.4.0 |
 | [H-7](#h-7-checks-recorded-during-teardown-are-ignored) | High | Checks recorded during teardown are ignored and the test passes | 0.4.0 |
@@ -306,7 +307,15 @@ def test_power(verify):
   track which checks were recorded as top-level and refuse (or warn about) reusing them as
   children.
 
-**Pinned by:** `tests/test_regressions_composites.py` (`test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails`, `test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails`)
+**Resolution in 0.4.0:** a documented rule instead of the proposed fix. The proposed fix makes
+checks built before the composite call count on their own, which breaks a common pattern that
+0.3.1 deliberately supports: building `cases` or `branches` in a variable first, then passing
+them to `conditional` or `guard`. In code that pattern and the reuse above look the same. So a
+check passed to a composite belongs to it whenever it was built, as in 0.3.1, and the README
+documents how to keep it on its own as well: pass a copy, `dict(check)`. Lazy children
+(ARCH-4, planned for 0.5.0) remove the ambiguity.
+
+**Pinned by:** `tests/test_regressions_composites.py` (`test_h4_children_built_before_the_call_belong_to_the_composite`, `test_h4_a_copy_keeps_a_reused_check_on_its_own`)
 
 ### H-5. Module-level `is_instance` matches by class name only
 

@@ -6,9 +6,11 @@ verdict with an error note.
 """
 from __future__ import annotations
 
+import numbers
 import operator
 import re
 import time
+from decimal import Decimal
 from typing import Any, Callable, Mapping, Optional, Tuple
 
 from ._descriptors import (
@@ -121,6 +123,7 @@ def _approx(actual: Any, expected: Any, abs_tol: Any, rel_tol: Any) -> bool:
     """
     if abs_tol is None and rel_tol is None:
         raise ValueError("approx requires at least one of abs_tol or rel_tol")
+    actual, expected = _number(actual), _number(expected)
     operands = [actual, expected, abs_tol, rel_tol]
     if any(isinstance(v, float) for v in operands):
         actual, expected = float(actual), float(expected)
@@ -135,6 +138,19 @@ def _approx(actual: Any, expected: Any, abs_tol: Any, rel_tol: Any) -> bool:
     if abs_tol is not None and diff <= abs_tol:
         return True
     return rel_tol is not None and diff <= rel_tol * abs(expected)
+
+
+def _number(value: Any) -> Any:
+    """*value* if it is a real number, else its ``float()`` if it has one, like ``math.isclose``.
+
+    Anything else, such as ``None``, a string or a list, raises ``TypeError`` instead of being
+    compared with ``==``.
+    """
+    if isinstance(value, (numbers.Real, Decimal)):
+        return value
+    if hasattr(type(value), "__float__"):  # e.g. a numpy 0-d array
+        return float(value)
+    raise TypeError(f"approx compares numbers, got {type(value).__name__}")
 
 
 def _instance_check(descriptor: Mapping[str, Any]) -> bool:

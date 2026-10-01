@@ -14,7 +14,7 @@ existing tests may rely on. Those are listed under **Changed**.
 
 ### Added
 
-- `ChecksFailedError` is exported from `pytest_verify` and is now actually raised. Checks made in setup and in the test body are raised after the test body. Checks made while fixtures are torn down are raised after teardown. It subclasses `AssertionError`, so `xfail(raises=AssertionError)`, `--pdb`, `pytest_exception_interact` and rerun filters treat a soft failure like a failed `assert`.
+- `ChecksFailedError` is exported from `pytest_verify` and is now actually raised. Checks made in setup and in the test body are raised after the test body. Checks made while fixtures are torn down are raised after teardown, numbered after the checks of the test body. It subclasses `AssertionError`, so `pytest.raises(AssertionError)` and `xfail(raises=AssertionError)` catch it, and `--pdb` and `pytest_exception_interact` see it once the test body has finished. Rerun filters match it by name: `--only-rerun ChecksFailedError`.
 - `GuardBranch` TypedDict, exported for typing the branches of a recorded `guard`.
 - Recorded results carry `detail` (the rendered `expected … got …` clause). When a check could not be evaluated, they also carry `error`. Every evaluated child of a composite carries its own `passed`.
 - `evaluate_detailed()` results include `error` when a check could not be evaluated.
@@ -36,26 +36,28 @@ existing tests may rely on. Those are listed under **Changed**.
   - an `is_instance` type that `isinstance` cannot check (`list[int]`).
 - Problems with the data inside composites never raise. An `all_satisfy` whose items cannot be iterated, or whose factory raises or returns something other than a check, is a failed check with an error note. A forgotten `return` is one example.
 - `conditional` matches case keys by equality, comparing enum members by their value. An `int` and its decimal string are the same key, so `1` selects `"1"`. Results no longer depend on the Python version, and `None` no longer matches `"None"`. Case keys are still stored as strings.
-- `approx` with `rel_tol` uses the band it prints, `expected ± rel_tol × |expected|`. `math.isclose` also accepted `rel_tol × |actual|`. `Decimal`, `Fraction` and `int` values are compared exactly unless a `float` is involved.
+- `approx` with `rel_tol` uses the band it prints, `expected ± rel_tol × |expected|`. `math.isclose` also accepted `rel_tol × |actual|`. `Decimal`, `Fraction` and `int` values are compared exactly unless a `float` is involved. Values that are neither real numbers nor convertible with `float()`, such as `None`, strings or lists, fail the check with a `TypeError` note, as with `math.isclose`.
 - `is_instance` behaves like `isinstance` in both APIs. Tuples and unions of types work, ABCs and runtime-checkable protocols work, and the module-level API no longer matches unrelated classes that share a name.
 - Recorded results, including those returned by `get_check_results()`, hold JSON-safe snapshots of the checked values, taken when the check is made. A later mutation cannot change a report, and checked objects are no longer kept alive. NaN and infinities are stored as `"nan"`, `"inf"` and `"-inf"`. Values JSON cannot represent are stored as their `repr`.
 - `evaluate()` and `evaluate_detailed()` raise a helpful `TypeError` for a list argument (use `verify.evaluate(*checks)`) or for an argument that is not a check. An unknown check type fails with an error instead of raising.
 - The `verify` fixture refuses checks with `RuntimeError` once its test has finished, and in a forked child process, instead of losing them.
 - Using the `verify` fixture without the plugin's hooks is an error, instead of every test passing. This happens, for example, when the fixture is imported into a `conftest.py` while the plugin is disabled.
 - The `-r` short summary and `--tb=line` show `N of M checks failed` at the test's location.
+- The `detail` of a check shows at most 100 items of a container and 1000 characters of any other value, so one huge value no longer slows down every check or bloats every report.
 - Requires `pluggy>=1.2`, which pytest already depends on. Building from source requires `setuptools>=77`.
 
 ### Fixed
 
 - Building the failure summary can no longer crash the session, and a huge `int` no longer stops a passing check.
-- `guard` and `conditional` evaluate only the selected branch. Unselected branches carry no verdict.
+- `guard` and `conditional` count only the selected branch. An unselected branch that fails or raises no longer stops or fails the test, and it carries no verdict in the record. With the fixture, each branch is still evaluated when it is built, because it is an argument of the call.
 - Composites use the verdicts their children were recorded with.
-- Reusing a recorded check inside a composite no longer removes it.
+- A check passed to a composite belongs to it, whether it was built inline or earlier in a variable, so building `cases` or `branches` before the call works. To keep a check on its own as well, pass a copy, `dict(check)` (see the README).
 - A composite that raises leaves no stray child checks behind.
 - Checks made during teardown fail the run.
-- Soft failures are reported correctly under `xfail` and are no longer hidden by a later `skip`.
+- Soft failures are reported correctly under `xfail` and are no longer hidden by a later skip, including unittest's `SkipTest` and `TestCase.skipTest()`.
+- In a unittest `TestCase`, a failed assertion no longer hides the soft failures: they are added to its report.
 - With pytest-rerunfailures, each attempt starts with no checks, so a clean rerun passes.
-- With pytest 9 subtests, a failing check fails only its own subtest.
+- With pytest 9 subtests, a failed check no longer fails every later subtest. The test fails once, after its body, with all of its failed checks.
 - Soft failures next to a hard failure appear in junitxml and are shown whatever `--show-capture` is set to.
 - A setup error keeps the soft failures recorded during setup.
 - Recording checks from several threads no longer loses checks.

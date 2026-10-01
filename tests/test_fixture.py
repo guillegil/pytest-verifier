@@ -66,6 +66,24 @@ class TestFixtureTeardown:
             "*[2]*Pass2*",
         ])
 
+    def test_teardown_failures_keep_their_index(self, pytester):
+        """Checks raised after teardown are numbered after the ones of the test body."""
+        pytester.makepyfile("""
+            import pytest
+
+            @pytest.fixture
+            def device(verify):
+                yield
+                verify.equal(1, 2, name="Shutdown")
+
+            def test_body(device, verify):
+                verify.equal(1, 1, name="First")
+                verify.equal(2, 2, name="Second")
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(passed=1, errors=1)
+        result.stdout.fnmatch_lines(["*1 of 1 checks failed*", "*✗ ?2? Shutdown*"])
+
     def test_hard_failure_still_surfaces_soft_checks(self, pytester):
         """When the test body raises a hard error AND soft checks failed, both
         the original traceback and the soft-assert summary must be reported —
@@ -228,6 +246,79 @@ class TestFixtureAllCheckMethods:
     def test_fail(self, verify):
         # The failed check is recorded and the test fails after its body.
         assert verify.fail("intentional")["passed"] is False
+
+
+class TestUnittest:
+    """unittest skips and ``TestCase`` outcomes never hide a failed check."""
+
+    def test_unittest_skiptest_after_a_failed_check_fails_the_test(self, pytester):
+        pytester.makepyfile("""
+            import unittest
+
+            def test_skipped_late(verify):
+                verify.equal(1, 2, name="Bad")
+                raise unittest.SkipTest("env not ready")
+        """)
+        result = pytester.runpytest("--tb=line")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*.py:*: 1 of 1 checks failed"])
+
+    _TESTCASE = """
+        import unittest
+
+        import pytest
+
+        class TestSuite(unittest.TestCase):
+            @pytest.fixture(autouse=True)
+            def _verify(self, verify):
+                self.verify = verify
+
+            def test_skip_after_failed_check(self):
+                self.verify.equal(1, 2, name="Skipped")
+                self.skipTest("env not ready")
+
+            def test_hard_and_soft(self):
+                self.verify.equal(1, 2, name="SoftBad")
+                self.assertEqual(3, 4)
+
+            def test_soft_only(self):
+                self.verify.equal(1, 2, name="SoftOnly")
+
+            def test_skip_after_passing_check(self):
+                self.verify.equal(1, 1, name="Fine")
+                self.skipTest("env not ready")
+
+            def test_pass(self):
+                self.verify.equal(1, 1, name="Good")
+    """
+
+    def test_testcase_outcomes(self, pytester):
+        pytester.makepyfile(self._TESTCASE)
+        result = pytester.runpytest("-rA", "--tb=line")
+        result.assert_outcomes(failed=3, passed=1, skipped=1)
+        result.stdout.fnmatch_lines_random([
+            "PASSED *::test_pass",
+            "SKIPPED *env not ready",
+            "FAILED *::test_hard_and_soft - *",
+            "FAILED *::test_skip_after_failed_check - *",
+            "FAILED *::test_soft_only - *",
+        ])
+        result.stdout.fnmatch_lines_random([
+            "*.py:*: AssertionError: 3 != 4",
+            "*.py:*: 1 of 1 checks failed",
+            "*.py:*: 1 of 1 checks failed",
+        ])
+
+    def test_testcase_hard_failure_shows_the_soft_summary(self, pytester):
+        pytester.makepyfile(self._TESTCASE)
+        result = pytester.runpytest("-k", "hard_and_soft")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines([
+            "*AssertionError: 3 != 4*",
+            "*Soft assertion failures*",
+            "*1 of 1 checks failed*",
+            "*✗ ?0? SoftBad*",
+        ])
 
 
 class TestUnconditionalStashWrite:

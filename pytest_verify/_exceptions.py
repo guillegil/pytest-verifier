@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import functools
 from typing import Any, Iterable, Mapping
 
 import pytest
 
 from ._descriptors import approx_tolerance
 from ._evaluator import judge, selected_child
-from ._render import describe_error, safe_format, safe_repr, safe_str
+from ._render import bounded_format, bounded_repr, describe_error, safe_str
 
 # Comparison operators rendered for the ordering checks.
 _ORDER_OPS = {"greater": ">", "greater_equal": ">=", "less": "<", "less_equal": "<="}
@@ -14,7 +15,7 @@ _ORDER_OPS = {"greater": ">", "greater_equal": ">=", "less": "<", "less_equal": 
 
 def _value(value: object, units: str | None) -> str:
     """Render a value with its optional unit suffix (e.g. ``3.3V``)."""
-    return f"{safe_format(value)}{units or ''}"
+    return f"{bounded_format(value)}{units or ''}"
 
 
 def _range(result: Mapping[str, Any], units: str | None) -> str:
@@ -72,27 +73,28 @@ def _detail(result: Mapping[str, Any], passed: bool) -> str:
         return "False" if passed else f"expected False, got {bool(result['actual'])}"
 
     if check_type == "is_none":
-        return "None" if passed else f"expected None, got {safe_repr(result['actual'])}"
+        return "None" if passed else f"expected None, got {bounded_repr(result['actual'])}"
 
     if check_type == "is_not_none":
-        return "not None" if passed else f"expected not None, got {safe_repr(result['actual'])}"
+        return "not None" if passed else f"expected not None, got {bounded_repr(result['actual'])}"
 
     if check_type == "contains":
-        needle = safe_repr(result["needle"])
-        haystack = safe_repr(result["haystack"])
-        return f"contains {needle}" if passed else f"expected to contain {needle}, got {haystack}"
+        needle = bounded_repr(result["needle"])
+        if passed:
+            return f"contains {needle}"
+        return f"expected to contain {needle}, got {bounded_repr(result['haystack'])}"
 
     if check_type == "not_contains":
-        needle = safe_repr(result["needle"])
+        needle = bounded_repr(result["needle"])
         return (
             f"does not contain {needle}"
             if passed
-            else f"expected to not contain {needle}, got {safe_repr(result['haystack'])}"
+            else f"expected to not contain {needle}, got {bounded_repr(result['haystack'])}"
         )
 
     if check_type == "matches":
-        pattern = safe_format(result["pattern"])
-        actual = safe_repr(result["actual"])
+        pattern = bounded_format(result["pattern"])
+        actual = bounded_repr(result["actual"])
         return f"matches /{pattern}/" if passed else f"expected to match /{pattern}/, got {actual}"
 
     if check_type == "is_instance":
@@ -131,7 +133,7 @@ def _detail(result: Mapping[str, Any], passed: bool) -> str:
         return f"[→ {label}] — {_child_detail(child, passed)}"
 
     if check_type == "fail":
-        return f"FAIL: {safe_format(result.get('msg', ''))}"
+        return f"FAIL: {bounded_format(result.get('msg', ''))}"
 
     # Fallback for any unknown check type: the canonical description, prefix-stripped.
     name = safe_str(result.get("name", ""))
@@ -167,11 +169,14 @@ def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str
     return f"  {marker} [{idx}] {name}{sep}{detail}"
 
 
-def format_summary(results: Iterable[Mapping[str, Any]]) -> str:
-    """The ``N of M checks failed`` summary of spec §7. Never raises."""
+def format_summary(results: Iterable[Mapping[str, Any]], *, start: int = 0) -> str:
+    """The ``N of M checks failed`` summary of spec §7. Never raises.
+
+    Checks are numbered from *start*, their index among all the checks of the test.
+    """
     results = list(results)
-    failed = [(i, r) for i, r in enumerate(results) if r.get("passed") is not True]
-    passed = [(i, r) for i, r in enumerate(results) if r.get("passed") is True]
+    failed = [(i, r) for i, r in enumerate(results, start) if r.get("passed") is not True]
+    passed = [(i, r) for i, r in enumerate(results, start) if r.get("passed") is True]
 
     def line(marker: str, idx: int, result: Mapping[str, Any], is_passed: bool) -> str:
         try:
@@ -193,21 +198,29 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
     The ``verify`` fixture raises it at the end of the phase in which the checks were recorded:
     after the test body for checks made in fixtures' setup and in the test, and after teardown
     for checks made while fixtures are torn down. It is an ``AssertionError``, so
-    ``pytest.raises``, ``xfail(raises=AssertionError)`` and rerun filters treat it like a
-    failed ``assert``. pytest prints only its message, without a traceback.
+    ``pytest.raises(AssertionError)`` and ``xfail(raises=AssertionError)`` catch it. Rerun
+    filters that match by name need ``ChecksFailedError``. pytest prints only its message,
+    without a traceback.
 
     The message follows spec §7: a ``N of M checks failed`` header, then the
     failed checks (``✗``) before the passed checks (``✓``), each prefixed with
     its ``[seq]`` index in evaluation order, its name, and a per-type
     ``expected … got …`` (failed) or compact (passed) detail clause.
 
+    Args:
+        results: The check descriptors to summarize.
+        start: Index of the first of them among all the checks of the test, so that checks
+            raised after teardown keep the numbers ``get_check_results`` gives them.
+
     Attributes:
         results: The check descriptors the summary was built from.
+        start: Index of the first of them among all the checks of the test.
     """
 
-    def __init__(self, results: Iterable[Mapping[str, Any]]) -> None:
+    def __init__(self, results: Iterable[Mapping[str, Any]], *, start: int = 0) -> None:
         self.results = list(results)
-        message = format_summary(self.results)
+        self.start = start
+        message = format_summary(self.results, start=start)
         AssertionError.__init__(self, message)
         # pytest.fail.Exception attributes: show only the message, not a traceback.
         self.msg = message
@@ -221,7 +234,7 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
         return f"{type(self).__name__}({failed} of {len(self.results)} checks failed)"
 
     def __reduce__(self) -> tuple[Any, ...]:
-        return (type(self), (self.results,), self.__dict__)
+        return (functools.partial(type(self), start=self.start), (self.results,), self.__dict__)
 
 
 ChecksFailedError.__module__ = "pytest_verify"

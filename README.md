@@ -56,13 +56,21 @@ name, and an `expected … got …` detail:
 ### When failures are raised
 
 `ChecksFailedError` is an `AssertionError`, so pytest treats a soft failure like a failed
-`assert`. `xfail(raises=AssertionError)`, `--pdb` and rerun filters all work.
+`assert`, and `xfail(raises=AssertionError)` catches it.
 
 - Checks made in fixtures' setup and in the test body are raised after the test body.
 - Checks made while fixtures are torn down are raised after teardown, as a teardown error.
+  Their indices follow those of the test body.
 - If the test already failed with another exception, that exception is reported and the
-  failed checks are added to its report under **Soft assertion failures**.
-- A `pytest.skip()` after a failed check does not hide the failure.
+  failed checks are added to its report under **Soft assertion failures**. This works in
+  unittest `TestCase`s too.
+- A skip after a failed check does not hide the failure: `pytest.skip()`, `unittest.SkipTest`
+  and `TestCase.skipTest()` alike.
+- `--pdb` opens the debugger when the failure is raised, after the test body has finished, so
+  the test's local variables are gone. To inspect them, check the returned result,
+  e.g. `if not check["passed"]: breakpoint()`.
+- Rerun filters match exceptions by name, so use `--only-rerun ChecksFailedError` with
+  pytest-rerunfailures.
 
 ### Checks that cannot be evaluated
 
@@ -197,12 +205,26 @@ def test_all_channels(verify):
 
 ### How child checks are counted
 
-With the fixture, the checks you build inside a composite call (in `cases`, `branches`,
-`default`, or the `all_satisfy` factory) belong to the composite. They are not reported on
-their own, and only the selected ones count toward its verdict. A check you recorded before the
-composite call and then pass in as a child still counts on its own as well. A composite built
-with the module-level `verify` is never recorded, so fixture checks passed to it stay separate
-checks.
+With the fixture, every check you pass to a composite (in `cases`, `branches`, `default`, or
+built by the `all_satisfy` factory) belongs to the composite. It is not reported on its own,
+and only the selected ones count toward the composite's verdict. This holds whether you build
+the checks inline or earlier, for example in a `cases` dict:
+
+```python
+cases = {
+    0: verify.approx(output, 0.0, abs_tol=0.01, name="Standby", units="V"),
+    1: verify.approx(output, 3.3, abs_tol=0.1, name="Active", units="V"),
+}
+verify.conditional(mode, cases=cases, name="Output voltage")  # only the selected case counts
+```
+
+Each child is still evaluated when it is built, because it is an argument of the call, so an
+unselected branch should not depend on values that only the selected branch can use. A child
+that raises is just a failed child.
+
+To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
+A composite built with the module-level `verify` is never recorded, so fixture checks passed to
+it stay separate checks.
 
 ### `is_instance` — type check
 

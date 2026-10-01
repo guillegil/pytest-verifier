@@ -74,7 +74,7 @@ def test_m15_every_check_from_every_thread_is_recorded_once() -> None:
         )
         # No check lost, none duplicated, and no child left at the top level.
         assert names == expected
-        assert all(record["passed"] is True for record in run.take_unjudged())
+        assert all(record["passed"] is True for record in run.take_unjudged()[1])
 
 
 def test_m15_one_failing_guard_among_threads_always_fails_the_test(

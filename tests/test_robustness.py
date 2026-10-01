@@ -14,6 +14,7 @@ import enum
 import json
 import math
 import os
+import pickle
 from decimal import Decimal
 from fractions import Fraction
 from typing import Any, Iterator
@@ -24,7 +25,7 @@ from pytest_verify import ChecksFailedError, get_check_results
 from pytest_verify import verify as mverify
 from pytest_verify._descriptors import _NO_CASE, select_case
 from pytest_verify._exceptions import format_summary, render_detail
-from pytest_verify._render import safe_format, safe_repr, safe_str, snapshot
+from pytest_verify._render import bounded_format, safe_format, safe_repr, safe_str, snapshot
 from pytest_verify._settle import settle
 
 
@@ -145,6 +146,11 @@ def _items_then_error() -> Iterator[int]:
     raise RuntimeError("stream closed")
 
 
+class _FloatLike:
+    def __float__(self) -> float:
+        return 3.31
+
+
 class TestDataErrorsFailTheCheck:
     @pytest.mark.parametrize(
         "build, error",
@@ -181,6 +187,18 @@ class TestDataErrorsFailTheCheck:
                 lambda: mverify.length(5, 1, name="L"),
                 "TypeError",
             ),
+            (
+                lambda: mverify.approx(None, None, abs_tol=1, name="A"),
+                "TypeError: approx compares numbers, got NoneType",
+            ),
+            (
+                lambda: mverify.approx("3.3", 3.3, abs_tol=0.1, name="A"),
+                "TypeError: approx compares numbers, got str",
+            ),
+            (
+                lambda: mverify.approx([1, 2], [1, 2], rel_tol=1, name="A"),
+                "TypeError: approx compares numbers, got list",
+            ),
         ],
     )
     def test_check_builds_and_fails_with_an_error_note(self, build: Any, error: str) -> None:
@@ -189,6 +207,10 @@ class TestDataErrorsFailTheCheck:
         [result] = mverify.evaluate_detailed(descriptor)
         assert result["passed"] is False
         assert error in result["error"]
+
+    def test_approx_converts_values_that_have_a_float(self) -> None:
+        assert mverify.evaluate(mverify.approx(_FloatLike(), 3.3, abs_tol=0.05, name="A"))
+        assert not mverify.evaluate(mverify.approx(_FloatLike(), 3.0, abs_tol=0.05, name="A"))
 
     def test_fixture_records_data_errors_and_keeps_going(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
@@ -471,6 +493,41 @@ class TestRendering:
         assert str(error) == summary
         assert repr(error) == "ChecksFailedError(1 of 2 checks failed)"
         assert isinstance(error, AssertionError)
+
+    def test_summary_numbers_checks_from_start(self) -> None:
+        results = [
+            dict(mverify.equal(1, 2, name="Bad"), passed=False),
+            dict(mverify.equal(1, 1, name="Good"), passed=True),
+        ]
+        error = ChecksFailedError(results, start=2)
+        assert "✗ [2] Bad" in str(error)
+        assert "✓ [3] Good" in str(error)
+        clone = pickle.loads(pickle.dumps(error))
+        assert (str(clone), clone.args, clone.start) == (str(error), error.args, 2)
+
+    def test_small_values_render_like_format(self) -> None:
+        for value in (3.3, 42, "text", [1, 2], (1,), {"a": 1}, None, Decimal("1.10")):
+            assert bounded_format(value) == format(value)
+
+    def test_large_values_render_a_bounded_detail(self) -> None:
+        big_list = list(range(1_000_000))
+        big_text = "x" * 1_000_000
+        checks = [
+            mverify.equal(big_list, [], name="List"),
+            mverify.equal(big_text, "y", name="Text"),
+            mverify.contains(big_list, -1, name="Haystack"),
+            mverify.is_none(big_text, name="Not none"),
+            mverify.matches(big_text, "z", name="Pattern"),
+            mverify.fail(big_text, name="Message"),
+            mverify.equal(big_list, big_list, name="Passing"),
+        ]
+        records = [settle(check)[0] for check in checks]
+        for record in records:
+            assert len(record["detail"]) < 2500, record["name"]
+        assert records[0]["detail"].startswith("expected [], got [0, 1, 2, ")
+        assert records[0]["detail"].endswith(", ...]")
+        assert records[1]["detail"].endswith("x...")
+        assert len(format_summary(records)) < 20_000
 
 
 # ── Recorded results ──
