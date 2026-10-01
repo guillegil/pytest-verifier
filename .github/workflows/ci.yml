@@ -44,9 +44,9 @@ jobs:
 
       - name: Run test suite on pytest 7.0 and pluggy 1.2
         run: |
-          uv venv --python 3.10
-          uv pip install . "pytest==7.0.1" "pluggy==1.2.0"
-          .venv/bin/python -m pytest -q
+          uv venv --python 3.10 .venv-oldest
+          VIRTUAL_ENV=.venv-oldest uv pip install . "pytest==7.0.1" "pluggy==1.2.0"
+          .venv-oldest/bin/python -m pytest -q
 
   typing:
     name: typing (mypy --strict)
