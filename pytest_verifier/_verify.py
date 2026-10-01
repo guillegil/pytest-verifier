@@ -6,7 +6,20 @@ it (see :mod:`pytest_verifier._run`).
 """
 from __future__ import annotations
 
-from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
+import re
+from typing import (
+    Any,
+    Callable,
+    Container,
+    Iterable,
+    Mapping,
+    Optional,
+    Sequence,
+    Sized,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 from . import _unused
 from ._checks import (
@@ -36,6 +49,9 @@ from ._checks import (
 from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
 from ._evaluator import evaluate_detailed as _evaluate_detailed
+
+#: The type of the items an ``all_satisfy`` factory receives.
+_Item = TypeVar("_Item")
 
 _RECORD_NEEDS_FIXTURE = (
     "checks.record() cannot record a check: pytest_verifier.checks only builds checks. Request "
@@ -316,7 +332,9 @@ class Verify:
     # String & container
     # ------------------------------------------------------------------
 
-    def contains(self, haystack: Any, needle: Any, *, name: str) -> CheckDescriptor:
+    def contains(
+        self, haystack: Union[Container[Any], Iterable[Any]], needle: Any, *, name: str
+    ) -> CheckDescriptor:
         """Check that *needle* is in *haystack*.
 
         Args:
@@ -329,7 +347,9 @@ class Verify:
         """
         return self._sink.check(CONTAINS.build(haystack, needle, name=name))
 
-    def not_contains(self, haystack: Any, needle: Any, *, name: str) -> CheckDescriptor:
+    def not_contains(
+        self, haystack: Union[Container[Any], Iterable[Any]], needle: Any, *, name: str
+    ) -> CheckDescriptor:
         """Check that *needle* is **not** in *haystack*.
 
         Args:
@@ -342,12 +362,15 @@ class Verify:
         """
         return self._sink.check(NOT_CONTAINS.build(haystack, needle, name=name))
 
-    def matches(self, actual: Any, pattern: str, *, name: str) -> CheckDescriptor:
+    def matches(
+        self, actual: Any, pattern: Union[str, "re.Pattern[str]"], *, name: str
+    ) -> CheckDescriptor:
         """Check that *actual* matches the regular-expression *pattern*.
 
         Args:
             actual: The string to test.
-            pattern: A regex pattern (searched with ``re.search``).
+            pattern: A regex pattern (searched with ``re.search``), as a string or compiled
+                with ``re.compile``. A compiled pattern is stored as its source and ``flags``.
             name: Human-readable label for the check.
 
         Returns:
@@ -379,7 +402,7 @@ class Verify:
         """
         return self._sink.check(IS_INSTANCE.build(actual, expected_type, name=name))
 
-    def length(self, actual: Any, expected: int, *, name: str) -> CheckDescriptor:
+    def length(self, actual: Sized, expected: int, *, name: str) -> CheckDescriptor:
         """Check that ``len(actual)`` equals *expected*.
 
         Args:
@@ -394,8 +417,8 @@ class Verify:
 
     def all_satisfy(
         self,
-        items: Iterable[Any],
-        descriptor_factory: Callable[[Any], CheckDescriptor],
+        items: Iterable[_Item],
+        descriptor_factory: Callable[[_Item], CheckDescriptor],
         *,
         name: str,
     ) -> CheckDescriptor:

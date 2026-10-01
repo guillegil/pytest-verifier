@@ -27,15 +27,17 @@ teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import re
 import sys
-from typing import Any, Generator, List, Optional
+from typing import Any, Dict, Generator, Iterator, List, Optional
 
 import pytest
 
 from . import _unused
 from ._descriptors import CheckDescriptor
-from ._exceptions import ChecksFailedError, format_summary
+from ._exceptions import ChecksFailedError, for_terminal, format_summary
 from ._run import Run, recording_verify
 from ._stash import check_results_key
 from ._verify import Verify
@@ -110,10 +112,22 @@ def _close_phase(
     item.ihook.pytest_verify_results(item=item, when=when, checks=checks, passed=passed)
     if passed:
         return None
+    options = _summary_options(item.config)
     if exc is None or _is_skip(exc):
-        return ChecksFailedError(pending, start=start)
-    run.sections[when] = format_summary(pending, start=start)
+        return ChecksFailedError(pending, start=start, **options)
+    run.sections[when] = format_summary(pending, start=start, **options)
     return None
+
+
+#: How many passed checks a summary lists unless pytest runs with ``-vv``.
+_PASSED_SHOWN = 10
+
+
+def _summary_options(config: pytest.Config) -> Dict[str, Any]:
+    """``max_passed`` for the summaries of this session."""
+    verbosity = config.getoption("verbose", 0)
+    max_passed = None if isinstance(verbosity, int) and verbosity >= 2 else _PASSED_SHOWN
+    return {"max_passed": max_passed}
 
 
 def _is_skip(exc: BaseException) -> bool:
@@ -305,14 +319,87 @@ def _decorate_report(
     if section is not None and report.failed:
         longrepr = report.longrepr
         if hasattr(longrepr, "addsection"):
-            longrepr.addsection("Soft assertion failures", section)  # type: ignore[union-attr]
+            longrepr.addsection(_SECTION, section)  # type: ignore[union-attr]
         elif isinstance(longrepr, str):
-            report.longrepr = f"{longrepr}\n\nSoft assertion failures:\n{section}"
+            report.longrepr = f"{longrepr}\n\n{_SECTION}:\n{section}"
     if call.excinfo is not None and isinstance(call.excinfo.value, ChecksFailedError):
         _point_crash_line_at_test(item, call.excinfo, report)
     if call.when == "teardown":
         # The run's records stay available through the results stash; drop the rest.
         del item.stash[_run_key]
+
+
+#: The report section that holds the soft summary when the phase also raised.
+_SECTION = "Soft assertion failures"
+
+#: The first line of a ``ChecksFailedError`` message.
+_HEADER = re.compile(r"\d+ of \d+ checks failed$")
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+    """Print soft summaries in the encoding of the terminal (also on an xdist controller)."""
+    if report.failed and getattr(report, "verify_checks", None):
+        try:
+            _print_for_terminal(report.longrepr)
+        except Exception:  # pragma: no cover - reporting must never break the session
+            pass
+
+
+def _print_for_terminal(longrepr: Any) -> None:
+    """Make *longrepr* print its soft summaries in the encoding of the stream it is printed to.
+
+    Its text stays as it is: junitxml, ``report.longreprtext`` and other plugins render it into
+    a buffer that has no encoding. Only a terminal that cannot show every character gets the
+    summary lines with ASCII markers and escapes, line by line.
+    """
+    original: Any = getattr(longrepr, "toterminal", None)
+    if not _is_bound_to(original, longrepr):  # already adapted, or not a repr
+        return
+
+    def toterminal(tw: Any) -> None:
+        encoding = getattr(getattr(tw, "_file", None), "encoding", None)
+        if not isinstance(encoding, str):
+            original(tw)
+            return
+        with _summaries_for(longrepr, encoding):
+            original(tw)
+
+    longrepr.toterminal = toterminal
+
+
+def _is_bound_to(method: Any, owner: Any) -> bool:
+    return getattr(method, "__self__", None) is owner
+
+
+@contextlib.contextmanager
+def _summaries_for(longrepr: Any, encoding: str) -> Iterator[None]:
+    """Show *longrepr*'s soft summaries in *encoding* while the block runs."""
+    sections = list(getattr(longrepr, "sections", None) or [])
+    chain = getattr(longrepr, "chain", None)
+    tracebacks = [link[0] for link in chain] if chain else [longrepr.reprtraceback]
+    entries = [
+        entry
+        for traceback in tracebacks
+        for entry in getattr(traceback, "reprentries", [])
+        if getattr(entry, "style", None) == "value"
+        and entry.lines
+        and _HEADER.match(entry.lines[0])
+    ]
+    originals = [entry.lines for entry in entries]
+    try:
+        for entry in entries:
+            entry.lines = for_terminal("\n".join(entry.lines), encoding).split("\n")
+        longrepr.sections = [
+            (name, for_terminal(content, encoding) if name == _SECTION else content, *rest)
+            for name, content, *rest in sections
+        ]
+        yield
+    finally:
+        for entry, lines in zip(entries, originals):
+            entry.lines = lines
+        if hasattr(longrepr, "sections"):
+            longrepr.sections = sections
 
 
 def _point_crash_line_at_test(

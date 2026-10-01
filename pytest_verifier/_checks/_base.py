@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any, Callable, ClassVar, Dict, List, Mapping, Optional, Tuple, TypeVar
 
 from .._descriptors import is_descriptor
-from .._render import bounded_format, describe_error, safe_repr, safe_str
+from .._render import describe_error, escape, render_value, safe_repr, safe_str
 
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
 Verdict = Tuple[bool, Optional[str]]
@@ -26,6 +26,10 @@ class CheckType:
 
     #: Put between the name and the detail in a summary line.
     separator: ClassVar[str] = " — "
+
+    #: Fields a record keeps only a preview of: at most this many nodes, strings cut at
+    #: :data:`~pytest_verifier._render.VALUE_LIMIT` characters. Others are copied in full.
+    snapshot_limits: ClassVar[Dict[str, int]] = {}
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         """Compare the descriptor's values and return the raw result. May raise."""
@@ -147,8 +151,19 @@ def truth(result: Any) -> Verdict:
 
 
 def value(value: object, units: Optional[str]) -> str:
-    """Render a value with its optional unit suffix (e.g. ``3.3V``)."""
-    return f"{bounded_format(value)}{units or ''}"
+    """Render a value with its optional unit suffix (e.g. ``3.3V``); see
+    :func:`~pytest_verifier._render.render_value`."""
+    return render_value(value, units)
+
+
+def value_pair(actual: object, expected: object, units: Optional[str]) -> Tuple[str, str]:
+    """Render two compared values. When they look the same but their types differ, such as
+    ``1`` and ``Decimal('1')``, each gets its type: ``1 (int)`` and ``1 (Decimal)``."""
+    shown_actual, shown_expected = value(actual, units), value(expected, units)
+    if shown_actual == shown_expected and type(actual) is not type(expected):
+        shown_actual = f"{shown_actual} ({type(actual).__name__})"
+        shown_expected = f"{shown_expected} ({type(expected).__name__})"
+    return shown_actual, shown_expected
 
 
 def render_detail(result: Mapping[str, Any], passed: bool, error: Optional[str] = None) -> str:
@@ -160,12 +175,14 @@ def render_detail(result: Mapping[str, Any], passed: bool, error: Optional[str] 
     if error is None:
         error = result.get("error")
     try:
+        if error is not None and result.get("error") is None:
+            result = {**result, "error": error}  # the detail can see why judging failed
         text = _detail(result, passed)
     except Exception as exc:
         if error is None:
             return f"<detail unavailable: {describe_error(exc)}>"
-        return f"error: {error}"
-    return text if error is None else f"{text} ({error})"
+        return escape(f"error: {error}")
+    return escape(text if error is None else f"{text} ({error})")
 
 
 def _detail(result: Mapping[str, Any], passed: bool) -> str:

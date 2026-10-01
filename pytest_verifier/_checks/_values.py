@@ -5,7 +5,7 @@ import numbers
 import operator
 import re
 from decimal import Decimal
-from typing import Any, Callable, ClassVar, Mapping, Optional
+from typing import Any, Callable, ClassVar, Dict, Mapping, Optional, Tuple, Union
 
 from .._descriptors import (
     CheckDescriptor,
@@ -16,15 +16,138 @@ from .._descriptors import (
     qualified_type_name,
     require_name,
     type_display,
-    units_suffix,
     validate_tolerance,
 )
-from .._render import bounded_format, bounded_repr, describe_error, safe_format, safe_repr, safe_str
-from ._base import CheckType, register, value
+from .._render import (
+    describe_error,
+    escape,
+    render_text,
+    render_value,
+    safe_repr,
+    safe_str,
+)
+from ._base import CheckType, register, value, value_pair
+
+#: Longest ``fail()`` message shown in a description or detail.
+_MESSAGE_LIMIT = 1000
+
+_NAN_EQUALITY = " (NaN never compares equal)"
+_NAN_ORDERING = " (NaN fails every comparison)"
+
+
+def _subject(name: str) -> str:
+    """``Verify 'name'``, the start of most descriptions."""
+    return f"Verify '{escape(name)}'"
+
+
+def _is_nan(number: Any) -> bool:
+    """Whether *number* is a NaN (``float``, ``Decimal``, numpy and other numbers). Never raises."""
+    try:
+        if isinstance(number, Decimal):
+            return number.is_nan()
+        return (
+            isinstance(number, numbers.Number)
+            and not isinstance(number, bool)
+            and bool(number != number)
+        )
+    except Exception:
+        return False
+
+
+def _nan_note(note: str, *numbers_: Any) -> str:
+    return note if any(_is_nan(number) for number in numbers_) else ""
 
 # ---------------------------------------------------------------------------
 # Equality & approximation
 # ---------------------------------------------------------------------------
+
+#: How deep :func:`_difference` follows nested containers.
+_DIFFERENCE_DEPTH = 10
+
+#: Characters shown on each side of the first difference between two long texts.
+_WINDOW = 20
+
+#: One step into two containers: ``(path, actual item, expected item)``.
+_Step = Tuple[str, Any, Any]
+
+
+def _same(a: Any, b: Any) -> bool:
+    """``a == b`` as a list compares its items (identity first)."""
+    return a is b or bool(a == b)
+
+
+def _step(actual: Any, expected: Any) -> Union[str, _Step]:
+    """Where two containers first differ: the step to the differing items, or a sentence when
+    they differ in their keys, items or length (``""`` when they are not containers)."""
+    if isinstance(actual, (list, tuple)) and isinstance(expected, (list, tuple)):
+        for index, (a, e) in enumerate(zip(actual, expected)):
+            if not _same(a, e):
+                return f"[{index}]", a, e
+        if len(actual) != len(expected):
+            return f"expected {len(expected)} items, got {len(actual)}"
+    elif isinstance(actual, Mapping) and isinstance(expected, Mapping):
+        missing = [key for key in expected if key not in actual]
+        if missing:
+            return f"key {render_value(missing[0])} is missing"
+        extra = [key for key in actual if key not in expected]
+        if extra:
+            return f"unexpected key {render_value(extra[0])}"
+        for key in expected:
+            if not _same(actual[key], expected[key]):
+                return f"[{render_value(key)}]", actual[key], expected[key]
+    elif isinstance(actual, (set, frozenset)) and isinstance(expected, (set, frozenset)):
+        missing, extra = list(expected - actual), list(actual - expected)
+        parts = [f"missing {render_value(missing[0])}"] if missing else []
+        parts += [f"unexpected {render_value(extra[0])}"] if extra else []
+        return ", ".join(parts)
+    return ""
+
+
+def _difference(actual: Any, expected: Any, units: Optional[str]) -> str:
+    """Where two values that look the same in a detail first differ, such as
+    ``first difference at [25]: expected 3.3, got 3.9``, or ``""``. Never raises."""
+    try:
+        return _find_difference(actual, expected, units)
+    except Exception:  # a container whose items cannot be compared or looked up
+        return ""
+
+
+def _find_difference(actual: Any, expected: Any, units: Optional[str]) -> str:
+    path = ""
+    for _ in range(_DIFFERENCE_DEPTH):
+        step = _step(actual, expected)
+        if isinstance(step, str):
+            if step:
+                return f"at {path}: {step}" if path else step
+            break
+        key, actual, expected = step
+        path += key
+    where = [path] if path else []
+    shown_actual, shown_expected = value_pair(actual, expected, units)
+    if shown_actual == shown_expected:  # long text or a long number: show a window
+        if isinstance(actual, int) and isinstance(expected, int):
+            actual, expected, kind = safe_str(actual), safe_str(expected), "digit"
+        elif isinstance(actual, (str, bytes)) and type(actual) is type(expected):
+            kind = "index"
+        elif path:  # items that look alike but differ, such as two NaNs
+            kind = ""
+        else:
+            return ""
+        if kind:
+            index = next(
+                (i for i, (a, e) in enumerate(zip(actual, expected)) if a != e),
+                min(len(actual), len(expected)),
+            )
+            low, high = max(index - _WINDOW, 0), index + _WINDOW
+            if kind == "digit":
+                shown_actual, shown_expected = actual[low:high], expected[low:high]
+            else:
+                shown_actual = render_value(actual[low:high])
+                shown_expected = render_value(expected[low:high])
+            where.append(f"{kind} {index}")
+    note = _nan_note(_NAN_EQUALITY, actual, expected)
+    location = f" at {', '.join(where)}" if where else ""
+    return f"first difference{location}: expected {shown_expected}, got {shown_actual}{note}"
 
 
 class Equal(CheckType):
@@ -38,7 +161,7 @@ class Equal(CheckType):
         return {
             "check_type": "equal",
             "name": name,
-            "description": f"Verify '{name}' == {safe_format(expected)}{units_suffix(units)}",
+            "description": f"{_subject(name)} == {render_value(expected, units)}",
             "actual": actual,
             "expected": expected,
             "units": units,
@@ -49,8 +172,14 @@ class Equal(CheckType):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, expected = value(d["actual"], units), value(d["expected"], units)
-        return f"{actual} == {expected}" if passed else f"expected {expected}, got {actual}"
+        if passed:
+            return f"{value(d['actual'], units)} == {value(d['expected'], units)}"
+        actual, expected = value_pair(d["actual"], d["expected"], units)
+        note = _nan_note(_NAN_EQUALITY, d["actual"], d["expected"])
+        if actual == expected:  # long values that differ past what is shown
+            difference = _difference(d["actual"], d["expected"], units)
+            note += f"; {difference}" if difference else ""
+        return f"expected {expected}, got {actual}{note}"
 
 
 class NotEqual(CheckType):
@@ -64,7 +193,7 @@ class NotEqual(CheckType):
         return {
             "check_type": "not_equal",
             "name": name,
-            "description": f"Verify '{name}' != {safe_format(expected)}{units_suffix(units)}",
+            "description": f"{_subject(name)} != {render_value(expected, units)}",
             "actual": actual,
             "expected": expected,
             "units": units,
@@ -75,8 +204,10 @@ class NotEqual(CheckType):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, expected = value(d["actual"], units), value(d["expected"], units)
-        return f"{actual} ≠ {expected}" if passed else f"expected ≠ {expected}, got {actual}"
+        actual, expected = value_pair(d["actual"], d["expected"], units)
+        if passed:
+            return f"{actual} ≠ {expected}{_nan_note(_NAN_EQUALITY, d['actual'], d['expected'])}"
+        return f"expected ≠ {expected}, got {actual}"
 
 
 def _number(number: Any) -> Any:
@@ -139,9 +270,7 @@ class Approx(CheckType):
         return {
             "check_type": "approx",
             "name": name,
-            "description": (
-                f"Verify '{name}' == {safe_format(expected)}{units_suffix(units)} {tolerance}"
-            ),
+            "description": f"{_subject(name)} == {render_value(expected, units)} {tolerance}",
             "actual": actual,
             "expected": expected,
             "abs_tol": abs_tol,
@@ -157,12 +286,39 @@ class Approx(CheckType):
         actual = value(d["actual"], units)
         expected = value(d["expected"], units)
         target = f"{expected} {approx_tolerance(d.get('abs_tol'), d.get('rel_tol'), units)}"
-        return f"{actual} == {target}" if passed else f"expected {target}, got {actual}"
+        if passed:
+            return f"{actual} == {target}"
+        note = _nan_note(_NAN_EQUALITY, d["actual"], d["expected"])
+        return f"expected {target}, got {actual}{note}"
 
 
 # ---------------------------------------------------------------------------
 # Ordering & range
 # ---------------------------------------------------------------------------
+
+
+_TEXT = (str, bytes, bytearray)
+
+
+def _refuse_text(actual: Any, *limits: Any) -> None:
+    """Refuse to order text by text: ``"100" > "20"`` is False, because strings compare letter
+    by letter. Text against any other type compares on that type's terms (a version object
+    parses the string) or raises, so it is left to the comparison."""
+    if isinstance(actual, _TEXT) and any(isinstance(limit, _TEXT) for limit in limits):
+        raise TypeError(
+            f"{type(actual).__name__} values are compared as text, not as numbers; "
+            "convert readings with float() first"
+        )
+
+
+def _ordered(compare: Callable[[], Any], *operands: Any) -> Any:
+    """Run *compare*; when text cannot be ordered against a number, say how to fix it."""
+    try:
+        return compare()
+    except TypeError as exc:
+        if any(isinstance(operand, _TEXT) for operand in operands):
+            raise TypeError(f"{exc}; convert text readings with float() first") from exc
+        raise
 
 
 class _Ordering(CheckType):
@@ -177,23 +333,25 @@ class _Ordering(CheckType):
         return {
             "check_type": cls.check_type,
             "name": name,
-            "description": (
-                f"Verify '{name}' {cls.symbol} {safe_format(threshold)}{units_suffix(units)}"
-            ),
+            "description": f"{_subject(name)} {cls.symbol} {render_value(threshold, units)}",
             "actual": actual,
             "threshold": threshold,
             "units": units,
         }
 
     def compare(self, d: Mapping[str, Any]) -> Any:
-        return type(self).compare_with(d["actual"], d["threshold"])
+        actual, threshold = d["actual"], d["threshold"]
+        _refuse_text(actual, threshold)
+        compare_with = type(self).compare_with
+        return _ordered(lambda: compare_with(actual, threshold), actual, threshold)
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, threshold = value(d["actual"], units), value(d["threshold"], units)
+        actual, threshold = value_pair(d["actual"], d["threshold"], units)
         if passed:
             return f"{actual} {self.symbol} {threshold}"
-        return f"expected {self.symbol} {threshold}, got {actual}"
+        note = _nan_note(_NAN_ORDERING, d["actual"], d["threshold"])
+        return f"expected {self.symbol} {threshold}, got {actual}{note}"
 
 
 class Greater(_Ordering):
@@ -268,13 +426,12 @@ class Between(CheckType):
                     "between() low must not exceed high, "
                     f"got low={safe_repr(low)}, high={safe_repr(high)}"
                 )
-        u = units_suffix(units)
-        lo, hi = safe_format(low), safe_format(high)
-        bounds = f"[{lo}{u}, {hi}{u}]" if inclusive else f"({lo}{u}, {hi}{u})"
+        lo, hi = render_value(low, units), render_value(high, units)
+        bounds = f"[{lo}, {hi}]" if inclusive else f"({lo}, {hi})"
         return {
             "check_type": "between",
             "name": name,
-            "description": f"Verify '{name}' ∈ {bounds}",
+            "description": f"{_subject(name)} ∈ {bounds}",
             "actual": actual,
             "low": low,
             "high": high,
@@ -284,16 +441,21 @@ class Between(CheckType):
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         actual, low, high = d["actual"], d["low"], d["high"]
+        _refuse_text(actual, low, high)
         if d.get("inclusive", True):
-            return low <= actual <= high
-        return low < actual < high
+            return _ordered(lambda: low <= actual <= high, actual, low, high)
+        return _ordered(lambda: low < actual < high, actual, low, high)
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual = value(d["actual"], units)
-        low, high = value(d["low"], units), value(d["high"], units)
+        actual, low = value_pair(d["actual"], d["low"], units)
+        tagged, high = value_pair(d["actual"], d["high"], units)
+        actual = max(actual, tagged, key=len)  # with its type when it looks like either bound
         bounds = f"[{low}, {high}]" if d.get("inclusive", True) else f"({low}, {high})"
-        return f"{actual} ∈ {bounds}" if passed else f"expected {bounds}, got {actual}"
+        if passed:
+            return f"{actual} ∈ {bounds}"
+        note = _nan_note(_NAN_ORDERING, d["actual"], d["low"], d["high"])
+        return f"expected {bounds}, got {actual}{note}"
 
 
 # ---------------------------------------------------------------------------
@@ -313,9 +475,24 @@ class _Unary(CheckType):
         return {
             "check_type": cls.check_type,
             "name": name,
-            "description": f"Verify '{name}' {cls.statement}",
+            "description": f"{_subject(name)} {cls.statement}",
             "actual": actual,
         }
+
+
+def _truth_detail(d: Mapping[str, Any], passed: bool, wanted: bool) -> str:
+    """``True``, or the value and how it tests, e.g. ``'0' (truthy)``: a string reply such as
+    ``"0"`` is truthy, which ``bool()`` alone would hide. How it tests comes from the verdict,
+    so a value whose truth changes between reads is not read again."""
+    actual = d["actual"]
+    shown = render_value(actual)
+    if actual is True or actual is False or d.get("error") is not None:
+        truth = ""  # a bool shows itself; an error says why bool() failed
+    else:
+        truth = " (truthy)" if passed == wanted else " (falsy)"
+    if passed:
+        return f"{shown}{truth}"
+    return f"expected {wanted}, got {shown}{truth}"
 
 
 class IsTrue(_Unary):
@@ -331,7 +508,7 @@ class IsTrue(_Unary):
         return bool(d["actual"]) is True
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return "True" if passed else f"expected True, got {bool(d['actual'])}"
+        return _truth_detail(d, passed, True)
 
 
 class IsFalse(_Unary):
@@ -347,7 +524,7 @@ class IsFalse(_Unary):
         return bool(d["actual"]) is False
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return "False" if passed else f"expected False, got {bool(d['actual'])}"
+        return _truth_detail(d, passed, False)
 
 
 class IsNone(_Unary):
@@ -363,7 +540,7 @@ class IsNone(_Unary):
         return d["actual"] is None
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return "None" if passed else f"expected None, got {bounded_repr(d['actual'])}"
+        return "None" if passed else f"expected None, got {render_value(d['actual'])}"
 
 
 class IsNotNone(_Unary):
@@ -379,7 +556,7 @@ class IsNotNone(_Unary):
         return d["actual"] is not None
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return "not None" if passed else f"expected not None, got {bounded_repr(d['actual'])}"
+        return "not None" if passed else f"expected not None, got {render_value(d['actual'])}"
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +573,7 @@ class Contains(CheckType):
         return {
             "check_type": "contains",
             "name": name,
-            "description": f"Verify '{name}' contains {safe_repr(needle)}",
+            "description": f"{_subject(name)} contains {render_value(needle)}",
             "haystack": haystack,
             "needle": needle,
         }
@@ -405,10 +582,10 @@ class Contains(CheckType):
         return d["needle"] in d["haystack"]
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        needle = bounded_repr(d["needle"])
+        needle = render_value(d["needle"])
         if passed:
             return f"contains {needle}"
-        return f"expected to contain {needle}, got {bounded_repr(d['haystack'])}"
+        return f"expected to contain {needle}, got {render_value(d['haystack'])}"
 
 
 class NotContains(CheckType):
@@ -420,7 +597,7 @@ class NotContains(CheckType):
         return {
             "check_type": "not_contains",
             "name": name,
-            "description": f"Verify '{name}' does not contain {safe_repr(needle)}",
+            "description": f"{_subject(name)} does not contain {render_value(needle)}",
             "haystack": haystack,
             "needle": needle,
         }
@@ -429,34 +606,64 @@ class NotContains(CheckType):
         return d["needle"] not in d["haystack"]
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        needle = bounded_repr(d["needle"])
+        needle = render_value(d["needle"])
         if passed:
             return f"does not contain {needle}"
-        return f"expected to not contain {needle}, got {bounded_repr(d['haystack'])}"
+        return f"expected to not contain {needle}, got {render_value(d['haystack'])}"
+
+
+#: Flags shown after a pattern, as in ``/v\d+/i``.
+_FLAG_LETTERS = (
+    (re.ASCII, "a"),
+    (re.IGNORECASE, "i"),
+    (re.LOCALE, "L"),
+    (re.MULTILINE, "m"),
+    (re.DOTALL, "s"),
+    (re.VERBOSE, "x"),
+)
+
+
+def _regex(pattern: Any, flags: Any) -> str:
+    """A pattern as ``/source/flags``."""
+    source = render_text(pattern) if isinstance(pattern, str) else render_value(pattern)
+    letters = ""
+    if isinstance(flags, int):
+        letters = "".join(letter for flag, letter in _FLAG_LETTERS if flags & flag)
+    return f"/{source}/{letters}"
 
 
 class Matches(CheckType):
     check_type = "matches"
 
     @staticmethod
-    def build(actual: Any, pattern: str, *, name: str) -> CheckDescriptor:
+    def build(actual: Any, pattern: Union[str, "re.Pattern[str]"], *, name: str) -> CheckDescriptor:
         require_name(name, "matches")
+        source: Any = pattern
+        flags = 0
+        if isinstance(pattern, re.Pattern):
+            source, flags = pattern.pattern, int(pattern.flags)
+            if isinstance(source, str):
+                flags &= ~int(re.UNICODE)  # implied for a str pattern
         return {
             "check_type": "matches",
             "name": name,
-            "description": f"Verify '{name}' matches /{safe_format(pattern)}/",
+            "description": f"{_subject(name)} matches {_regex(source, flags)}",
             "actual": actual,
-            "pattern": pattern,
+            "pattern": source,
+            "flags": flags,
         }
 
     def compare(self, d: Mapping[str, Any]) -> Any:
-        return re.search(d["pattern"], d["actual"]) is not None
+        pattern, flags = d["pattern"], d.get("flags") or 0
+        if isinstance(pattern, re.Pattern):  # a hand-built descriptor: it has its own flags
+            return pattern.search(d["actual"]) is not None
+        return re.search(pattern, d["actual"], flags) is not None
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        pattern = bounded_format(d["pattern"])
+        pattern = _regex(d["pattern"], d.get("flags"))
         if passed:
-            return f"matches /{pattern}/"
-        return f"expected to match /{pattern}/, got {bounded_repr(d['actual'])}"
+            return f"matches {pattern}"
+        return f"expected to match {pattern}, got {render_value(d['actual'])}"
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +689,7 @@ class IsInstance(CheckType):
         desc: CheckDescriptor = {
             "check_type": "is_instance",
             "name": name,
-            "description": f"Verify '{name}' is instance of {display}",
+            "description": f"{_subject(name)} is instance of {display}",
             "actual": actual,
             "expected_type": display,
             "expected_types": [qualified_type_name(cls) for cls in classes],
@@ -514,6 +721,8 @@ class IsInstance(CheckType):
 
 class Length(CheckType):
     check_type = "length"
+    # Only the length matters: a record keeps a preview of a large value, not all of it.
+    snapshot_limits: ClassVar[Dict[str, int]] = {"actual": 100}
 
     @staticmethod
     def build(actual: Any, expected: int, *, name: str) -> CheckDescriptor:
@@ -525,7 +734,7 @@ class Length(CheckType):
         return {
             "check_type": "length",
             "name": name,
-            "description": f"Verify '{name}' has length {safe_format(expected)}",
+            "description": f"{_subject(name)} has length {render_value(expected)}",
             "actual": actual,
             "expected": expected,
             "actual_length": actual_length,
@@ -540,8 +749,11 @@ class Length(CheckType):
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         expected = d["expected"]
         if passed:
-            return f"length {expected}"
-        return f"expected length {expected}, got length {d.get('actual_length')}"
+            return f"length {render_value(expected)}"
+        return (
+            f"expected length {render_value(expected)}, "
+            f"got length {render_value(d.get('actual_length'))}"
+        )
 
 
 class Fail(CheckType):
@@ -554,7 +766,7 @@ class Fail(CheckType):
         return {
             "check_type": "fail",
             "name": resolved_name,
-            "description": f"FAIL: {safe_format(msg)}",
+            "description": f"FAIL: {render_text(msg, _MESSAGE_LIMIT)}",
             "msg": msg,
         }
 
@@ -562,7 +774,7 @@ class Fail(CheckType):
         return False
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return f"FAIL: {bounded_format(d.get('msg', ''))}"
+        return f"FAIL: {render_text(d.get('msg', ''), _MESSAGE_LIMIT)}"
 
 
 EQUAL = register(Equal())

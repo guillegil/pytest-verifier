@@ -21,7 +21,7 @@ pip install "git+https://github.com/guillegil/pytest_verify.git"
 Or, to pin a release:
 
 ```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.6.0"
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
 ```
 
 This installs the `pytest-verifier` distribution and the `pytest_verifier` package. pytest loads
@@ -59,6 +59,30 @@ name, and an `expected … got …` detail:
   ✓ [2] Throughput — 120Mbps > 100Mbps
 ```
 
+How values read in the summary:
+
+- Numbers read naturally, with their units: `3.3V`. Strings are quoted, so `expected 1, got '1'`
+  shows that a reply was never converted. Enum members show as `Mode.ACTIVE`, and numeric ones
+  add their value: `Gain.LOW (10dB)`.
+- When two values still look the same, their types are added:
+  `expected 0.1 (float), got 0.1 (Decimal)`.
+- A long value is shortened to about 240 characters. When a failed `equal` shows the same text
+  for both values, it says where they first differ:
+  `first difference at [25]: expected 3.3V, got 3.9V`.
+- `is_true` and `is_false` show the value and how it tests, e.g. `'0' (truthy)`.
+- A composite says what went wrong inside it: the first three failing items of an
+  `all_satisfy`, or the cases and branches it considered when none matched.
+- A NaN gets a note, since it never compares equal and fails every ordering:
+  `expected 1.0, got nan (NaN never compares equal)`.
+- Each check stays on one line. Line breaks and other control characters in names and values
+  are escaped (`\n`).
+- At most 10 passed checks are listed, followed by `✓ … N more passed checks`. Run pytest with
+  `-vv` to list them all. Every check is still recorded (see
+  [Reading Results from Another Plugin](#reading-results-from-another-plugin)).
+- On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
+  `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
+  terminal output changes: reports such as junitxml keep the summary as it is.
+
 ### When failures are raised
 
 `ChecksFailedError` is an `AssertionError`, so pytest treats a soft failure like a failed
@@ -87,6 +111,18 @@ the error is shown, for example comparing `None` with a number:
   ✗ [1] Reading — expected > 100, got None (TypeError: '>' not supported between instances of 'NoneType' and 'int')
 ```
 
+Text is never compared as a number. `"100" < "20"` is true for Python, which compares strings
+letter by letter, so the ordering checks (`greater`, `less`, their `_equal` forms and `between`)
+fail when the value and a limit are both a `str`, `bytes` or `bytearray`. Convert instrument
+replies and values read from files first, e.g. `float(reply)`:
+
+```text
+  ✗ [0] Ripple — expected < '20', got '100' (TypeError: str values are compared as text, not as numbers; convert readings with float() first)
+```
+
+Text against a number fails with Python's own error, plus the same advice. Values that compare
+with text on their own terms, such as a `semver.Version` against `"1.9.0"`, work as usual.
+
 The same happens when a comparison returns something whose truth value is ambiguous, such as a
 numpy array. Reduce it first: `verify.is_true((a == b).all(), name="Arrays equal")`.
 
@@ -104,6 +140,8 @@ non-string `name`, a negative tolerance, `between` with `low` above `high`, or a
 | `verify.not_equal(actual, expected, *, name, units=None)` | `actual != expected` |
 | `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | Approximate equality (at least one tolerance required) |
 
+With `units="%"`, the tolerance says whether it is absolute or relative: `50% ± 1% (abs)`.
+
 ### Ordering & Range
 
 | Function | Description |
@@ -113,6 +151,10 @@ non-string `name`, a negative tolerance, `between` with `low` above `high`, or a
 | `verify.less(actual, threshold, *, name, units=None)` | `actual < threshold` |
 | `verify.less_equal(actual, threshold, *, name, units=None)` | `actual <= threshold` |
 | `verify.between(actual, low, high, *, inclusive=True, name, units=None)` | Value within range |
+
+These compare numbers, or other values that order themselves such as version tuples and dates.
+Text compared with text fails (see
+[Checks that cannot be evaluated](#checks-that-cannot-be-evaluated)).
 
 ### Boolean & Identity
 
@@ -129,7 +171,7 @@ non-string `name`, a negative tolerance, `between` with `low` above `high`, or a
 |----------|-------------|
 | `verify.contains(haystack, needle, *, name)` | `needle in haystack` |
 | `verify.not_contains(haystack, needle, *, name)` | `needle not in haystack` |
-| `verify.matches(actual, pattern, *, name)` | Regex search matches |
+| `verify.matches(actual, pattern, *, name)` | Regex search matches; `pattern` can be a string or compiled with `re.compile` |
 
 ### Type, Collection & Conditional
 
@@ -156,7 +198,8 @@ Only the case whose key matches `switch_value` counts. Use `default` for the no-
 without one, no match is a failure. A key matches when it equals the switch value. Enum
 members match by their value, and an int matches its decimal string, so
 `cases={0: ..., 1: ...}` and `cases={"0": ..., "1": ...}` behave the same. Keys that would
-match the same values, such as `1` and `"1"`, raise `ValueError`.
+match the same values, such as `1` and `"1"`, raise `ValueError`. When nothing matched and there
+is no default, the summary lists the keys it tried: `[mode=7 → no case matched: 0, 1, 2]`.
 
 ```python
 def test_output_by_mode(verify):
@@ -194,7 +237,9 @@ def test_sensor_output(verify):
 
 Conditions can be any truthy or falsy value, and a condition that is a function is called
 (see [Lazy children](#lazy-children--build-only-the-selected-branch)). A failed guard reports
-the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`. Passing a
+the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`, or the
+labels it tried when none matched: `[→ no branch matched: shutter closed, below floor]`. When a
+condition raises, the guard fails with `[→ no branch chosen]` and the error. Passing a
 check as a condition raises `TypeError`, because a check is always truthy. Use its result
 instead, e.g. `check["passed"]`.
 
@@ -211,6 +256,12 @@ def test_all_channels(verify):
         lambda v: verify.between(v, 3.2, 3.4, name="Channel", units="V"),
         name="All channels within spec",
     )
+```
+
+A failure names the first three failing items by their index:
+
+```text
+  ✗ [0] All channels within spec — expected all 4 to pass, got 2 failed: [1] expected [3.2V, 3.4V], got 3.55V; [3] expected [3.2V, 3.4V], got 3.1V
 ```
 
 ### How child checks are counted
@@ -376,6 +427,22 @@ def pytest_verify_results(item, when, checks, passed):
 The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
 so they also reach the main process under pytest-xdist.
 
+## Upgrading from 0.6
+
+Most of 0.7 changes how failures read. A few changes can affect existing tests:
+
+- An ordering check between two texts, such as `verify.greater("100", "20", name=...)`, now
+  fails with an error instead of comparing letter by letter. Convert readings with `float()`.
+- Type checkers see narrower types: `length()` needs a sized value and `contains()` a
+  container, both reject an `Optional` until it is narrowed, and the body of an `all_satisfy`
+  `lambda` is checked against the type of the items.
+- The summary text has new formats (quoted strings, type hints, at most 10 passed checks
+  unless `-vv`). Code that needs the results should read them with
+  [`get_check_results()` or `report.verify_checks`](#reading-results-from-another-plugin)
+  rather than parse the text.
+
+Every change is listed in the [CHANGELOG](CHANGELOG.md).
+
 ## Upgrading from pytest-verify
 
 Version 0.6.0 renamed the project, because another plugin on PyPI already uses the name
@@ -386,7 +453,7 @@ First uninstall the old distribution, then install the new one:
 
 ```bash
 pip uninstall pytest-verify
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.6.0"
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
 ```
 
 If pytest-verify is still installed, for example after `pip install -U` from the same git URL,

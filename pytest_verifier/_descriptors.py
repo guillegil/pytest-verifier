@@ -12,7 +12,7 @@ import typing
 from decimal import Decimal
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple, Union
 
-from ._render import safe_format, safe_repr, safe_str
+from ._render import escape, render_value, safe_format, safe_repr, safe_str, shorten, units_text
 
 if sys.version_info >= (3, 10):
     from types import UnionType
@@ -64,6 +64,7 @@ class CheckDescriptor(_CheckIdentity, total=False):
     haystack: Any
     needle: Any
     pattern: str
+    flags: int
     expected_type: str
     expected_types: List[str]
     instance_check: bool
@@ -174,10 +175,6 @@ def validate_tolerance(value: object, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def units_suffix(units: Optional[str]) -> str:
-    return units if units else ""
-
-
 def _format_percent(rel_tol: Any) -> str:
     """Render a relative tolerance as a percent string, dropping a trailing ``.0``.
 
@@ -187,21 +184,25 @@ def _format_percent(rel_tol: Any) -> str:
     try:
         return f"{rel_tol * 100:.10g}"
     except Exception:
-        return safe_format(rel_tol * 100)
+        try:
+            return shorten(escape(safe_format(rel_tol * 100)))
+        except Exception:  # a hand-built descriptor's rel_tol that cannot be multiplied
+            return render_value(rel_tol)
 
 
 def approx_tolerance(abs_tol: Any, rel_tol: Any, units: Optional[str] = None) -> str:
     """Render the ``± …`` tolerance clause for an approx check (spec §5.1).
 
-    Labels ``(abs)``/``(rel)`` appear only when both tolerances are present.
-    Shared by the ``approx`` description and its detail.
+    Labels ``(abs)``/``(rel)`` appear when both tolerances are present, and when the units end
+    with ``%``: there ``± 2%`` could be either. Shared by the ``approx`` description and its
+    detail.
     """
-    u = units_suffix(units)
     if abs_tol is not None and rel_tol is not None:
-        return f"± {safe_format(abs_tol)}{u} (abs) ± {_format_percent(rel_tol)}% (rel)"
+        return f"± {render_value(abs_tol, units)} (abs) ± {_format_percent(rel_tol)}% (rel)"
+    ambiguous = units_text(units).endswith("%")
     if abs_tol is not None:
-        return f"± {safe_format(abs_tol)}{u}"
-    return f"± {_format_percent(rel_tol)}%"
+        return f"± {render_value(abs_tol, units)}" + (" (abs)" if ambiguous else "")
+    return f"± {_format_percent(rel_tol)}%" + (" (rel)" if ambiguous else "")
 
 
 # ---------------------------------------------------------------------------

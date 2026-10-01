@@ -141,7 +141,10 @@ class TestChecksFailedErrorPerTypeDetail:
 
         r = build_all_satisfy([1, -2, 3, -4], lambda x: build_greater(x, 0, name=f"i{x}"), name="Positives")
         r["passed"] = False
-        assert self._line(r) == "  ✗ [0] Positives — expected all 4 to pass, got 2 failed"
+        assert self._line(r) == (
+            "  ✗ [0] Positives — expected all 4 to pass, got 2 failed: "
+            "[1] i-2: expected > 0, got -2; [3] i-4: expected > 0, got -4"
+        )
 
     def test_fail_renders_msg(self):
         from tests._builders import build_fail
@@ -178,7 +181,7 @@ class TestChecksFailedErrorPerTypeDetail:
     def test_conditional_no_match_no_default(self):
         child = build_approx(3.29, 3.3, abs_tol=0.1, name="Active", units="V")
         r = _evaluated(build_conditional, 99, cases={"1": child}, name="Mode", passed=False)
-        assert self._line(r) == "  ✗ [0] Mode [mode=99 → no match]"
+        assert self._line(r) == "  ✗ [0] Mode [mode=99 → no case matched: 1]"
 
     def test_conditional_default_branch(self):
         from tests._builders import build_fail
@@ -221,7 +224,7 @@ class TestChecksFailedErrorPerTypeDetail:
 
         r = build_guard([(False, "below floor", build_equal(1, 2, name="lo"))], name="Sensor output")
         r["passed"] = False
-        assert self._line(r) == "  ✗ [0] Sensor output [→ no match]"
+        assert self._line(r) == "  ✗ [0] Sensor output [→ no branch matched: below floor]"
 
     def test_guard_matched_index_zero(self):
         # Index 0 must render (regression guard against `if matched` vs `is not None`).

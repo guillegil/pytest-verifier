@@ -11,7 +11,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ._checks import REGISTRY, CompositeType, judge, lookup, render_detail
 from ._descriptors import CheckDescriptor, is_descriptor
-from ._render import describe_error, safe_repr, snapshot
+from ._render import VALUE_LIMIT, describe_error, safe_repr, snapshot
 
 #: Looks up a descriptor the fixture already recorded: ``(passed, record)`` or ``None``.
 Known = Callable[[Any], Optional[Tuple[bool, CheckDescriptor]]]
@@ -33,8 +33,10 @@ def _unknown(descriptor: Any) -> None:
 
 def _evidence(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
     """JSON-safe copies of every field except the verdict and the child checks."""
+    check = lookup(descriptor)
+    limits = {} if check is None else check.snapshot_limits
     return {
-        key: snapshot(value)
+        key: snapshot(value, limits[key], VALUE_LIMIT) if key in limits else snapshot(value)
         for key, value in descriptor.items()
         if key not in _VERDICT_FIELDS and key not in _CHILD_FIELDS
     }

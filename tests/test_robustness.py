@@ -74,9 +74,8 @@ class TestUsageErrors:
         with pytest.raises(ValueError, match="low must not exceed high"):
             mverify.between(1, 5, 2, name="R")
 
-    def test_between_allows_an_empty_exclusive_range_and_non_numbers(self) -> None:
+    def test_between_allows_an_empty_exclusive_range(self) -> None:
         assert not mverify.evaluate(mverify.between(2, 2, 2, inclusive=False, name="R"))
-        assert mverify.evaluate(mverify.between("b", "a", "c", name="S"))
 
     @pytest.mark.parametrize("expected_type", [list[int], ()])
     def test_is_instance_rejects_what_isinstance_cannot_check(self, expected_type: Any) -> None:
@@ -374,7 +373,7 @@ class TestSelectCase:
         assert check["matched_case"] is None
         [result] = mverify.evaluate_detailed(check)
         assert result["passed"] is False
-        assert render_detail(check, False) == "[mode=3 → no match]"
+        assert render_detail(check, False) == "[mode=3 → no case matched: 1]"
 
 
 # ── Safe rendering and snapshots ──
@@ -425,7 +424,7 @@ class TestRendering:
         )
         result = pytester.runpytest()
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["*2 of 2 checks failed*", "*format() raised RuntimeError*"])
+        result.stdout.fnmatch_lines(["*2 of 2 checks failed*", "*got <Hostile instance at 0x*"])
 
     @pytest.mark.parametrize(
         "value, expected",
@@ -526,7 +525,10 @@ class TestRendering:
             assert len(record["detail"]) < 2500, record["name"]
         assert records[0]["detail"].startswith("expected [], got [0, 1, 2, ")
         assert records[0]["detail"].endswith(", ...]")
-        assert records[1]["detail"].endswith("x...")
+        # A long string keeps its start and its end, shortened in the middle.
+        assert records[1]["detail"].startswith("expected 'y', got 'xxx")
+        assert records[1]["detail"].endswith("xxx'")
+        assert "x...x" in records[1]["detail"]
         assert len(format_summary(records)) < 20_000
 
 
