@@ -19,10 +19,10 @@ pip install "git+https://github.com/guillegil/pytest_verify.git"
 Or, to pin a release:
 
 ```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.3.1"
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.4.0"
 ```
 
-Requires Python 3.9+ and pytest 7+.
+Requires Python 3.9+, pytest 7+ and pluggy 1.2+.
 
 ## Quick Start
 
@@ -35,7 +35,7 @@ def test_power_supply(verify):
     verify.between(current, 0.1, 0.5, name="Icc", units="A")
 ```
 
-If any check fails, the test continues running. At the end, all failures are
+If any check fails, the test continues running. When the test body ends, all failures are
 reported together in a single `ChecksFailedError`.
 
 ## Failure Output
@@ -52,6 +52,33 @@ name, and an `expected … got …` detail:
   ✓ [0] PSU stable — True
   ✓ [2] Throughput — 120Mbps > 100Mbps
 ```
+
+### When failures are raised
+
+`ChecksFailedError` is an `AssertionError`, so pytest treats a soft failure like a failed
+`assert`. `xfail(raises=AssertionError)`, `--pdb` and rerun filters all work.
+
+- Checks made in fixtures' setup and in the test body are raised after the test body.
+- Checks made while fixtures are torn down are raised after teardown, as a teardown error.
+- If the test already failed with another exception, that exception is reported and the
+  failed checks are added to its report under **Soft assertion failures**.
+- A `pytest.skip()` after a failed check does not hide the failure.
+
+### Checks that cannot be evaluated
+
+Problems with the checked data never stop the test. If a comparison raises, the check fails and
+the error is shown, for example comparing `None` with a number:
+
+```text
+  ✗ [1] Reading — expected > 100, got None (TypeError: '>' not supported between instances of 'NoneType' and 'int')
+```
+
+The same happens when a comparison returns something whose truth value is ambiguous, such as a
+numpy array. Reduce it first: `verify.is_true((a == b).all(), name="Arrays equal")`.
+
+Mistakes in how a check is called raise right away, like any Python error: a missing or
+non-string `name`, a negative tolerance, `between` with `low` above `high`, or a malformed
+`guard` branch.
 
 ## Check Functions
 
@@ -97,7 +124,8 @@ name, and an `expected … got …` detail:
 | `verify.is_instance(actual, expected_type, *, name)` | `isinstance(actual, expected_type)` |
 | `verify.length(actual, expected, *, name)` | `len(actual) == expected` |
 | `verify.all_satisfy(items, descriptor_factory, *, name)` | All items pass factory check |
-| `verify.conditional(switch_value, *, cases, default=None, name)` | Branch-based check |
+| `verify.conditional(switch_value, *, cases, default=None, name)` | Check the case selected by a switch value |
+| `verify.guard(branches, *, default=None, name)` | Check the first branch whose condition is true |
 | `verify.fail(msg, *, name=None)` | Unconditional failure |
 
 ## Usage Examples
@@ -107,9 +135,11 @@ The ones below take a little more setup.
 
 ### `conditional` — pick one branch by a switch value
 
-Only the branch whose key matches `switch_value` is evaluated. Use `default` for the
-no-match case. Keys can be ints, strings, or enums — they are normalized internally, so
-`cases={0: ..., 1: ...}` and `cases={"0": ..., "1": ...}` behave the same.
+Only the case whose key matches `switch_value` counts. Use `default` for the no-match case;
+without one, no match is a failure. A key matches when it equals the switch value. Enum
+members match by their value, and an int matches its decimal string, so
+`cases={0: ..., 1: ...}` and `cases={"0": ..., "1": ...}` behave the same. Keys that would
+match the same values, such as `1` and `"1"`, raise `ValueError`.
 
 ```python
 def test_output_by_mode(verify):
@@ -136,22 +166,25 @@ the chosen branch in the failure summary.
 def test_sensor_output(verify):
     verify.guard(
         branches=[
-            (shutter_closed,      "shutter closed", verify.equal(reading, 0)),
-            (level < floor - 5,   "below floor",    verify.equal(reading, 0)),
-            (not sensor_enabled,  "disabled",       verify.equal(reading, 0)),
+            (shutter_closed,     "shutter closed", verify.equal(reading, 0, name="Dark")),
+            (level < floor - 5,  "below floor",    verify.equal(reading, 0, name="Dark")),
+            (not sensor_enabled, "disabled",       verify.equal(reading, 0, name="Dark")),
         ],
-        default=verify.approx(reading, expected_dn, abs_tol=2, units="DN"),
+        default=verify.approx(reading, expected_dn, abs_tol=2, name="Lit", units="DN"),
         name="Sensor output",
     )
 ```
 
-A failed guard reports the branch it took, e.g.
-`✗ [0] Sensor output [→ below floor] — expected 0, got 7`.
+Conditions can be any truthy or falsy value. A failed guard reports the branch it took, e.g.
+`✗ [0] Sensor output [→ below floor] — expected 0, got 7`. Passing a check as a condition
+raises `TypeError`, because a check is always truthy. Use its result instead, e.g.
+`check["passed"]`.
 
 ### `all_satisfy` — apply one check to every item
 
 The factory is called once per item to build a child check; the parent passes only if
-**all** children pass.
+**all** children pass. `items` can be any iterable. If the factory raises or returns something
+that is not a check (for example, a forgotten `return`), the check fails with that error.
 
 ```python
 def test_all_channels(verify):
@@ -162,10 +195,22 @@ def test_all_channels(verify):
     )
 ```
 
+### How child checks are counted
+
+With the fixture, the checks you build inside a composite call (in `cases`, `branches`,
+`default`, or the `all_satisfy` factory) belong to the composite. They are not reported on
+their own, and only the selected ones count toward its verdict. A check you recorded before the
+composite call and then pass in as a child still counts on its own as well. A composite built
+with the module-level `verify` is never recorded, so fixture checks passed to it stay separate
+checks.
+
 ### `is_instance` — type check
+
+Takes what `isinstance` takes: a class, a tuple of classes, or a union.
 
 ```python
 verify.is_instance(response, dict, name="Response is a dict")
+verify.is_instance(reading, (int, float), name="Reading is a number")
 ```
 
 ### `fail` — force a failure
@@ -189,10 +234,30 @@ result = verify.evaluate(descriptor)       # True / False
 details = verify.evaluate_detailed(descriptor)  # [{passed, details, seq, t}]
 ```
 
-## Reporter Integration
+Pass several checks as separate arguments: `verify.evaluate(*checks)`. Each result of
+`evaluate_detailed` also has an `error` key when its check could not be evaluated.
 
-If `pytest-reporter` is installed, check results are automatically written to `item.stash`
-for rich HTML rendering. No configuration needed — detection is automatic.
+A descriptor sent through JSON loses Python types: tuples become lists and dict keys become
+strings. `equal((1, 2), [1, 2])` fails, but the same descriptor passes after a JSON round-trip.
+Results recorded by the fixture carry their `passed` verdict, and `evaluate()` keeps it.
+
+## Reading Results from Another Plugin
+
+Reporters and other plugins read a test's checks with `get_check_results(item)`:
+
+```python
+from pytest_verify import get_check_results
+
+def pytest_runtest_makereport(item, call):
+    for check in get_check_results(item):
+        print(check["name"], check["passed"], check["detail"])
+```
+
+It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
+`passed` and `detail`, and holds JSON-safe copies of the checked values taken when the check
+was made, so `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or
+`guard` is inside its parent. After a rerun, only the last attempt's checks are returned.
+`pytest-reporter` uses this to render verification cards.
 
 ## Development
 
@@ -204,19 +269,23 @@ cd pytest_verify
 uv run pytest
 ```
 
-CI runs the full suite on every push and pull request against Python 3.9–3.13
-(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
+Type-check with `uv run --with mypy mypy` (strict mode, configured in `pyproject.toml`).
 
-## Known Issues
+CI runs on every push to `main` and every pull request targeting `main`
+(see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)). It runs the test suite on
+Python 3.9–3.13 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
+`mypy --strict` and the tests of the built sdist.
 
-Version 0.3.1 has known bugs, including two that can crash a pytest session (for example,
-comparing numpy arrays with `verify.equal`). They are listed by severity, with reproductions and
-suggested fixes, in [`bugs-0.3.1.md`](bugs-0.3.1.md). Most are pinned by a strict
-`xfail` test in `tests/test_known_bugs_*.py`, so fixing a bug makes its test fail until the
-marker is removed.
+## Known Issues and Roadmap
+
+Version 0.4.0 fixes every bug found by the review of 0.3.1. The report is in
+[`bugs-0.3.1.md`](bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
+for each bug.
 
 Planned improvements and feature ideas are collected in
-[`improvements-and-ideas.md`](improvements-and-ideas.md).
+[`improvements-and-ideas.md`](improvements-and-ideas.md). [`CHECKLIST.md`](CHECKLIST.md) tracks
+every item and the release that handles it. See [`CHANGELOG.md`](CHANGELOG.md) for what each
+release changed.
 
 ## License
 

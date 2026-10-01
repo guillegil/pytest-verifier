@@ -14,42 +14,48 @@ pytest-verify (this plugin)          pytest-reporter (separate plugin)
 │ verify fixture (scope:   │         │ step(check=descriptor)         │
 │   test)                  │         │   → reads descriptor           │
 │   .approx()              │         │   → creates procedure substep  │
-│   .between()             │ item.   │   → NO evaluation              │
-│   .greater()             │ stash   │                                │
-│   ...                    │ ────►   │ Reads item.stash for           │
-│                          │         │ verification card rendering    │
+│   .between()             │ get_    │   → NO evaluation              │
+│   .greater()             │ check_  │                                │
+│   ...                    │ results │ Reads get_check_results(item)  │
+│                          │ ────►   │ for verification card rendering│
 │ Evaluates immediately    │         │                                │
-│ Stores results internally│         │ Observes outcome via           │
+│ Records JSON-safe results│         │ Observes outcome via           │
 │ Raises ChecksFailedError │         │ pytest_runtest_makereport      │
-│   at teardown            │         │                                │
+│   after the test body    │         │                                │
 └──────────────────────────┘         └────────────────────────────────┘
          │                                        │
-         │  Neither plugin imports the other.     │
-         │  Communication: item.stash only.       │
+         │  pytest-verify never imports reporter. │
+         │  Reporter reads results through        │
+         │  pytest_verify.get_check_results(item).│
          └────────────────────────────────────────┘
 ```
 
 ## Core Principles
 
-- **verify fixture is the primary API.** It evaluates checks immediately, stores results, returns descriptor dicts, and raises `ChecksFailedError` at teardown. No imports needed — it's a pytest fixture.
+- **verify fixture is the primary API.** It evaluates checks immediately, records results, returns descriptor dicts, and raises `ChecksFailedError` once the phase that recorded a failed check ends (after the test body; after teardown for checks made in teardown). No imports needed — it's a pytest fixture.
 - **verify module is the secondary API.** `from pytest_verify import verify` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `verify.evaluate()`.
-- **Soft assertions.** Failed checks never stop the test. All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` at teardown.
-- **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Descriptors are JSON-serializable.
-- **No dependency on pytest-reporter.** The plugin works standalone. Reporter detection happens at `pytest_configure` via plugin manager query. If detected, results are also written to `item.stash`.
+- **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
+- **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
+- **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verify.get_check_results(item)`; there is no reporter detection.
 
 ## Package Structure
 
 ```
 pytest_verify/
-├── __init__.py              # Exports: verify module instance, Verify class, CheckDescriptor
+├── __init__.py              # Exports: verify, Verify, CheckDescriptor, GuardBranch,
+│                            #   ChecksFailedError, get_check_results
 ├── py.typed                 # PEP 561 marker — REQUIRED
-├── _verify.py               # Verify class implementation
-├── _descriptors.py          # CheckDescriptor TypedDict, descriptor builder functions
-├── _evaluator.py            # evaluate() and evaluate_detailed() logic
-├── _fixture.py              # pytest fixture registration, teardown logic
-├── _stash.py                # Stash key definition, reporter detection
-├── _exceptions.py           # ChecksFailedError
-└── _types.py                # Shared type aliases
+├── _verify.py               # Verify class: typed public signatures and docstrings
+├── _descriptors.py          # CheckDescriptor TypedDict, builders, argument validation,
+│                            #   conditional case matching
+├── _evaluator.py            # judge() (never raises), evaluate(), evaluate_detailed()
+├── _render.py               # Exception-safe str/repr/format, JSON-safe snapshots
+├── _settle.py               # Turns a descriptor into a recorded result (verdict, detail,
+│                            #   snapshots, child verdicts)
+├── _fixture.py              # Plugin entry point: verify fixture, per-attempt run state,
+│                            #   runtest hook wrappers that raise ChecksFailedError
+├── _stash.py                # check_results_key (read through get_check_results)
+└── _exceptions.py           # ChecksFailedError, failure summary rendering
 ```
 
 ## Key Types
@@ -61,6 +67,8 @@ class CheckDescriptor(TypedDict, total=False):
     name: str                # Required: human-readable label
     description: str         # Required: pre-formatted verification statement
     passed: bool             # Present only when returned from fixture (evaluated)
+    detail: str              # Fixture only: rendered "expected … got …" clause
+    error: str               # Why the check could not be evaluated (it then fails)
     actual: Any              # Check-type-specific
     expected: Any            # Check-type-specific
     abs_tol: float | None    # approx only
@@ -78,33 +86,26 @@ class CheckDescriptor(TypedDict, total=False):
 ### `verify` fixture (scope: test)
 
 1. **On each `verify.*()` call:**
-   - Build descriptor dict from arguments
-   - Evaluate the check (run the comparison)
-   - Set `passed` field on descriptor
-   - Append to internal results list
-   - If reporter detected: write to `item.stash[check_results_key]`
-   - Return the descriptor dict
+   - Build the descriptor dict from the arguments (usage errors raise here)
+   - Judge it once; a raising comparison is a failed check with an `error` note
+   - Record a copy with `passed`, `detail` and JSON-safe snapshots of the values
+   - A composite absorbs the child checks built for it (only those recorded after the
+     composite method was looked up), and each evaluated child carries its own `passed`
+   - Return the recorded dict
 
-2. **At teardown (fixture finalizer):**
-   - If any result has `passed: False` → raise `ChecksFailedError`
+2. **At the end of each phase (runtest hook wrappers):**
+   - Checks recorded in setup and in the test body are judged after the test body; checks
+     recorded in teardown after teardown. Any failure → raise `ChecksFailedError`
+   - If the phase already raised, keep that error and add the summary to its report as a
+     "Soft assertion failures" section (a skip never hides a failed check)
    - `ChecksFailedError` message format: failed checks first, then passed, with `[seq]` indices
 
-3. **Reset:** Fresh instance per test. No state bleeds between tests.
+3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 
-### Reporter Detection (§8 of spec)
+### Results contract (shared with pytest-reporter §15.1)
 
-```python
-# In pytest_configure:
-reporter_installed = config.pluginmanager.has_plugin("pytest-reporter")
-# Store on plugin instance, check before each stash write
-```
-
-### Stash Key Convention (shared with pytest-reporter §15.1)
-
-```python
-from pytest import StashKey
-check_results_key = StashKey[list]()
-```
+Other plugins call `pytest_verify.get_check_results(item)`. A `StashKey` works by identity, so a
+key created by another plugin can never see these results; the key in `_stash.py` is private.
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
 
@@ -117,9 +118,9 @@ Implementation requirements:
 - `CheckDescriptor` as a TypedDict (not a plain dict)
 - `py.typed` marker in package root
 - Docstrings on all public methods
-- Use `from __future__ import annotations` for `X | None` syntax on Python 3.9
+- Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (20 functions)
+## Function Catalog (21 functions)
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -159,6 +160,7 @@ Implementation requirements:
 | `verify.length(actual, expected, *, name)` | `"length"` | Stores `actual_length` in descriptor |
 | `verify.all_satisfy(items, descriptor_factory, *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored |
 | `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated |
+| `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated |
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
 
 ## Evaluation Logic
@@ -175,7 +177,7 @@ Implementation requirements:
 ### Evaluation rules by check_type:
 - `equal`: `actual == expected`
 - `not_equal`: `actual != expected`
-- `approx`: `math.isclose(actual, expected, abs_tol=abs_tol, rel_tol=rel_tol)` — at least one tolerance required, passes if either satisfied
+- `approx`: `|actual - expected| <= abs_tol` or `<= rel_tol * |expected|` — at least one tolerance required, passes if either satisfied; exact for `int`/`Decimal`/`Fraction` unless a `float` is involved
 - `greater`: `actual > threshold`
 - `greater_equal`: `actual >= threshold`
 - `less`: `actual < threshold`
@@ -189,10 +191,11 @@ Implementation requirements:
 - `contains`: `needle in haystack`
 - `not_contains`: `needle not in haystack`
 - `matches`: `re.search(pattern, actual) is not None`
-- `is_instance`: `isinstance(actual, expected_type)`
+- `is_instance`: `isinstance(actual, expected_type)`, computed when the check is built (`instance_check`)
 - `length`: `len(actual) == expected`
 - `all_satisfy`: all child checks pass
 - `conditional`: resolve matched case → evaluate child → parent passes if child passes
+- `guard`: first branch with a truthy condition (else `default`) → parent passes if that child passes
 - `fail`: always False
 
 ## Description Formatting
@@ -204,14 +207,14 @@ The `description` field is generated by the assertion engine. Format conventions
 - `verify.between(v, 0.1, 0.5, inclusive=False, name="I")` → `"Verify 'I' ∈ (0.1, 0.5)"`
 - `verify.greater(v, 100, name="T", units="Mbps")` → `"Verify 'T' > 100Mbps"`
 - `verify.is_true(v, name="Alive")` → `"Verify 'Alive' is True"`
-- `verify.conditional(mode, name="M")` → `"Verify 'M' [mode=1]"`
+- `verify.conditional(1, cases={1: ...}, name="M")` → `"Verify 'M' [mode=1]"`
 - `verify.fail("msg")` → `"FAIL: msg"`
 
 When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 0.05"`
 
 ## Coding Standards
 
-- Python 3.9+ (use `from __future__ import annotations` for union syntax)
+- Python 3.9+ (public hints use `Optional`/`Union`; see IDE Autocompletion above)
 - PEP 8 with 100 character lines
 - Type hints on all public APIs — this is non-negotiable for IDE autocompletion
 - Docstrings (Google style) on all public methods
@@ -230,8 +233,8 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 - Test evaluation logic: each check_type passes when it should, fails when it should
 - Test `evaluate(*args)`: multiple descriptors, all-pass, any-fail
 - Test `evaluate_detailed`: correct result schema
-- Test fixture lifecycle: results collected, `ChecksFailedError` raised at teardown, message format
-- Test reporter detection: stash written when reporter present, skipped when absent
+- Test fixture lifecycle: results collected, `ChecksFailedError` raised after the test body (and after teardown for teardown checks), message format
+- Test `get_check_results`: every recorded check, JSON-serializable, last rerun attempt only
 - Test `units` parameter: present in description, absent when None
 - Test `conditional`: case matching, default fallback, no-match-no-default
 - Test `all_satisfy`: all pass, some fail, empty list
@@ -243,7 +246,7 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 - **`name` is required on all checks** (except `fail` where it defaults to `msg`). Raise `TypeError` if missing.
 - **`approx` needs at least one tolerance.** Raise `ValueError` if neither `abs_tol` nor `rel_tol` provided.
 - **`all_satisfy` callable is invoked at call time.** The resulting `child_checks` list is stored, not the callable.
-- **`conditional` cases keys are stringified.** `switch_value` is converted to string for lookup: `str(switch_value)`.
+- **`conditional` keys match by equality.** Enum members compare by value, and an `int` matches its decimal string. Keys are stored as strings; keys that would collide raise `ValueError`.
 - **`is_instance` stores type as string.** The descriptor contains `"expected_type": "dict"`, not the actual type object.
 - **Fixture vs module:** The fixture evaluates and stores. The module just builds descriptors. Don't mix up which does what.
-- **Stash writes are conditional.** Only write to `item.stash` if reporter is detected at session start.
+- **Results are always recorded.** Other plugins read them with `get_check_results(item)`.

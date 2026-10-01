@@ -1,5 +1,9 @@
 # Known bugs in pytest-verify 0.3.1
 
+> **Status: all 45 bugs are fixed in 0.4.0.** See [`CHANGELOG.md`](CHANGELOG.md) for what
+> changed and [`CHECKLIST.md`](CHECKLIST.md) for the status of every review item. The entries
+> below describe 0.3.1 as it was reviewed; line numbers refer to that version.
+
 This report comes from a deep review of `pytest-verify` 0.3.1 (commit `5bf4adf`, tag `v0.3.1`).
 Every entry was reproduced with a probe script, then reproduced again by an independent
 reviewer who wrote their own probe, and judged against the spec (`.claude/CLAUDE.md`), the
@@ -8,11 +12,12 @@ README and the docstrings. Nothing here is speculative.
 Probes ran on Python 3.9 (pytest 8.4), 3.10 to 3.13 (pytest 9.0) and, for plugin interop,
 Python 3.11 with pytest 9.1, pytest-xdist 3.8, pytest-rerunfailures 16.7 and mypy.
 
-Most bugs are pinned by a strict `xfail` test in `tests/test_known_bugs_*.py`. The test states
-the correct behaviour, so it fails today and turns into an XPASS (which fails CI) as soon as the
-bug is fixed. That forces whoever fixes a bug to remove the marker. The **Pinned by** line at
-the end of each entry names the tests. Entries without one are timing-dependent (thread races),
-need tools CI does not have (mypy, old setuptools), or are documentation issues.
+Every bug except L-11 (a build requirement) and the documentation entries has a regression
+test that failed on 0.3.1 and passes since 0.4.0. The **Pinned by** line at the end of each
+entry names it. Most live in `tests/test_regressions_*.py` (first added as strict `xfail` tests
+in `tests/test_known_bugs_*.py`). The thread races are covered by `tests/test_threads.py`, the
+typing bug by the `mypy --strict` CI job over `tests/typing_usage.py`, and L-12 by the CI job
+that builds the sdist and runs its tests.
 
 Non-bug findings (design improvements, API ideas, tooling) are in
 [`improvements-and-ideas.md`](improvements-and-ideas.md).
@@ -29,53 +34,53 @@ Non-bug findings (design improvements, API ideas, tooling) are in
 
 ## Summary
 
-| ID | Severity | Bug |
-|----|----------|-----|
-| [C-1](#c-1-a-non-bool-comparison-result-crashes-the-whole-session) | Critical | A non-bool comparison result (numpy/pandas style) crashes the whole session |
-| [C-2](#c-2-building-the-failure-summary-can-crash-the-whole-session) | Critical | Building the failure summary can crash the whole session |
-| [H-1](#h-1-a-check-that-raises-stops-the-test-and-is-never-recorded) | High | A check that raises stops the test and is never recorded |
-| [H-2](#h-2-guard-and-conditional-evaluate-every-branch-not-just-the-matched-one) | High | `guard` and `conditional` evaluate every branch, not just the matched one |
-| [H-3](#h-3-composite-checks-re-judge-their-children-and-can-contradict-them) | High | Composite checks re-judge their children and can contradict them |
-| [H-4](#h-4-reusing-a-recorded-check-inside-a-composite-deletes-it) | High | Reusing a recorded check inside a composite deletes it, so the test passes |
-| [H-5](#h-5-module-level-is_instance-matches-by-class-name-only) | High | Module-level `is_instance` matches by class name only |
-| [H-6](#h-6-conditional-matches-cases-with-str-so-results-depend-on-the-python-version) | High | `conditional` matches cases with `str()`, so results depend on the Python version |
-| [H-7](#h-7-checks-recorded-during-teardown-are-ignored) | High | Checks recorded during teardown are ignored and the test passes |
-| [H-8](#h-8-soft-failures-are-misreported-under-xfail-and-hidden-by-skip) | High | Soft failures are misreported under `xfail` and hidden by `skip` |
-| [M-1](#m-1-approx-rel_tol-accepts-values-outside-the-advertised-band) | Medium | `approx` `rel_tol` accepts values outside the advertised band |
-| [M-2](#m-2-is_instance-crashes-on-tuples-and-unions-of-types) | Medium | `is_instance` crashes on tuples and unions of types |
-| [M-3](#m-3-descriptors-are-not-json-serializable-for-common-inputs) | Medium | Descriptors are not JSON-serializable for common inputs |
-| [M-4](#m-4-reports-show-values-after-mutation-not-the-values-that-were-checked) | Medium | Reports show values after mutation, not the values that were checked |
-| [M-5](#m-5-every-checked-value-is-kept-alive-until-the-session-ends) | Medium | Every checked value is kept alive until the session ends |
-| [M-6](#m-6-conditional-evaluator-and-renderer-disagree-after-a-json-round-trip) | Medium | `conditional` evaluator and renderer disagree after a JSON round-trip |
-| [M-7](#m-7-the-results-stash-accumulates-across-reruns) | Medium | The results stash accumulates across reruns |
-| [M-8](#m-8-a-clean-rerun-is-failed-with-the-previous-attempts-checks) | Medium | A clean rerun is failed with the previous attempt's checks |
-| [M-9](#m-9-pytest-9-subtests-one-failing-check-fails-every-later-subtest) | Medium | pytest 9 subtests: one failing check fails every later subtest |
-| [M-10](#m-10-soft-failures-next-to-a-hard-failure-are-missing-from-junitxml) | Medium | Soft failures next to a hard failure are missing from junitxml |
-| [M-11](#m-11-soft-failures-recorded-in-setup-vanish-when-setup-errors) | Medium | Soft failures recorded in setup vanish when setup errors |
-| [M-12](#m-12---pdb-and-pytest_exception_interact-ignore-soft-failures) | Medium | `--pdb` and `pytest_exception_interact` ignore soft failures |
-| [M-13](#m-13-other-makereport-hooks-can-see-a-soft-failed-test-as-passed) | Medium | Other `makereport` hooks can see a soft-failed test as passed |
-| [M-14](#m-14-the-fixture-without-its-hook-turns-every-failure-into-a-pass) | Medium | The fixture without its hook turns every failure into a pass |
-| [M-15](#m-15-recording-checks-from-several-threads-loses-checks) | Medium | Recording checks from several threads loses checks |
-| [M-16](#m-16-type-hints-reject-documented-usage) | Medium | Type hints reject documented usage |
-| [L-1](#l-1-conditional-case-keys-that-collide-after-str-are-silently-overwritten) | Low | `conditional` case keys that collide after `str()` are silently overwritten |
-| [L-2](#l-2-approx-loses-precision-with-decimal-fraction-and-big-int) | Low | `approx` loses precision with `Decimal`, `Fraction` and big `int` |
-| [L-3](#l-3-a-composite-that-raises-leaves-its-children-behind) | Low | A composite that raises leaves its children behind as standalone checks |
-| [L-4](#l-4-conditional-message-shows-a-different-key-than-the-one-it-looked-up) | Low | `conditional` message shows a different key than the one it looked up |
-| [L-5](#l-5-a-huge-int-crashes-a-passing-check) | Low | A huge `int` crashes a passing check |
-| [L-6](#l-6-checksfailederror-cannot-be-pickled-or-copied) | Low | `ChecksFailedError` cannot be pickled or copied |
-| [L-7](#l-7---tbline-prints-the-summary-twice) | Low | `--tb=line` prints the summary twice |
-| [L-8](#l-8-pytest-8-short-summary-gives-no-reason-for-soft-failures) | Low | pytest 8 short summary gives no reason for soft failures |
-| [L-9](#l-9-concurrent-first-checks-race-on-the-stash) | Low | Concurrent first checks race on the stash |
-| [L-10](#l-10-typingget_type_hints-fails-on-python-39) | Low | `typing.get_type_hints` fails on Python 3.9 |
-| [L-11](#l-11-builds-fail-with-setuptools-68-to-76) | Low | Builds fail with setuptools 68 to 76 |
-| [L-12](#l-12-the-sdist-cannot-run-its-own-tests) | Low | The sdist cannot run its own tests |
-| [D-1](#d-1-checksfailederror-is-never-raised) | Docs | `ChecksFailedError` is documented as raised but never is |
-| [D-2](#d-2-the-readme-guard-example-crashes-and-guard-is-missing-from-the-catalogs) | Docs | The README `guard` example crashes, and `guard` is missing from the catalogs |
-| [D-3](#d-3-reporter-detection-and-shared-stash-key-docs-are-obsolete) | Docs | Reporter-detection and shared-stash-key docs are obsolete |
-| [D-4](#d-4-claudemd-conditional-example-raises-typeerror) | Docs | `CLAUDE.md` `conditional` example raises `TypeError` |
-| [D-5](#d-5-changelog-and-tags-disagree) | Docs | CHANGELOG and tags disagree |
-| [D-6](#d-6-readme-says-ci-runs-on-every-push) | Docs | README says CI runs on every push |
-| [D-7](#d-7-claudemd-package-map-is-out-of-date) | Docs | `CLAUDE.md` package map is out of date |
+| ID | Severity | Bug | Fixed in |
+|----|----------|-----|----------|
+| [C-1](#c-1-a-non-bool-comparison-result-crashes-the-whole-session) | Critical | A non-bool comparison result (numpy/pandas style) crashes the whole session | 0.4.0 |
+| [C-2](#c-2-building-the-failure-summary-can-crash-the-whole-session) | Critical | Building the failure summary can crash the whole session | 0.4.0 |
+| [H-1](#h-1-a-check-that-raises-stops-the-test-and-is-never-recorded) | High | A check that raises stops the test and is never recorded | 0.4.0 |
+| [H-2](#h-2-guard-and-conditional-evaluate-every-branch-not-just-the-matched-one) | High | `guard` and `conditional` evaluate every branch, not just the matched one | 0.4.0 |
+| [H-3](#h-3-composite-checks-re-judge-their-children-and-can-contradict-them) | High | Composite checks re-judge their children and can contradict them | 0.4.0 |
+| [H-4](#h-4-reusing-a-recorded-check-inside-a-composite-deletes-it) | High | Reusing a recorded check inside a composite deletes it, so the test passes | 0.4.0 |
+| [H-5](#h-5-module-level-is_instance-matches-by-class-name-only) | High | Module-level `is_instance` matches by class name only | 0.4.0 |
+| [H-6](#h-6-conditional-matches-cases-with-str-so-results-depend-on-the-python-version) | High | `conditional` matches cases with `str()`, so results depend on the Python version | 0.4.0 |
+| [H-7](#h-7-checks-recorded-during-teardown-are-ignored) | High | Checks recorded during teardown are ignored and the test passes | 0.4.0 |
+| [H-8](#h-8-soft-failures-are-misreported-under-xfail-and-hidden-by-skip) | High | Soft failures are misreported under `xfail` and hidden by `skip` | 0.4.0 |
+| [M-1](#m-1-approx-rel_tol-accepts-values-outside-the-advertised-band) | Medium | `approx` `rel_tol` accepts values outside the advertised band | 0.4.0 |
+| [M-2](#m-2-is_instance-crashes-on-tuples-and-unions-of-types) | Medium | `is_instance` crashes on tuples and unions of types | 0.4.0 |
+| [M-3](#m-3-descriptors-are-not-json-serializable-for-common-inputs) | Medium | Descriptors are not JSON-serializable for common inputs | 0.4.0 |
+| [M-4](#m-4-reports-show-values-after-mutation-not-the-values-that-were-checked) | Medium | Reports show values after mutation, not the values that were checked | 0.4.0 |
+| [M-5](#m-5-every-checked-value-is-kept-alive-until-the-session-ends) | Medium | Every checked value is kept alive until the session ends | 0.4.0 |
+| [M-6](#m-6-conditional-evaluator-and-renderer-disagree-after-a-json-round-trip) | Medium | `conditional` evaluator and renderer disagree after a JSON round-trip | 0.4.0 |
+| [M-7](#m-7-the-results-stash-accumulates-across-reruns) | Medium | The results stash accumulates across reruns | 0.4.0 |
+| [M-8](#m-8-a-clean-rerun-is-failed-with-the-previous-attempts-checks) | Medium | A clean rerun is failed with the previous attempt's checks | 0.4.0 |
+| [M-9](#m-9-pytest-9-subtests-one-failing-check-fails-every-later-subtest) | Medium | pytest 9 subtests: one failing check fails every later subtest | 0.4.0 |
+| [M-10](#m-10-soft-failures-next-to-a-hard-failure-are-missing-from-junitxml) | Medium | Soft failures next to a hard failure are missing from junitxml | 0.4.0 |
+| [M-11](#m-11-soft-failures-recorded-in-setup-vanish-when-setup-errors) | Medium | Soft failures recorded in setup vanish when setup errors | 0.4.0 |
+| [M-12](#m-12---pdb-and-pytest_exception_interact-ignore-soft-failures) | Medium | `--pdb` and `pytest_exception_interact` ignore soft failures | 0.4.0 |
+| [M-13](#m-13-other-makereport-hooks-can-see-a-soft-failed-test-as-passed) | Medium | Other `makereport` hooks can see a soft-failed test as passed | 0.4.0 |
+| [M-14](#m-14-the-fixture-without-its-hook-turns-every-failure-into-a-pass) | Medium | The fixture without its hook turns every failure into a pass | 0.4.0 |
+| [M-15](#m-15-recording-checks-from-several-threads-loses-checks) | Medium | Recording checks from several threads loses checks | 0.4.0 |
+| [M-16](#m-16-type-hints-reject-documented-usage) | Medium | Type hints reject documented usage | 0.4.0 |
+| [L-1](#l-1-conditional-case-keys-that-collide-after-str-are-silently-overwritten) | Low | `conditional` case keys that collide after `str()` are silently overwritten | 0.4.0 |
+| [L-2](#l-2-approx-loses-precision-with-decimal-fraction-and-big-int) | Low | `approx` loses precision with `Decimal`, `Fraction` and big `int` | 0.4.0 |
+| [L-3](#l-3-a-composite-that-raises-leaves-its-children-behind) | Low | A composite that raises leaves its children behind as standalone checks | 0.4.0 |
+| [L-4](#l-4-conditional-message-shows-a-different-key-than-the-one-it-looked-up) | Low | `conditional` message shows a different key than the one it looked up | 0.4.0 |
+| [L-5](#l-5-a-huge-int-crashes-a-passing-check) | Low | A huge `int` crashes a passing check | 0.4.0 |
+| [L-6](#l-6-checksfailederror-cannot-be-pickled-or-copied) | Low | `ChecksFailedError` cannot be pickled or copied | 0.4.0 |
+| [L-7](#l-7---tbline-prints-the-summary-twice) | Low | `--tb=line` prints the summary twice | 0.4.0 |
+| [L-8](#l-8-pytest-8-short-summary-gives-no-reason-for-soft-failures) | Low | pytest 8 short summary gives no reason for soft failures | 0.4.0 |
+| [L-9](#l-9-concurrent-first-checks-race-on-the-stash) | Low | Concurrent first checks race on the stash | 0.4.0 |
+| [L-10](#l-10-typingget_type_hints-fails-on-python-39) | Low | `typing.get_type_hints` fails on Python 3.9 | 0.4.0 |
+| [L-11](#l-11-builds-fail-with-setuptools-68-to-76) | Low | Builds fail with setuptools 68 to 76 | 0.4.0 |
+| [L-12](#l-12-the-sdist-cannot-run-its-own-tests) | Low | The sdist cannot run its own tests | 0.4.0 |
+| [D-1](#d-1-checksfailederror-is-never-raised) | Docs | `ChecksFailedError` is documented as raised but never is | 0.4.0 |
+| [D-2](#d-2-the-readme-guard-example-crashes-and-guard-is-missing-from-the-catalogs) | Docs | The README `guard` example crashes, and `guard` is missing from the catalogs | 0.4.0 |
+| [D-3](#d-3-reporter-detection-and-shared-stash-key-docs-are-obsolete) | Docs | Reporter-detection and shared-stash-key docs are obsolete | 0.4.0 |
+| [D-4](#d-4-claudemd-conditional-example-raises-typeerror) | Docs | `CLAUDE.md` `conditional` example raises `TypeError` | 0.4.0 |
+| [D-5](#d-5-changelog-and-tags-disagree) | Docs | CHANGELOG and tags disagree | 0.4.0 |
+| [D-6](#d-6-readme-says-ci-runs-on-every-push) | Docs | README says CI runs on every push | 0.4.0 |
+| [D-7](#d-7-claudemd-package-map-is-out-of-date) | Docs | `CLAUDE.md` package map is out of date | 0.4.0 |
 
 ## Root causes at a glance
 
@@ -142,7 +147,7 @@ def test_unrelated():
   `passed=False` plus an `error` string. In the hook, test `r.get("passed") is not True`, and
   guard the hook body so it can never raise.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_c1_elementwise_comparison_fails_test_without_internalerror`, `test_c1_fixture_stores_non_bool_comparison_result_as_bool`, `test_c1_module_evaluate_detailed_passed_is_bool_for_truthy_result`, `test_c1_module_ambiguous_comparison_evaluates_as_failed`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_c1_elementwise_comparison_fails_test_without_internalerror`, `test_c1_fixture_stores_non_bool_comparison_result_as_bool`, `test_c1_module_evaluate_detailed_passed_is_bool_for_truthy_result`, `test_c1_module_ambiguous_comparison_evaluates_as_failed`)
 
 ### C-2. Building the failure summary can crash the whole session
 
@@ -178,7 +183,7 @@ def test_link(verify):
 - **Fix:** Snapshot a safe repr and the child verdicts at record time, render only from the
   snapshot, and wrap the summary in a `try` that falls back to a minimal message.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_c2_failure_summary_never_crashes_session`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_c2_failure_summary_never_crashes_session`)
 
 ---
 
@@ -210,7 +215,7 @@ def test_psu(verify):
   that an exception becomes `passed=False` plus a JSON-safe `error`. Still append the check and
   keep going.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_h1_odd_input_is_recorded_and_later_checks_still_run`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_h1_odd_input_is_recorded_and_later_checks_still_run`)
 
 ### H-2. `guard` and `conditional` evaluate every branch, not just the matched one
 
@@ -244,7 +249,7 @@ def test_sensor(verify):
   branch that raises becomes a discarded failed child, and strip `passed` from unmatched
   children.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_h2_guard_unmatched_default_not_evaluated`, `test_h2_guard_unmatched_branch_not_evaluated`, `test_h2_conditional_unmatched_case_not_evaluated`, `test_h2_module_path_length_in_unmatched_default_not_evaluated`, `test_h2_unmatched_children_carry_no_failed_verdict`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_h2_guard_unmatched_default_not_evaluated`, `test_h2_guard_unmatched_branch_not_evaluated`, `test_h2_conditional_unmatched_case_not_evaluated`, `test_h2_module_path_length_in_unmatched_default_not_evaluated`, `test_h2_unmatched_children_carry_no_failed_verdict`)
 
 ### H-3. Composite checks re-judge their children and can contradict them
 
@@ -277,7 +282,7 @@ def test_numeric(verify):
 - **Fix:** In the fixture, derive a composite's verdict from the stored `passed` of its children
   and fall back to `_evaluate_single` only for module-built children.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_h3_passing_abc_is_instance_children_pass_parent`, `test_h3_failing_same_name_children_fail_parent`, `test_h3_mutation_after_child_check_does_not_flip_parent`, `test_h3_failure_summary_counts_recorded_child_verdicts`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_h3_passing_abc_is_instance_children_pass_parent`, `test_h3_failing_same_name_children_fail_parent`, `test_h3_mutation_after_child_check_does_not_flip_parent`, `test_h3_failure_summary_counts_recorded_child_verdicts`)
 
 ### H-4. Reusing a recorded check inside a composite deletes it
 
@@ -301,7 +306,7 @@ def test_power(verify):
   track which checks were recorded as top-level and refuse (or warn about) reusing them as
   children.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails`, `test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_h4_failing_check_reused_in_unmatched_guard_branch_still_fails`, `test_h4_failing_check_reused_as_unmatched_conditional_case_still_fails`)
 
 ### H-5. Module-level `is_instance` matches by class name only
 
@@ -330,7 +335,7 @@ assert verify.evaluate(d) is False  # returns True today
   a JSON-safe bool. Store a qualified display name (`module.qualname`). Use the name match only
   as a fallback for hand-built descriptors, and compare qualified names there.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_h5_unrelated_same_name_class_does_not_pass`, `test_h5_runtime_checkable_protocol_instance_passes`, `test_h5_fixture_composite_with_same_name_module_child_fails`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_h5_unrelated_same_name_class_does_not_pass`, `test_h5_runtime_checkable_protocol_instance_passes`, `test_h5_fixture_composite_with_same_name_module_child_fails`)
 
 ### H-6. `conditional` matches cases with `str()`, so results depend on the Python version
 
@@ -362,7 +367,7 @@ print(d["matched_case"])  # '1' on 3.11+, None on 3.9 and 3.10
   `Enum` members through `.value`. Store a version-stable string key for JSON and use the stored
   `matched_case` everywhere (see M-6).
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_h6_intenum_switch_matches_int_case_key`, `test_h6_int_switch_matches_intenum_case_key`, `test_h6_python_equal_switch_matches_case_key`, `test_h6_none_switch_does_not_match_string_none_key`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_h6_intenum_switch_matches_int_case_key`, `test_h6_int_switch_matches_intenum_case_key`, `test_h6_python_equal_switch_matches_case_key`, `test_h6_none_switch_does_not_match_string_none_key`)
 
 ### H-7. Checks recorded during teardown are ignored
 
@@ -391,7 +396,7 @@ def test_run(dut):
 - **Fix:** Remember how many checks the call phase judged, and in the teardown phase fail the
   report if any later check failed.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_h7_failed_check_in_teardown_fails_the_run`, `test_h7_verdict_never_contradicts_recorded_results`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_h7_failed_check_in_teardown_fails_the_run`, `test_h7_verdict_never_contradicts_recorded_results`)
 
 ### H-8. Soft failures are misreported under `xfail` and hidden by `skip`
 
@@ -423,7 +428,7 @@ def test_skip(verify):
   returns (with `__tracebackhide__ = True`), so pytest's own xfail, strict and `raises=`
   handling applies. A prototype showed this makes every xfail case report XFAIL.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_h8_soft_failure_under_xfail_is_xfailed`, `test_h8_terminal_exit_code_and_junitxml_agree_for_xfail_soft_failure`, `test_h8_later_skip_does_not_hide_soft_failure`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_h8_soft_failure_under_xfail_is_xfailed`, `test_h8_terminal_exit_code_and_junitxml_agree_for_xfail_soft_failure`, `test_h8_later_skip_does_not_hide_soft_failure`)
 
 ---
 
@@ -447,7 +452,7 @@ assert not verify.evaluate(verify.approx(200, 100, rel_tol=0.5, name="Gain"))  #
 - **Fix:** Use `abs(actual - expected) <= rel_tol * abs(expected)`, like `pytest.approx`.
   Verdicts can change at the edges, so ship it as a documented behaviour change.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_m1_rel_tol_verdict_matches_advertised_band`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_m1_rel_tol_verdict_matches_advertised_band`)
 
 ### M-2. `is_instance` crashes on tuples and unions of types
 
@@ -465,7 +470,7 @@ def test_num(verify):
 - **Fix:** Normalise tuples and unions into a list of classes and store their names. Reject
   anything else with a clear `TypeError`, the same way on every Python version.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_m2_tuple_of_types_builds_and_matches_isinstance`, `test_m2_pep604_union_builds_and_matches_isinstance`, `test_m2_typing_optional_is_rejected_or_matches_isinstance`, `test_m2_fixture_tuple_of_types_check_passes`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_m2_tuple_of_types_builds_and_matches_isinstance`, `test_m2_pep604_union_builds_and_matches_isinstance`, `test_m2_typing_optional_is_rejected_or_matches_isinstance`, `test_m2_fixture_tuple_of_types_check_passes`)
 
 ### M-3. Descriptors are not JSON-serializable for common inputs
 
@@ -491,7 +496,7 @@ json.dumps(d)  # TypeError: Object of type Mode is not JSON serializable
 - **Fix:** Store a JSON-safe `switch_value` now. For the general case, store a JSON-safe snapshot
   of each value (see M-4), or narrow the documented guarantee.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_m3_module_conditional_with_enum_switch_value_is_json_serializable`, `test_m3_fixture_conditional_with_enum_switch_value_is_json_serializable`, `test_m3_fixture_results_are_json_serializable_for_common_inputs`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_m3_module_conditional_with_enum_switch_value_is_json_serializable`, `test_m3_fixture_conditional_with_enum_switch_value_is_json_serializable`, `test_m3_fixture_results_are_json_serializable_for_common_inputs`)
 
 ### M-4. Reports show values after mutation, not the values that were checked
 
@@ -512,7 +517,7 @@ def test_state(verify):
 - **Fix:** Snapshot a safe repr (and a JSON-safe copy where possible) when the check is
   recorded, and render only from the snapshot.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_m4_failed_equal_reports_the_value_that_was_compared`, `test_m4_failed_contains_reports_the_haystack_that_was_searched`, `test_m4_passed_equal_reports_the_value_that_was_compared`, `test_m4_all_satisfy_failed_count_uses_recorded_child_verdicts`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_m4_failed_equal_reports_the_value_that_was_compared`, `test_m4_failed_contains_reports_the_haystack_that_was_searched`, `test_m4_passed_equal_reports_the_value_that_was_compared`, `test_m4_all_satisfy_failed_count_uses_recorded_child_verdicts`)
 
 ### M-5. Every checked value is kept alive until the session ends
 
@@ -525,7 +530,7 @@ alive at the end of the session (351 MB peak), while the same tests without `ver
 - **Fix:** Remove `_verify_key` from the stash once the verdict is known, and replace live
   values in stored descriptors with bounded snapshots.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_m5_checked_object_is_collectable_after_its_test`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_m5_checked_object_is_collectable_after_its_test`)
 
 ### M-6. `conditional` evaluator and renderer disagree after a JSON round-trip
 
@@ -547,7 +552,7 @@ assert verify.evaluate(d) and verify.evaluate(rt)  # the second is False today
 - **Fix:** Treat the stored `matched_case` as authoritative, and recompute only when the field is
   missing.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_m6_conditional_verdict_survives_json_round_trip`, `test_m6_rendered_case_agrees_with_verdict_after_round_trip`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_m6_conditional_verdict_survives_json_round_trip`, `test_m6_rendered_case_agrees_with_verdict_after_round_trip`)
 
 ### M-7. The results stash accumulates across reruns
 
@@ -561,7 +566,7 @@ a PASSED test.
 - **Fix:** Reset the stash list when each attempt starts, for example in a `tryfirst`
   `pytest_runtest_setup` hook.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m7_stash_holds_only_the_last_rerun_attempt`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m7_stash_holds_only_the_last_rerun_attempt`)
 
 ### M-8. A clean rerun is failed with the previous attempt's checks
 
@@ -575,7 +580,7 @@ fails the clean attempt with stale results.
 - **Root cause:** `_fixture.py:215` (never cleared), read at `_fixture.py:195`.
 - **Fix:** Clear both stash keys at the start of each attempt (same hook as M-7).
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m8_clean_rerun_attempt_is_not_failed_by_previous_attempt`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m8_clean_rerun_attempt_is_not_failed_by_previous_attempt`)
 
 ### M-9. pytest 9 subtests: one failing check fails every later subtest
 
@@ -589,7 +594,7 @@ including subtests with only passing checks or no checks at all. One failing che
 - **Fix:** Skip subtest reports (they carry a `context` attribute) and judge only the parent, or
   keep a cursor and judge each subtest on the checks it recorded.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m9_passing_subtests_after_a_failing_one_are_not_failed`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m9_passing_subtests_after_a_failing_one_are_not_failed`)
 
 ### M-10. Soft failures next to a hard failure are missing from junitxml
 
@@ -602,7 +607,7 @@ soft failures are "no longer silently dropped" in this case.
 - **Fix:** Add the summary to the failure representation itself (`longrepr.addsection(...)`), not
   to `report.sections`.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m10_soft_summary_shown_whatever_show_capture`, `test_m10_soft_summary_in_junitxml_failure`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m10_soft_summary_shown_whatever_show_capture`, `test_m10_soft_summary_in_junitxml_failure`)
 
 ### M-11. Soft failures recorded in setup vanish when setup errors
 
@@ -615,7 +620,7 @@ stops the DUT from answering).
 - **Fix:** On a setup error, append the soft summary to the setup report, as the call-phase path
   already does.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m11_setup_error_report_shows_soft_failures`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m11_setup_error_report_shows_soft_failures`)
 
 ### M-12. `--pdb` and `pytest_exception_interact` ignore soft failures
 
@@ -626,7 +631,7 @@ screenshots, logs or instrument dumps on failure through that hook miss these te
 - **Root cause:** `_fixture.py:198-202`.
 - **Fix:** Same as H-8: raise `ChecksFailedError` in the call phase.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m12_exception_interact_fires_for_soft_failure`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m12_exception_interact_fires_for_soft_failure`)
 
 ### M-13. Other `makereport` hooks can see a soft-failed test as passed
 
@@ -643,7 +648,7 @@ says observes the outcome this way), in-house upload plugins, and pytest-rerunfa
 - **Fix:** Same as H-8: raise `ChecksFailedError` in the call phase, so every hook sees a real
   failure regardless of order.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m13_makereport_wrapper_registered_first_sees_failed`, `test_m13_soft_failed_call_phase_has_assertion_excinfo`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m13_makereport_wrapper_registered_first_sees_failed`, `test_m13_soft_failed_call_phase_has_assertion_excinfo`)
 
 ### M-14. The fixture without its hook turns every failure into a pass
 
@@ -658,7 +663,7 @@ to vendor fixtures under `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`), or with that re-ex
 - **Fix:** Have the fixture detect that the hook is not active (a flag set in
   `pytest_configure`) and fail loudly with a usage error.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_m14_reexported_fixture_without_hook_never_passes`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_m14_reexported_fixture_without_hook_never_passes`)
 
 ### M-15. Recording checks from several threads loses checks
 
@@ -672,6 +677,8 @@ is timing-dependent, so it is not pinned by a test.
 - **Root cause:** `_fixture.py:66-71`, reached from `_record`.
 - **Fix:** Hold a `threading.RLock` in `_record`, `is_instance` and `_discard`, and delete in
   place by index instead of rebinding.
+
+**Pinned by:** `tests/test_threads.py` (`test_m15_every_check_from_every_thread_is_recorded_once`, `test_m15_one_failing_guard_among_threads_always_fails_the_test`)
 
 ### M-16. Type hints reject documented usage
 
@@ -691,6 +698,8 @@ error: Dict entry 0 has incompatible type "int": "CheckDescriptor"; expected "st
 - **Fix:** Type `cases` as `Mapping[Any, CheckDescriptor]` and `branches` as
   `Sequence[tuple[object, str, CheckDescriptor]]`, and add a typing test to CI.
 
+**Pinned by:** the `typing` CI job (`mypy --strict` over `tests/typing_usage.py`)
+
 ---
 
 ## Low
@@ -705,7 +714,7 @@ a case that was never selected fails the test.
 - **Root cause:** `_descriptors.py:340`.
 - **Fix:** Raise `ValueError` at build time when two keys normalise to the same string.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_l1_colliding_case_keys_not_silently_overwritten`, `test_l1_overwritten_case_not_left_as_standalone_result`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_l1_colliding_case_keys_not_silently_overwritten`, `test_l1_overwritten_case_not_left_as_standalone_result`)
 
 ### L-2. `approx` loses precision with `Decimal`, `Fraction` and big `int`
 
@@ -718,7 +727,7 @@ equals the tolerance exactly. `abs_tol=0` accepts a tiny non-zero `Decimal` diff
 - **Fix:** Compare in the native type (`abs(actual - expected) <= tol`) when neither operand is a
   float, and keep `math.isclose` for floats.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_l2_approx_compares_exact_numeric_types_exactly`, `test_l2_approx_huge_int_does_not_overflow`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_l2_approx_compares_exact_numeric_types_exactly`, `test_l2_approx_huge_int_does_not_overflow`)
 
 ### L-3. A composite that raises leaves its children behind
 
@@ -731,7 +740,7 @@ exception.
   `_record`).
 - **Fix:** Discard children first, then evaluate inside a `try` (see H-1).
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_l3_composite_evaluation_error_leaves_no_orphan_children`, `test_l3_all_satisfy_factory_error_leaves_no_orphan_children`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_l3_composite_evaluation_error_leaves_no_orphan_children`, `test_l3_all_satisfy_factory_error_leaves_no_orphan_children`)
 
 ### L-4. `conditional` message shows a different key than the one it looked up
 
@@ -742,7 +751,7 @@ contradicts itself: `mode=1 → no match` while case `'1'` exists.
 - **Root cause:** `_descriptors.py:346` and `_exceptions.py:143-144`.
 - **Fix:** Render the same key that was used for the lookup.
 
-**Pinned by:** `tests/test_known_bugs_composites.py` (`test_l4_conditional_displays_the_switch_it_looked_up`)
+**Pinned by:** `tests/test_regressions_composites.py` (`test_l4_conditional_displays_the_switch_it_looked_up`)
 
 ### L-5. A huge `int` crashes a passing check
 
@@ -754,7 +763,7 @@ description is built, and the test stops.
 - **Fix:** Render values through one safe formatter that catches the error and returns a
   placeholder such as `<int with 5736 digits>`.
 
-**Pinned by:** `tests/test_known_bugs_evaluation.py` (`test_l5_passing_check_on_huge_int_builds_and_passes`, `test_l5_fixture_passing_checks_on_huge_int_let_test_continue`, `test_l5_failing_check_on_huge_int_fails_test_without_internalerror`)
+**Pinned by:** `tests/test_regressions_evaluation.py` (`test_l5_passing_check_on_huge_int_builds_and_passes`, `test_l5_fixture_passing_checks_on_huge_int_let_test_continue`, `test_l5_failing_check_on_huge_int_fails_test_without_internalerror`)
 
 ### L-6. `ChecksFailedError` cannot be pickled or copied
 
@@ -766,7 +775,7 @@ raising it in a `ProcessPoolExecutor` worker fail the same way.
 - **Root cause:** `_exceptions.py:156-174`.
 - **Fix:** Add `__reduce__` returning `(type(self), (self.results,), self.__dict__)`.
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_l6_checks_failed_error_round_trips`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_l6_checks_failed_error_round_trips`)
 
 ### L-7. `--tb=line` prints the summary twice
 
@@ -778,7 +787,7 @@ with no file or line.
 - **Fix:** Same as H-8 (raise in the call phase), or set a longrepr object that has a
   `reprcrash`.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_l7_tb_line_crash_line_is_a_location_line`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_l7_tb_line_crash_line_is_a_location_line`)
 
 ### L-8. pytest 8 short summary gives no reason for soft failures
 
@@ -790,7 +799,7 @@ failures show a reason. pytest 9 happens to print the first line of the string.
 - **Root cause:** `_fixture.py:202`.
 - **Fix:** Same as L-7.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_l8_short_summary_gives_reason_for_soft_failure`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_l8_short_summary_gives_reason_for_soft_failure`)
 
 ### L-9. Concurrent first checks race on the stash
 
@@ -801,6 +810,8 @@ used (about 2% of trials in a probe). This is timing-dependent, so it is not pin
 
 - **Root cause:** `_fixture.py:63` and `:147`.
 - **Fix:** Create the list once when the fixture is set up, and append under the lock from M-15.
+
+**Pinned by:** `tests/test_threads.py` (`test_l9_concurrent_first_checks_all_reach_the_results`)
 
 ### L-10. `typing.get_type_hints` fails on Python 3.9
 
@@ -813,7 +824,7 @@ typeguard, beartype and sphinx-autodoc-typehints.
 - **Fix:** Use `Optional[...]` in the TypedDict and public signatures, or drop Python 3.9 (it is
   end-of-life).
 
-**Pinned by:** `tests/test_known_bugs_data.py` (`test_l10_check_descriptor_type_hints_resolve`, `test_l10_public_verify_method_type_hints_resolve`)
+**Pinned by:** `tests/test_regressions_data.py` (`test_l10_check_descriptor_type_hints_resolve`, `test_l10_public_verify_method_type_hints_resolve`)
 
 ### L-11. Builds fail with setuptools 68 to 76
 
@@ -824,6 +835,8 @@ typeguard, beartype and sphinx-autodoc-typehints.
 - **Root cause:** `pyproject.toml:2` together with `pyproject.toml:10`.
 - **Fix:** Require `setuptools>=77` and drop `wheel`.
 
+**Fixed by:** `build-system.requires` asks for `setuptools>=77`. There is no test; a build with setuptools 77 succeeds and one with 76 is refused.
+
 ### L-12. The sdist cannot run its own tests
 
 The default sdist rules include `tests/test*.py` but not `tests/conftest.py`, which enables the
@@ -831,6 +844,8 @@ The default sdist rules include `tests/test*.py` but not `tests/conftest.py`, wh
 (`fixture 'pytester' not found`).
 
 - **Fix:** Add a `MANIFEST.in` with `graft tests`, or enable `pytester` through `addopts`.
+
+**Pinned by:** the `package` CI job, which runs the tests of the built sdist
 
 ---
 
@@ -847,7 +862,7 @@ and it is not exported from `pytest_verify`. So `pytest.raises(ChecksFailedError
 **Fix:** Either raise and export it (the H-8 fix), or correct `README.md:38-39`,
 `_exceptions.py:148`, `_fixture.py:212` and CLAUDE.md.
 
-**Pinned by:** `tests/test_known_bugs_lifecycle.py` (`test_d1_checks_failed_error_raised_and_exported_or_not_documented_as_raised`)
+**Pinned by:** `tests/test_regressions_lifecycle.py` (`test_d1_checks_failed_error_raised_and_exported_or_not_documented_as_raised`)
 
 ### D-2. The README `guard` example crashes, and `guard` is missing from the catalogs
 

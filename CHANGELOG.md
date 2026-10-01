@@ -7,24 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-01
+
+Fixes all 45 bugs listed in [`bugs-0.3.1.md`](bugs-0.3.1.md). Some fixes change behaviour that
+existing tests may rely on. Those are listed under **Changed**.
+
 ### Added
 
-- GitHub Actions CI workflow running the test suite on every push and pull request across Python 3.9–3.13.
-- README status badges (CI, Python versions, pytest, license) and a Development section.
-- `bugs-0.3.1.md`: a severity-ranked report of the bugs found in 0.3.1 by a deep review, each with a reproduction, root cause and suggested fix.
-- `improvements-and-ideas.md`: improvements, refactors, feature ideas and a suggested roadmap.
-- Regression tests in `tests/test_known_bugs_*.py` that pin the known 0.3.1 bugs as strict `xfail` tests. They pass today and fail as soon as a bug is fixed, so the marker must be removed together with the fix.
-- README "Known Issues" section linking to the bug report.
+- `ChecksFailedError` is exported from `pytest_verify` and is now actually raised. Checks made in setup and in the test body are raised after the test body. Checks made while fixtures are torn down are raised after teardown. It subclasses `AssertionError`, so `xfail(raises=AssertionError)`, `--pdb`, `pytest_exception_interact` and rerun filters treat a soft failure like a failed `assert`.
+- `GuardBranch` TypedDict, exported for typing the branches of a recorded `guard`.
+- Recorded results carry `detail` (the rendered `expected … got …` clause). When a check could not be evaluated, they also carry `error`. Every evaluated child of a composite carries its own `passed`.
+- `evaluate_detailed()` results include `error` when a check could not be evaluated.
+- Package metadata: classifiers, project URLs and author. `py.typed` is declared explicitly, and a `MANIFEST.in` puts the whole test suite in the sdist.
+- CI jobs for `mypy --strict`, for the oldest supported pytest (7.0) and pluggy (1.2), and for building the sdist and running its tests against the wheel.
+- `bugs-0.3.1.md` (the severity-ranked bug report behind this release) and `improvements-and-ideas.md` (improvements, refactors and feature ideas).
+- `CHECKLIST.md`, which tracks every item of both documents and the release that handles it.
+
+### Changed
+
+- A check whose comparison raises, or returns a value with an ambiguous truth value (a numpy array, a pandas series), no longer stops the test or crashes the session. It is recorded as a failed check, and the error is shown in its detail.
+- Usage errors raise `TypeError` or `ValueError` as soon as the check is built. They cover:
+  - a `name` that is not a `str`;
+  - a negative, NaN or non-numeric tolerance;
+  - `between` with `low` above `high`;
+  - a malformed `guard` branch, including a check descriptor used as a condition (it is always truthy);
+  - `conditional` cases or defaults that are not checks, and case keys that collide (`{1: …, "1": …}`);
+  - an `is_instance` type that `isinstance` cannot check (`list[int]`).
+- Problems with the data inside composites never raise. An `all_satisfy` whose items cannot be iterated, or whose factory raises or returns something other than a check, is a failed check with an error note. A forgotten `return` is one example.
+- `conditional` matches case keys by equality, comparing enum members by their value. An `int` and its decimal string are the same key, so `1` selects `"1"`. Results no longer depend on the Python version, and `None` no longer matches `"None"`. Case keys are still stored as strings.
+- `approx` with `rel_tol` uses the band it prints, `expected ± rel_tol × |expected|`. `math.isclose` also accepted `rel_tol × |actual|`. `Decimal`, `Fraction` and `int` values are compared exactly unless a `float` is involved.
+- `is_instance` behaves like `isinstance` in both APIs. Tuples and unions of types work, ABCs and runtime-checkable protocols work, and the module-level API no longer matches unrelated classes that share a name.
+- Recorded results, including those returned by `get_check_results()`, hold JSON-safe snapshots of the checked values, taken when the check is made. A later mutation cannot change a report, and checked objects are no longer kept alive. NaN and infinities are stored as `"nan"`, `"inf"` and `"-inf"`. Values JSON cannot represent are stored as their `repr`.
+- `evaluate()` and `evaluate_detailed()` raise a helpful `TypeError` for a list argument (use `verify.evaluate(*checks)`) or for an argument that is not a check. An unknown check type fails with an error instead of raising.
+- The `verify` fixture refuses checks with `RuntimeError` once its test has finished, and in a forked child process, instead of losing them.
+- Using the `verify` fixture without the plugin's hooks is an error, instead of every test passing. This happens, for example, when the fixture is imported into a `conftest.py` while the plugin is disabled.
+- The `-r` short summary and `--tb=line` show `N of M checks failed` at the test's location.
+- Requires `pluggy>=1.2`, which pytest already depends on. Building from source requires `setuptools>=77`.
 
 ### Fixed
 
-- Corrected the README install instructions: the package is not published on PyPI, so `pip install pytest-verify` never resolved. Documented the Git install (`pip install "git+https://github.com/guillegil/pytest_verify.git"`).
+- Building the failure summary can no longer crash the session, and a huge `int` no longer stops a passing check.
+- `guard` and `conditional` evaluate only the selected branch. Unselected branches carry no verdict.
+- Composites use the verdicts their children were recorded with.
+- Reusing a recorded check inside a composite no longer removes it.
+- A composite that raises leaves no stray child checks behind.
+- Checks made during teardown fail the run.
+- Soft failures are reported correctly under `xfail` and are no longer hidden by a later `skip`.
+- With pytest-rerunfailures, each attempt starts with no checks, so a clean rerun passes.
+- With pytest 9 subtests, a failing check fails only its own subtest.
+- Soft failures next to a hard failure appear in junitxml and are shown whatever `--show-capture` is set to.
+- A setup error keeps the soft failures recorded during setup.
+- Recording checks from several threads no longer loses checks.
+- Type hints accept the documented usage: `int` and enum `conditional` keys, truthy `guard` conditions, tuples for `is_instance`, and any iterable for `all_satisfy`. The package passes `mypy --strict`, and `typing.get_type_hints` works on Python 3.9.
+- `ChecksFailedError` can be pickled and copied.
+- Recording composite checks takes linear time in the number of children instead of quadratic time.
+- Documentation: the README `guard` example works and `guard` is in the catalogs. `get_check_results()` is documented as the way for other plugins to read results. The CI triggers are described correctly. The CHANGELOG matches the tags.
 
-## [0.3.1] - 2026-06-23
+### Removed
+
+- The unused `pytest_verify._types` module.
+
+## [0.3.1] - 2026-07-06
+
+### Added
+
+- GitHub Actions CI workflow running the test suite on pushes to `main` and on pull requests targeting `main`, across Python 3.9–3.13.
+- README status badges (CI, Python versions, pytest, license) and a Development section.
 
 ### Fixed
 
 - Child checks nested inside `verify.guard`, `verify.conditional`, and `verify.all_satisfy` are no longer recorded as independent results when built via the `verify` fixture. Previously every branch/case check was evaluated and reported on its own, so an **unmatched** branch whose check failed would fail the whole test — defeating the purpose of only evaluating the matched branch. Now only the composite check is reported; its verdict still reflects the chosen child.
+- Corrected the README install instructions: the package is not published on PyPI, so `pip install pytest-verify` never resolved. Documented the Git install (`pip install "git+https://github.com/guillegil/pytest_verify.git"`).
 
 ## [0.3.0] - 2026-06-23
 
@@ -32,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `verify.guard(branches, *, default=None, name)` — an ordered if/elif/else check. Each branch is a `(condition, label, check)` tuple; the first branch whose condition is truthy is evaluated, falling back to `default` (or failing if none match and no default is given). Complements `verify.conditional` (which switches on a single value) for cases where the expected check depends on a chain of arbitrary boolean conditions. The chosen branch's `label` appears in the `ChecksFailedError` summary.
 
-## [0.2.1] - 2026-06-20
+## [0.2.1] - 2026-06-23
 
 ### Fixed
 
@@ -67,3 +120,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ChecksFailedError` with formatted message listing failed and passed checks.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
+
+[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/guillegil/pytest_verify/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/guillegil/pytest_verify/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/guillegil/pytest_verify/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/guillegil/pytest_verify/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/guillegil/pytest_verify/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/guillegil/pytest_verify/releases/tag/v0.1.0

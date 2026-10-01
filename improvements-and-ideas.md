@@ -1,5 +1,8 @@
 # Improvements and ideas for pytest-verify
 
+> **Status:** [`CHECKLIST.md`](CHECKLIST.md) tracks which of these items shipped (0.4.0 took the
+> small improvements that touched the bug fixes) and which wait for 0.5.0 or a discussion.
+
 This list comes out of the same deep review as [`bugs-0.3.1.md`](bugs-0.3.1.md). The bug report
 covers behaviour that is wrong today. This file covers everything else: behaviour that is correct
 but could be better, refactors that remove whole groups of bugs, new features, and tooling.
@@ -273,7 +276,7 @@ Remove all children in one pass with an id set. *Effort S, impact medium, patch.
 No test covers JSON serialization, xfail, skip, enum keys, reruns, teardown checks,
 `is_instance` with a tuple, runtime type hints or the README examples. `verify.fail()` is never
 called through the fixture, and the "all 20 methods" smoke class has no `guard` test. The new
-`tests/test_known_bugs_*.py` modules start on this; the harness ideas below finish it.
+`tests/test_regressions_*.py` modules (first added as `tests/test_known_bugs_*.py`) start on this; the harness ideas below finish it.
 *Effort M, impact high, patch.*
 
 ---
