@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - GitHub Actions CI workflow running the test suite on every push and pull request across Python 3.9–3.13.
 - README status badges (CI, Python versions, pytest, license) and a Development section.
+- `bugs-0.3.1.md`: a severity-ranked report of the bugs found in 0.3.1 by a deep review, each with a reproduction, root cause and suggested fix.
+- `improvements-and-ideas.md`: improvements, refactors, feature ideas and a suggested roadmap.
+- Regression tests in `tests/test_known_bugs_*.py` that pin the known 0.3.1 bugs as strict `xfail` tests. They pass today and fail as soon as a bug is fixed, so the marker must be removed together with the fix.
+- README "Known Issues" section linking to the bug report.
 
 ### Fixed
 
