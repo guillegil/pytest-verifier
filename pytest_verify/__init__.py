@@ -17,11 +17,19 @@ from __future__ import annotations
 
 import pytest
 
-from ._descriptors import CheckDescriptor
+from ._descriptors import CheckDescriptor, GuardBranch
+from ._exceptions import ChecksFailedError
 from ._stash import check_results_key
 from ._verify import Verify
 
-__all__ = ["CheckDescriptor", "Verify", "get_check_results", "verify"]
+__all__ = [
+    "CheckDescriptor",
+    "ChecksFailedError",
+    "GuardBranch",
+    "Verify",
+    "get_check_results",
+    "verify",
+]
 
 #: Module-level ``Verify`` instance.  Returns unevaluated descriptors.
 verify: Verify = Verify()
@@ -36,5 +44,10 @@ def get_check_results(item: pytest.Item) -> list[CheckDescriptor]:
     Returns:
         A new list (copy) of every ``CheckDescriptor`` recorded for *item*
         during its execution.  Returns ``[]`` if no checks were recorded.
+        Each descriptor carries ``passed`` and ``detail`` and holds JSON-safe
+        snapshots of the checked values, so ``json.dumps`` works on it. Checks
+        nested in a composite are inside their parent, not listed on their own.
+        If the item was rerun, only the last attempt's checks are returned.
     """
-    return list(item.stash.get(check_results_key, []))
+    results = item.stash.get(check_results_key, None)
+    return [] if results is None else list(results)

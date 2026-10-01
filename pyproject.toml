@@ -1,15 +1,37 @@
 [build-system]
-requires = ["setuptools>=68.0", "wheel"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytest-verify"
-version = "0.3.1"
+version = "0.4.0"
 description = "A pytest plugin providing soft assertions for test verification"
 readme = "README.md"
 license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Guillermo Gil" }]
 requires-python = ">=3.9"
-dependencies = ["pytest>=7.0"]
+# pytest's own dependency; the hook wrappers need pluggy 1.2 or later.
+dependencies = ["pytest>=7.0", "pluggy>=1.2"]
+classifiers = [
+    "Framework :: Pytest",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/guillegil/pytest_verify"
+Changelog = "https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md"
+Issues = "https://github.com/guillegil/pytest_verify/issues"
 
 [project.entry-points.pytest11]
 verify = "pytest_verify._fixture"
@@ -17,5 +39,12 @@ verify = "pytest_verify._fixture"
 [tool.setuptools.packages.find]
 include = ["pytest_verify*"]
 
+[tool.setuptools.package-data]
+pytest_verify = ["py.typed"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+files = ["pytest_verify", "tests/typing_usage.py"]

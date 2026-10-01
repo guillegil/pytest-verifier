@@ -1,4 +1,4 @@
-"""End-to-end tests for all 20 check functions.
+"""End-to-end tests for all 21 check functions.
 
 Pass-path tests use the ``verify`` fixture (proving fixture integration).
 Fail-path tests use the module-level ``Verify`` class + evaluator to avoid

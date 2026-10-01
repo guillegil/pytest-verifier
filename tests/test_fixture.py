@@ -1,7 +1,9 @@
-"""Tests for the verify fixture lifecycle, teardown, and reporter detection."""
+"""Tests for the verify fixture lifecycle, teardown, and the results stash."""
 from __future__ import annotations
 
 import pytest
+
+from pytest_verify import ChecksFailedError
 
 
 class TestFixtureBasicBehavior:
@@ -63,6 +65,24 @@ class TestFixtureTeardown:
             "*[0]*Pass1*",
             "*[2]*Pass2*",
         ])
+
+    def test_teardown_failures_keep_their_index(self, pytester):
+        """Checks raised after teardown are numbered after the ones of the test body."""
+        pytester.makepyfile("""
+            import pytest
+
+            @pytest.fixture
+            def device(verify):
+                yield
+                verify.equal(1, 2, name="Shutdown")
+
+            def test_body(device, verify):
+                verify.equal(1, 1, name="First")
+                verify.equal(2, 2, name="Second")
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(passed=1, errors=1)
+        result.stdout.fnmatch_lines(["*1 of 1 checks failed*", "*✗ ?2? Shutdown*"])
 
     def test_hard_failure_still_surfaces_soft_checks(self, pytester):
         """When the test body raises a hard error AND soft checks failed, both
@@ -126,13 +146,10 @@ class TestFixtureTeardown:
     def test_composite_records_only_parent_not_children(self):
         """A composite consumes its child descriptors; the children must not
         remain as independent recorded results."""
-        from pytest_verify._fixture import _FixtureVerify
+        from pytest_verify._fixture import _FixtureVerify, _Run
 
-        class _Item:
-            def __init__(self):
-                self.stash = pytest.Stash()
-
-        fv = _FixtureVerify(_Item())
+        run = _Run()
+        fv = _FixtureVerify(run)
         fv.guard(
             branches=[
                 (False, "bad", fv.equal(1, 2, name="bad")),
@@ -140,7 +157,7 @@ class TestFixtureTeardown:
             ],
             name="G",
         )
-        assert [r["check_type"] for r in fv._results] == ["guard"]
+        assert [r["check_type"] for r in run.records] == ["guard"]
 
     def test_no_state_bleed_between_tests(self, pytester):
         pytester.makepyfile("""
@@ -155,7 +172,7 @@ class TestFixtureTeardown:
 
 
 class TestFixtureAllCheckMethods:
-    """Smoke test that all 20 methods work through the fixture path."""
+    """Smoke test that all 21 methods work through the fixture path."""
 
     def test_equal(self, verify):
         assert verify.equal(1, 1, name="X")["passed"] is True
@@ -218,14 +235,90 @@ class TestFixtureAllCheckMethods:
         cases = {"1": build_equal(10, 10, name="case1")}
         assert verify.conditional(1, cases=cases, name="M")["passed"] is True
 
-    def test_fail(self):
-        # verify.fail always returns passed=False — test via module-level to
-        # avoid fixture teardown error
-        from pytest_verify._verify import Verify
-        from pytest_verify._evaluator import evaluate
-        v = Verify()
-        result = v.fail("intentional")
-        assert evaluate(result) is False
+    def test_guard(self, verify):
+        check = verify.guard(
+            branches=[(False, "off", verify.fail("unused")), (True, "on", verify.is_true(1, name="On"))],
+            name="G",
+        )
+        assert check["passed"] is True
+
+    @pytest.mark.xfail(raises=ChecksFailedError, strict=True)
+    def test_fail(self, verify):
+        # The failed check is recorded and the test fails after its body.
+        assert verify.fail("intentional")["passed"] is False
+
+
+class TestUnittest:
+    """unittest skips and ``TestCase`` outcomes never hide a failed check."""
+
+    def test_unittest_skiptest_after_a_failed_check_fails_the_test(self, pytester):
+        pytester.makepyfile("""
+            import unittest
+
+            def test_skipped_late(verify):
+                verify.equal(1, 2, name="Bad")
+                raise unittest.SkipTest("env not ready")
+        """)
+        result = pytester.runpytest("--tb=line")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*.py:*: 1 of 1 checks failed"])
+
+    _TESTCASE = """
+        import unittest
+
+        import pytest
+
+        class TestSuite(unittest.TestCase):
+            @pytest.fixture(autouse=True)
+            def _verify(self, verify):
+                self.verify = verify
+
+            def test_skip_after_failed_check(self):
+                self.verify.equal(1, 2, name="Skipped")
+                self.skipTest("env not ready")
+
+            def test_hard_and_soft(self):
+                self.verify.equal(1, 2, name="SoftBad")
+                self.assertEqual(3, 4)
+
+            def test_soft_only(self):
+                self.verify.equal(1, 2, name="SoftOnly")
+
+            def test_skip_after_passing_check(self):
+                self.verify.equal(1, 1, name="Fine")
+                self.skipTest("env not ready")
+
+            def test_pass(self):
+                self.verify.equal(1, 1, name="Good")
+    """
+
+    def test_testcase_outcomes(self, pytester):
+        pytester.makepyfile(self._TESTCASE)
+        result = pytester.runpytest("-rA", "--tb=line")
+        result.assert_outcomes(failed=3, passed=1, skipped=1)
+        result.stdout.fnmatch_lines_random([
+            "PASSED *::test_pass",
+            "SKIPPED *env not ready",
+            "FAILED *::test_hard_and_soft - *",
+            "FAILED *::test_skip_after_failed_check - *",
+            "FAILED *::test_soft_only - *",
+        ])
+        result.stdout.fnmatch_lines_random([
+            "*.py:*: AssertionError: 3 != 4",
+            "*.py:*: 1 of 1 checks failed",
+            "*.py:*: 1 of 1 checks failed",
+        ])
+
+    def test_testcase_hard_failure_shows_the_soft_summary(self, pytester):
+        pytester.makepyfile(self._TESTCASE)
+        result = pytester.runpytest("-k", "hard_and_soft")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines([
+            "*AssertionError: 3 != 4*",
+            "*Soft assertion failures*",
+            "*1 of 1 checks failed*",
+            "*✗ ?0? SoftBad*",
+        ])
 
 
 class TestUnconditionalStashWrite:

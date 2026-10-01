@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import functools
+from typing import Any, Iterable, Mapping
+
+import pytest
 
 from ._descriptors import approx_tolerance
-from ._evaluator import _evaluate_single
-
-if TYPE_CHECKING:
-    from ._descriptors import CheckDescriptor
+from ._evaluator import judge, selected_child
+from ._render import bounded_format, bounded_repr, describe_error, safe_str
 
 # Comparison operators rendered for the ordering checks.
 _ORDER_OPS = {"greater": ">", "greater_equal": ">=", "less": "<", "less_equal": "<="}
@@ -14,17 +15,22 @@ _ORDER_OPS = {"greater": ">", "greater_equal": ">=", "less": "<", "less_equal": 
 
 def _value(value: object, units: str | None) -> str:
     """Render a value with its optional unit suffix (e.g. ``3.3V``)."""
-    return f"{value}{units or ''}"
+    return f"{bounded_format(value)}{units or ''}"
 
 
-def _range(result: CheckDescriptor, units: str | None) -> str:
+def _range(result: Mapping[str, Any], units: str | None) -> str:
     """Render a ``between`` range with inclusive ``[]`` or exclusive ``()`` brackets."""
     low = _value(result["low"], units)
     high = _value(result["high"], units)
     return f"[{low}, {high}]" if result.get("inclusive", True) else f"({low}, {high})"
 
 
-def _detail(result: CheckDescriptor, passed: bool) -> str:
+def _child_detail(child: Mapping[str, Any], passed: bool) -> str:
+    stored = child.get("detail")
+    return stored if isinstance(stored, str) else render_detail(child, passed)
+
+
+def _detail(result: Mapping[str, Any], passed: bool) -> str:
     """Render the per-type ``expected … got …`` (failed) or compact (passed) clause.
 
     Follows the spec §7 table. ``passed`` selects which rendering to produce; for
@@ -67,26 +73,29 @@ def _detail(result: CheckDescriptor, passed: bool) -> str:
         return "False" if passed else f"expected False, got {bool(result['actual'])}"
 
     if check_type == "is_none":
-        return "None" if passed else f"expected None, got {result['actual']!r}"
+        return "None" if passed else f"expected None, got {bounded_repr(result['actual'])}"
 
     if check_type == "is_not_none":
-        return "not None" if passed else f"expected not None, got {result['actual']!r}"
+        return "not None" if passed else f"expected not None, got {bounded_repr(result['actual'])}"
 
     if check_type == "contains":
-        needle = repr(result["needle"])
-        return f"contains {needle}" if passed else f"expected to contain {needle}, got {result['haystack']!r}"
+        needle = bounded_repr(result["needle"])
+        if passed:
+            return f"contains {needle}"
+        return f"expected to contain {needle}, got {bounded_repr(result['haystack'])}"
 
     if check_type == "not_contains":
-        needle = repr(result["needle"])
+        needle = bounded_repr(result["needle"])
         return (
             f"does not contain {needle}"
             if passed
-            else f"expected to not contain {needle}, got {result['haystack']!r}"
+            else f"expected to not contain {needle}, got {bounded_repr(result['haystack'])}"
         )
 
     if check_type == "matches":
-        pattern = result["pattern"]
-        return f"matches /{pattern}/" if passed else f"expected to match /{pattern}/, got {result['actual']!r}"
+        pattern = bounded_format(result["pattern"])
+        actual = bounded_repr(result["actual"])
+        return f"matches /{pattern}/" if passed else f"expected to match /{pattern}/, got {actual}"
 
     if check_type == "is_instance":
         expected_type = result["expected_type"]
@@ -98,77 +107,134 @@ def _detail(result: CheckDescriptor, passed: bool) -> str:
         expected = result["expected"]
         if passed:
             return f"length {expected}"
-        return f"expected length {expected}, got length {result['actual_length']}"
+        return f"expected length {expected}, got length {result.get('actual_length')}"
 
     if check_type == "all_satisfy":
-        children: list[CheckDescriptor] = result.get("child_checks", [])
+        children = result.get("child_checks") or []
         total = len(children)
         if passed:
             return f"all {total} items pass"
-        failed = sum(1 for c in children if not _evaluate_single(c))
+        failed = sum(1 for child in children if judge(child)[0] is not True)
         return f"expected all {total} to pass, got {failed} failed"
 
     if check_type == "conditional":
-        switch = result["switch_value"]
-        matched = result.get("matched_case")
-        cases: dict[str, CheckDescriptor] = result.get("cases", {})
-        child = cases.get(matched) if matched is not None else result.get("default")
-        if child is None:
-            return f"[{_mode(switch)} → no match]"
-        return f"[{_mode(switch)} → {child.get('name', '')}] — {_detail(child, passed)}"
+        mode = f"mode={result.get('switch_label', safe_str(result.get('switch_value')))}"
+        selected = selected_child(result)
+        if selected is None:
+            return f"[{mode} → no match]"
+        child = selected[1]
+        return f"[{mode} → {child.get('name', '')}] — {_child_detail(child, passed)}"
 
     if check_type == "guard":
-        branches: list[dict] = result.get("branches", [])
-        matched = result.get("matched_index")
-        if matched is not None:
-            label = branches[matched]["label"]
-            child = branches[matched]["check"]
-        elif result.get("default") is not None:
-            label = "default"
-            child = result["default"]
-        else:
+        selected = selected_child(result)
+        if selected is None:
             return "[→ no match]"
-        return f"[→ {label}] — {_detail(child, passed)}"
+        label, child = selected
+        return f"[→ {label}] — {_child_detail(child, passed)}"
 
     if check_type == "fail":
-        return f"FAIL: {result.get('msg', '')}"
+        return f"FAIL: {bounded_format(result.get('msg', ''))}"
 
     # Fallback for any unknown check type: the canonical description, prefix-stripped.
-    name = result.get("name", "")
-    description = result.get("description", "")
+    name = safe_str(result.get("name", ""))
+    description = safe_str(result.get("description", ""))
     prefix = f"Verify '{name}' "
     return description[len(prefix):] if description.startswith(prefix) else description
 
 
-def _mode(switch: object) -> str:
-    return f"mode={switch}"
+def render_detail(result: Mapping[str, Any], passed: bool, error: str | None = None) -> str:
+    """The detail clause of one check, never raising.
+
+    A check that could not be evaluated gets its error appended, for example
+    ``expected > 100, got None (TypeError: '>' not supported ...)``.
+    """
+    if error is None:
+        error = result.get("error")
+    try:
+        text = _detail(result, passed)
+    except Exception as exc:
+        if error is None:
+            return f"<detail unavailable: {describe_error(exc)}>"
+        return f"error: {error}"
+    return text if error is None else f"{text} ({error})"
 
 
-class ChecksFailedError(AssertionError):
-    """Raised at fixture teardown when one or more soft checks failed.
+def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
+    name = safe_str(result.get("name", ""))
+    # conditional/guard render `name [… → child] — …`, attaching their
+    # bracket clause directly to the name without the `— ` separator.
+    sep = " " if result.get("check_type") in ("conditional", "guard") else " — "
+    stored = result.get("detail")
+    detail = stored if isinstance(stored, str) else render_detail(result, passed)
+    return f"  {marker} [{idx}] {name}{sep}{detail}"
+
+
+def format_summary(results: Iterable[Mapping[str, Any]], *, start: int = 0) -> str:
+    """The ``N of M checks failed`` summary of spec §7. Never raises.
+
+    Checks are numbered from *start*, their index among all the checks of the test.
+    """
+    results = list(results)
+    failed = [(i, r) for i, r in enumerate(results, start) if r.get("passed") is not True]
+    passed = [(i, r) for i, r in enumerate(results, start) if r.get("passed") is True]
+
+    def line(marker: str, idx: int, result: Mapping[str, Any], is_passed: bool) -> str:
+        try:
+            return _line(marker, idx, result, is_passed)
+        except Exception as exc:
+            return f"  {marker} [{idx}] <check could not be rendered: {describe_error(exc)}>"
+
+    lines: list[str] = [f"{len(failed)} of {len(results)} checks failed", ""]
+    lines.extend(line("✗", idx, r, False) for idx, r in failed)
+    if passed:
+        lines.append("")
+        lines.extend(line("✓", idx, r, True) for idx, r in passed)
+    return "\n".join(lines)
+
+
+class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[misc,name-defined]
+    """Raised when one or more soft checks of a test failed.
+
+    The ``verify`` fixture raises it at the end of the phase in which the checks were recorded:
+    after the test body for checks made in fixtures' setup and in the test, and after teardown
+    for checks made while fixtures are torn down. It is an ``AssertionError``, so
+    ``pytest.raises(AssertionError)`` and ``xfail(raises=AssertionError)`` catch it. Rerun
+    filters that match by name need ``ChecksFailedError``. pytest prints only its message,
+    without a traceback.
 
     The message follows spec §7: a ``N of M checks failed`` header, then the
     failed checks (``✗``) before the passed checks (``✓``), each prefixed with
     its ``[seq]`` index in evaluation order, its name, and a per-type
     ``expected … got …`` (failed) or compact (passed) detail clause.
+
+    Args:
+        results: The check descriptors to summarize.
+        start: Index of the first of them among all the checks of the test, so that checks
+            raised after teardown keep the numbers ``get_check_results`` gives them.
+
+    Attributes:
+        results: The check descriptors the summary was built from.
+        start: Index of the first of them among all the checks of the test.
     """
 
-    def __init__(self, results: list[CheckDescriptor]) -> None:
-        self.results = results
-        failed = [(i, r) for i, r in enumerate(results) if not r.get("passed")]
-        passed = [(i, r) for i, r in enumerate(results) if r.get("passed")]
+    def __init__(self, results: Iterable[Mapping[str, Any]], *, start: int = 0) -> None:
+        self.results = list(results)
+        self.start = start
+        message = format_summary(self.results, start=start)
+        AssertionError.__init__(self, message)
+        # pytest.fail.Exception attributes: show only the message, not a traceback.
+        self.msg = message
+        self.pytrace = False
 
-        def line(marker: str, idx: int, result: CheckDescriptor, is_passed: bool) -> str:
-            name = result.get("name", "")
-            # conditional/guard render `name [… → child] — …`, attaching their
-            # bracket clause directly to the name without the `— ` separator.
-            sep = " " if result.get("check_type") in ("conditional", "guard") else " — "
-            return f"  {marker} [{idx}] {name}{sep}{_detail(result, is_passed)}"
+    def __str__(self) -> str:
+        return self.msg
 
-        lines: list[str] = [f"{len(failed)} of {len(results)} checks failed", ""]
-        lines.extend(line("✗", idx, r, False) for idx, r in failed)
-        if passed:
-            lines.append("")
-            lines.extend(line("✓", idx, r, True) for idx, r in passed)
+    def __repr__(self) -> str:
+        failed = sum(1 for r in self.results if r.get("passed") is not True)
+        return f"{type(self).__name__}({failed} of {len(self.results)} checks failed)"
 
-        super().__init__("\n".join(lines))
+    def __reduce__(self) -> tuple[Any, ...]:
+        return (functools.partial(type(self), start=self.start), (self.results,), self.__dict__)
+
+
+ChecksFailedError.__module__ = "pytest_verify"

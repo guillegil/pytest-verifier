@@ -226,13 +226,12 @@ class TestIsInstanceEval:
         # An int is not a bool, even though bool subclasses int.
         assert evaluate(build_is_instance(1, bool, name="Value")) is False
 
-    def test_abc_virtual_subclass_is_a_known_module_path_limit(self):
-        # Documented limit: name-based MRO matching cannot see ABC virtual
-        # subclasses (list is not in Sequence.__mro__ by name). The *fixture*
-        # path uses real isinstance and is unaffected; this pins the divergence.
+    def test_abc_virtual_subclass_matches(self):
+        # The builder runs the real isinstance (list is a virtual subclass of
+        # Sequence), so the module path agrees with the fixture path.
         from collections.abc import Sequence
 
-        assert evaluate(build_is_instance([1, 2, 3], Sequence, name="S")) is False
+        assert evaluate(build_is_instance([1, 2, 3], Sequence, name="S")) is True
 
 
 class TestLengthEval:

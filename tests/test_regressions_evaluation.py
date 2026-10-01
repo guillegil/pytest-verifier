@@ -1,11 +1,10 @@
-"""Known-bug regression tests: check evaluation and failure-summary rendering (0.3.1).
+"""Regression tests: check evaluation and failure-summary rendering (bugs found in 0.3.1).
 
-Every test here asserts the CORRECT behaviour for a bug confirmed by the 0.3.1 review
-(see ``bugs-0.3.1.md``) and is marked ``xfail(strict=True)``. The suite stays green while
-the bug exists; once a fix lands the test XPASSes, which fails the run and forces the
-marker to be removed.
+Every test here asserts the correct behaviour for a bug found by the 0.3.1 review
+(see ``bugs-0.3.1.md``) and fixed in 0.4.0. Each one failed on 0.3.1 and keeps the bug
+from coming back.
 
-Bugs pinned in this module:
+Bugs covered by this module:
 
 * C-1: a non-bool comparison result is stored as ``passed``; elementwise (numpy-style)
   results crash the session with INTERNALERROR.
@@ -37,41 +36,9 @@ import pytest
 
 from pytest_verify import verify as mverify
 
-XFAIL_C1 = pytest.mark.xfail(
-    strict=True,
-    reason="C-1: non-bool comparison result stored as passed; elementwise results crash "
-    "pytest with INTERNALERROR (see bugs-0.3.1.md)",
-)
-XFAIL_C2 = pytest.mark.xfail(
-    strict=True,
-    reason="C-2: failure summary built in pytest_runtest_makereport can raise and abort "
-    "the session (see bugs-0.3.1.md)",
-)
-XFAIL_H1 = pytest.mark.xfail(
-    strict=True,
-    reason="H-1: exception while building/evaluating a fixture check aborts the test "
-    "(see bugs-0.3.1.md)",
-)
-XFAIL_M1 = pytest.mark.xfail(
-    strict=True,
-    reason="M-1: approx rel_tol accepts values outside the advertised 'expected ± rel%' "
-    "band (see bugs-0.3.1.md)",
-)
-XFAIL_L2 = pytest.mark.xfail(
-    strict=True,
-    reason="L-2: approx converts Decimal/Fraction/int to float (see bugs-0.3.1.md)",
-)
 
 #: Python's int-to-str digit limit (0 = disabled, or an interpreter that predates it).
 _INT_STR_LIMIT: int = getattr(sys, "get_int_max_str_digits", lambda: 0)()
-
-# L-5 only manifests while the int-to-str digit limit is active; elsewhere these tests pass.
-XFAIL_L5 = pytest.mark.xfail(
-    _INT_STR_LIMIT > 0,
-    strict=True,
-    reason="L-5: check on an int with more digits than sys.get_int_max_str_digits() "
-    "crashes while its description/summary is built (see bugs-0.3.1.md)",
-)
 
 
 # ── Helper objects (copied into inner pytester modules via inspect.getsource) ──
@@ -218,7 +185,6 @@ _TEST_AFTER = """
 # ── C-1: non-bool comparison results ────────────────────────────────
 
 
-@XFAIL_C1
 def test_c1_elementwise_comparison_fails_test_without_internalerror(pytester):
     """An ambiguous (numpy-style) comparison fails its test; every other test still runs."""
     pytester.makepyfile(_inner_module("""
@@ -234,7 +200,6 @@ def test_c1_elementwise_comparison_fails_test_without_internalerror(pytester):
     result.assert_outcomes(passed=1, failed=2)
 
 
-@XFAIL_C1
 @pytest.mark.parametrize(
     "call",
     [
@@ -259,7 +224,6 @@ def test_c1_fixture_stores_non_bool_comparison_result_as_bool(pytester, call):
     assert [r["passed_type"] for r in recorded] == ["bool"]
 
 
-@XFAIL_C1
 def test_c1_module_evaluate_detailed_passed_is_bool_for_truthy_result():
     """``evaluate_detailed`` reports ``passed`` as a bool, not the raw ``__eq__`` result."""
     descriptor = mverify.equal(_Truthy(), 5, name="expr")
@@ -267,7 +231,6 @@ def test_c1_module_evaluate_detailed_passed_is_bool_for_truthy_result():
     assert isinstance(result["passed"], bool), repr(result["passed"])
 
 
-@XFAIL_C1
 def test_c1_module_ambiguous_comparison_evaluates_as_failed():
     """An ambiguous elementwise comparison is a failed check on the module path too."""
     descriptor = mverify.equal(_Arr([1, 2]), _Arr([1, 3]), name="waveform")
@@ -311,7 +274,6 @@ _C2_SCENARIOS = {
 }
 
 
-@XFAIL_C2
 @pytest.mark.parametrize("scenario", list(_C2_SCENARIOS))
 def test_c2_failure_summary_never_crashes_session(pytester, scenario):
     """A soft failure whose live values misbehave later still fails only its own test."""
@@ -345,14 +307,13 @@ _H1_CASES: dict[str, tuple[str, bool | None]] = {
 
 # Inputs that the planned builder validation (IMP-1 / IMP-2 in ``improvements-and-ideas.md``)
 # may instead reject when the check is built, with TypeError/ValueError. Such a usage error is
-# an equally valid fix, so it is accepted here. Today both of these build without complaint.
+# an equally valid fix, so it is accepted here. In 0.3.1 both of these built without complaint.
 _H1_BUILD_TIME_REJECTION_OK = {
     "approx-negative-tol": lambda: mverify.approx(3.3, 3.3, abs_tol=-0.1, name="odd"),
     "between-str": lambda: mverify.between("3.3", 3.2, 3.4, name="odd"),
 }
 
 
-@XFAIL_H1
 @pytest.mark.parametrize("case", list(_H1_CASES))
 def test_h1_odd_input_is_recorded_and_later_checks_still_run(pytester, case):
     """The odd-input check is recorded and the checks after it still run."""
@@ -382,7 +343,6 @@ def test_h1_odd_input_is_recorded_and_later_checks_still_run(pytester, case):
 # ── M-1: approx rel_tol must honour the advertised 'expected ± rel%' band ──
 
 
-@XFAIL_M1
 @pytest.mark.parametrize(
     ("rel_tol", "actual"),
     [
@@ -408,7 +368,6 @@ def test_m1_rel_tol_verdict_matches_advertised_band(rel_tol, actual):
 # ── L-2: approx must compare Decimal / Fraction / int exactly ──
 
 
-@XFAIL_L2
 @pytest.mark.parametrize(
     ("actual", "expected", "abs_tol", "exact_verdict"),
     [
@@ -427,7 +386,6 @@ def test_l2_approx_compares_exact_numeric_types_exactly(actual, expected, abs_to
     assert mverify.evaluate(descriptor) is exact_verdict
 
 
-@XFAIL_L2
 def test_l2_approx_huge_int_does_not_overflow():
     """Ints too large for a C double are still compared (here: equal, so it passes)."""
     descriptor = mverify.approx(10**400, 10**400, abs_tol=1, name="x")
@@ -437,7 +395,6 @@ def test_l2_approx_huge_int_does_not_overflow():
 # ── L-5: ints above the int-to-str digit limit ──
 
 
-@XFAIL_L5
 @pytest.mark.parametrize(
     ("check", "args"),
     [
@@ -458,7 +415,6 @@ def test_l5_passing_check_on_huge_int_builds_and_passes(check, args):
     assert mverify.evaluate(descriptor) is True
 
 
-@XFAIL_L5
 def test_l5_fixture_passing_checks_on_huge_int_let_test_continue(pytester):
     """Through the fixture, the passing check does not abort the test and later checks run."""
     pytester.makepyfile(_inner_module("""
@@ -471,7 +427,6 @@ def test_l5_fixture_passing_checks_on_huge_int_let_test_continue(pytester):
     result.assert_outcomes(passed=1)
 
 
-@XFAIL_L5
 def test_l5_failing_check_on_huge_int_fails_test_without_internalerror(pytester):
     """A failed check holding a huge int renders its summary safely; later tests still run."""
     pytester.makepyfile(_inner_module("""
