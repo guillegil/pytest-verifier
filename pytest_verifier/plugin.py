@@ -1,7 +1,11 @@
-"""The ``verify`` fixture and the hooks that turn failed soft checks into a failed test.
+"""The pytest plugin: the ``verify`` fixture and the hooks that turn failed checks into a failed
+test.
+
+pytest loads it through the ``pytest_verifier`` entry point (the package lists this module in
+``pytest_plugins``), or with ``-p pytest_verifier`` when plugin autoloading is disabled.
 
 Each attempt to run a test item (pytest-rerunfailures runs the same item several times) gets a
-fresh :class:`~pytest_verify._run.Run`, created when its setup starts. Checks are judged when
+fresh :class:`~pytest_verifier._run.Run`, created when its setup starts. Checks are judged when
 they are recorded.
 At the end of each phase the checks recorded so far that have not been judged yet are
 examined, and if any failed, :class:`ChecksFailedError` is raised from that phase:
@@ -17,14 +21,19 @@ afterwards, so the call phase reads that record too.
 
 The checks judged at the end of a phase are also passed to the ``pytest_verify_results`` hook
 and attached to that phase's report as ``report.verify_checks``.
+
+Checks built with ``pytest_verifier.checks`` in the test body and still unused when the test's
+teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`).
 """
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Generator, List, Optional
 
 import pytest
 
+from . import _unused
 from ._descriptors import CheckDescriptor
 from ._exceptions import ChecksFailedError, format_summary
 from ._run import Run, recording_verify
@@ -32,20 +41,55 @@ from ._stash import check_results_key
 from ._verify import Verify
 
 _NOT_ACTIVE = (
-    "pytest-verify: the 'verify' fixture was requested, but the pytest-verify plugin is not "
+    "pytest-verifier: the 'verify' fixture was requested, but the pytest-verifier plugin is not "
     "active in this session, so failed checks could never fail the test. Load the plugin "
-    "(remove '-p no:verify', or add '-p pytest_verify._fixture' when "
+    "(remove '-p no:pytest_verifier', or add '-p pytest_verifier' when "
     "PYTEST_DISABLE_PLUGIN_AUTOLOAD is set) instead of importing the fixture on its own."
 )
 
 _run_key = pytest.StashKey[Run]()
+_tracker_key = pytest.StashKey[_unused.Tracker]()
+_paused_key = pytest.StashKey[bool]()
+
+
+_OLD_INSTALL = (
+    "pytest-verify, the previous name of pytest-verifier, is still installed, and pytest "
+    "cannot load both. Uninstall it with 'pip uninstall pytest-verify' (or 'uv pip uninstall "
+    "pytest-verify'). If it is not installed, delete the pytest_verify.egg-info folder left in "
+    "the project by an old editable install."
+)
+
+#: The entry point of pytest-verify 0.1 to 0.5, the previous name of this plugin.
+_OLD_ENTRY_POINT = ("pytest11", "verify", "pytest_verify._fixture")
+
+
+def _old_plugin_will_load(pluginmanager: pytest.PytestPluginManager) -> bool:
+    """Whether an old pytest-verify is installed and pytest is going to load it too."""
+    if os.environ.get("PYTEST_DISABLE_PLUGIN_AUTOLOAD") or pluginmanager.is_blocked("verify"):
+        return False
+    try:
+        from importlib import metadata
+
+        entry_points = metadata.distribution("pytest-verify").entry_points
+    except Exception:  # not installed
+        return False
+    return any(
+        (entry.group, entry.name, entry.value) == _OLD_ENTRY_POINT for entry in entry_points
+    )
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
     """Register ``pytest_verify_results`` for plugins that read results without importing us."""
     from . import _hookspecs
 
-    pluginmanager.add_hookspecs(_hookspecs)
+    # pytest-verify registers the same fixture and hooks (0.5 also this hook spec, so whichever
+    # loads second would fail with a pluggy error): say what to do instead.
+    if _old_plugin_will_load(pluginmanager):
+        raise pytest.UsageError(_OLD_INSTALL)
+    try:
+        pluginmanager.add_hookspecs(_hookspecs)
+    except ValueError as exc:  # pytest-verify 0.5 was loaded first
+        raise pytest.UsageError(_OLD_INSTALL) from exc
 
 
 def _close_phase(
@@ -102,14 +146,52 @@ def _replace_unittest_outcome(
         raise
 
 
+def _is_unittest(item: pytest.Item) -> bool:
+    """Whether *item* is a unittest ``TestCase`` test, whose ``setUp`` runs with its body."""
+    unittest = sys.modules.get("unittest")
+    cls = getattr(item, "cls", None)
+    return unittest is not None and isinstance(cls, type) and issubclass(cls, unittest.TestCase)
+
+
+def _finish_tracking(item: pytest.Item, warn: bool) -> None:
+    """Stop tracking the test's checks and, with *warn*, report the ones never used."""
+    tracker = item.stash.get(_tracker_key, None)
+    if tracker is None:
+        return
+    del item.stash[_tracker_key]
+    unused = _unused.finish(tracker)
+    if warn and not tracker.quiet:
+        _unused.warn_unused(unused)  # raises when the warning is turned into an error
+
+
 def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
     run = item.stash.get(_run_key, None)
     if run is None:  # pragma: no cover - our setup wrapper always creates it
         return (yield)
     run.phase = when
+    # Checks built with ``checks.*`` in the test body must be used by the end of teardown;
+    # nothing else is tracked (see _unused).
+    tracker = None
+    if when == "call" and not _is_unittest(item):
+        tracker = item.stash[_tracker_key] = _unused.start()
+    token = _unused.pause() if tracker is None else None
     try:
-        result = yield
+        try:
+            result = yield
+        except BaseException:
+            if tracker is not None:
+                tracker.quiet = True  # the failure or skip says enough
+            raise
+        finally:
+            if tracker is not None:
+                _unused.stop_building(tracker)
+            if token is not None:
+                _unused.resume(token)
+        if when == "teardown":
+            _finish_tracking(item, warn=True)
     except BaseException as exc:
+        if when == "teardown":
+            _finish_tracking(item, warn=False)
         error = _close_phase(item, run, when, exc)
         if when == "teardown":
             run.closed = True
@@ -131,6 +213,7 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_setup(item: pytest.Item) -> Generator[None, Any, Any]:
     """Start a fresh run for every attempt (pytest-rerunfailures reuses the item)."""
+    _finish_tracking(item, warn=False)  # left over by an attempt that did not reach teardown
     run = Run()
     item.stash[_run_key] = run
     item.stash[check_results_key] = run.records
@@ -149,6 +232,50 @@ def pytest_runtest_teardown(
 ) -> Generator[None, Any, Any]:
     """Raise ``ChecksFailedError`` after teardown if a check made during teardown failed."""
     return (yield from _run_phase(item, "teardown"))
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_fixture_setup() -> Generator[None, Any, Any]:
+    """Track nothing while a fixture is set up, even when the test body requests it."""
+    token = _unused.pause()
+    try:
+        return (yield)
+    finally:
+        _unused.resume(token)
+
+
+def _pause_session(config: pytest.Config) -> None:
+    """Track nothing for as long as *config* lives, except in the test bodies it runs.
+
+    A ``pytester`` session run inside a test body imports modules, loads conftests and sets up
+    fixtures while that test's tracker is active; none of that belongs to the test.
+    """
+    if config.stash.get(_paused_key, False):
+        return
+    config.stash[_paused_key] = True
+    token = _unused.pause()
+    config.add_cleanup(lambda: _unused.resume(token))
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_load_initial_conftests(early_config: pytest.Config) -> Generator[None, Any, Any]:
+    _pause_session(early_config)
+    return (yield)
+
+
+_NOT_BLOCKED = (
+    "'-p no:pytest_verifier' did not turn the plugin off, because a conftest loads it as "
+    "'pytest_verifier.plugin'. List 'pytest_verifier' in pytest_plugins instead, or use "
+    "'-p no:pytest_verifier.plugin'."
+)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config: pytest.Config) -> None:
+    _pause_session(config)  # loaded after the initial conftests, e.g. by a conftest
+    manager = config.pluginmanager
+    if manager.is_blocked("pytest_verifier") and manager.get_plugin("pytest_verifier") is None:
+        config.issue_config_time_warning(pytest.PytestConfigWarning(_NOT_BLOCKED), stacklevel=2)
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)

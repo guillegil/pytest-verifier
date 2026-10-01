@@ -1,13 +1,14 @@
 """The ``Verify`` front-end: one typed method per check type.
 
 Each method builds a descriptor with its check type and hands it to the instance's sink. The
-module-level ``verify``'s sink returns it unevaluated; the fixture's sink judges and records it
-(see :mod:`pytest_verify._run`).
+sink of ``pytest_verifier.checks`` returns it unevaluated; the fixture's sink judges and records
+it (see :mod:`pytest_verifier._run`).
 """
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
+from . import _unused
 from ._checks import (
     ALL_SATISFY,
     APPROX,
@@ -30,25 +31,27 @@ from ._checks import (
     MATCHES,
     NOT_CONTAINS,
     NOT_EQUAL,
+    child_checks,
 )
-from ._descriptors import CheckDescriptor, Child, ClassInfo
+from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 
 _RECORD_NEEDS_FIXTURE = (
-    "verify.record() records a check with the 'verify' fixture; the module-level verify only "
-    "builds checks. Request the 'verify' fixture in the test and call record() on it."
+    "checks.record() cannot record a check: pytest_verifier.checks only builds checks. Request "
+    "the 'verify' fixture in the test and call verify.record() on it."
 )
 
 
 class Sink:
     """Where a :class:`Verify` sends the checks it builds.
 
-    This one, used by the module-level ``verify``, returns them unevaluated.
+    This one, used by ``pytest_verifier.checks``, returns them unevaluated.
     """
 
     def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         """Take a check that has no children."""
+        _unused.built(descriptor)
         return descriptor
 
     def composite(
@@ -58,10 +61,18 @@ class Sink:
 
         *arguments* are the containers of its children, for cleanup when *build* raises.
         """
-        return build()
+        try:
+            descriptor = build()
+        except BaseException:
+            _unused.used(*loose_children(*arguments))
+            raise
+        _unused.used(*child_checks(descriptor))
+        _unused.built(descriptor)
+        return descriptor
 
     def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         """Take a check built elsewhere."""
+        _unused.used(descriptor)  # the error below already says what went wrong
         raise RuntimeError(_RECORD_NEEDS_FIXTURE)
 
 
@@ -71,8 +82,8 @@ _BUILD_ONLY = Sink()
 class Verify:
     """Soft-assertion builder.
 
-    When used as the **module-level** ``verify`` instance, methods return
-    unevaluated :class:`CheckDescriptor` dicts (no ``passed`` field).
+    As ``pytest_verifier.checks``, methods return unevaluated :class:`CheckDescriptor`
+    dicts (no ``passed`` field).
 
     When wrapped by the pytest fixture, the fixture evaluates each descriptor
     immediately after construction and sets the ``passed`` field.
@@ -491,8 +502,8 @@ class Verify:
         return self._sink.check(FAIL.build(msg, name=name))
 
     def record(self, check: CheckDescriptor) -> CheckDescriptor:
-        """Record a check that was built elsewhere, for example by a helper that uses the
-        module-level ``verify``.
+        """Record a check that was built elsewhere, for example by a helper that uses
+        ``pytest_verifier.checks``.
 
         Only the fixture records checks. The check is judged and recorded like one made
         through the fixture, and a check the fixture already recorded is returned as is.
@@ -505,12 +516,12 @@ class Verify:
 
         Raises:
             TypeError: If *check* is not a check descriptor.
-            RuntimeError: When called on the module-level ``verify``.
+            RuntimeError: When called on ``pytest_verifier.checks``.
         """
         return self._sink.record(check)
 
     # ------------------------------------------------------------------
-    # Evaluation helpers (module-level API)
+    # Evaluation helpers (pytest_verifier.checks)
     # ------------------------------------------------------------------
 
     @staticmethod

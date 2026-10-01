@@ -41,10 +41,10 @@ from typing import Any
 
 import pytest
 
-import pytest_verify
-from pytest_verify import get_check_results
-from pytest_verify._exceptions import ChecksFailedError
-from pytest_verify import _fixture as fixture_module
+import pytest_verifier
+from pytest_verifier import get_check_results
+from pytest_verifier._exceptions import ChecksFailedError
+from pytest_verifier import plugin as fixture_module
 
 #: pytest's major version: the built-in ``subtests`` fixture and the string-longrepr summary
 #: reason both arrived in pytest 9.
@@ -175,7 +175,7 @@ def test_h8_soft_failure_under_xfail_is_xfailed(pytester, marker):
     same as a hard assert in the same place. In 0.3.1 it was FAILED (as a flipped XPASS)."""
     pytester.makepyfile(f"""
         import pytest
-        from pytest_verify._exceptions import ChecksFailedError
+        from pytest_verifier._exceptions import ChecksFailedError
 
         {marker}
         def test_known(verify):
@@ -493,7 +493,7 @@ def test_m12_exception_interact_fires_for_soft_failure(pytester):
 
 
 class _EarlyReporter:
-    """Inner-session plugin registered before pytest-verify (as pytest-reporter or an
+    """Inner-session plugin registered before pytest-verifier (as pytest-reporter or an
     in-house uploader can be): an old-style makereport hookwrapper observing the outcome."""
 
     def __init__(self) -> None:
@@ -517,7 +517,7 @@ _SOFT_AND_HARD_SOURCE = """
 
 
 def test_m13_makereport_wrapper_registered_first_sees_failed(pytester):
-    """A makereport wrapper registered before pytest-verify runs inside its wrapper. It must
+    """A makereport wrapper registered before pytest-verifier runs inside its wrapper. It must
     still see FAILED for a soft-failed test, as it does for a hard failure."""
     pytester.makepyfile(_SOFT_AND_HARD_SOURCE)
     reporter = _EarlyReporter()
@@ -553,19 +553,19 @@ _MUST_FAIL_SOURCE = """
 
 @pytest.mark.parametrize(
     ("autoload", "args"),
-    [(False, ()), (True, ("-p", "no:verify"))],
+    [(False, ()), (True, ("-p", "no:pytest_verifier"))],
     ids=["autoload-disabled", "entry-point-blocked"],
 )
 def test_m14_reexported_fixture_without_hook_never_passes(pytester, monkeypatch, autoload, args):
     """With the fixture vendored through a conftest re-export but the plugin module not
-    registered, a test calling ``verify.fail()`` must not pass: it fails, or pytest-verify
+    registered, a test calling ``verify.fail()`` must not pass: it fails, or pytest-verifier
     stops the run loudly (usage error, collection error...). In 0.3.1 the checks are dropped and
     the run is green."""
     if autoload:
         monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
     else:
         monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
-    pytester.makeconftest("from pytest_verify._fixture import verify  # noqa: F401\n")
+    pytester.makeconftest("from pytest_verifier.plugin import verify  # noqa: F401\n")
     pytester.makepyfile(_MUST_FAIL_SOURCE)
     result = pytester.runpytest_subprocess(*args)
     output = f"{result.ret!r}\n{result.stdout.str()}\n{result.stderr.str()}"
@@ -650,7 +650,7 @@ def _docs_claiming_checks_failed_error_is_raised() -> dict[str, str]:
 
 def test_d1_checks_failed_error_raised_and_exported_or_not_documented_as_raised(pytester):
     """Either a soft failure really raises ``ChecksFailedError`` (so ``pytest.raises``,
-    ``xfail(raises=...)`` and ``--only-rerun`` can match it) and ``pytest_verify`` exports it,
+    ``xfail(raises=...)`` and ``--only-rerun`` can match it) and ``pytest_verifier`` exports it,
     or the README and docstrings stop saying it is raised."""
     pytester.makepyfile("""
         def test_soft(verify):
@@ -662,8 +662,8 @@ def test_d1_checks_failed_error_raised_and_exported_or_not_documented_as_raised(
         excinfo is not None and excinfo.errisinstance(ChecksFailedError)
         for excinfo in recorder.excinfo.values()
     )
-    exported = "ChecksFailedError" in pytest_verify.__all__ and hasattr(
-        pytest_verify, "ChecksFailedError"
+    exported = "ChecksFailedError" in pytest_verifier.__all__ and hasattr(
+        pytest_verifier, "ChecksFailedError"
     )
     stale_docs = _docs_claiming_checks_failed_error_is_raised()
     assert (raised and exported) or not stale_docs, (

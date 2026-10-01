@@ -1,6 +1,6 @@
 """``evaluate()`` and ``evaluate_detailed()``: judging descriptors without recording them.
 
-The verdict of one descriptor comes from :func:`pytest_verify._checks.judge`, which never
+The verdict of one descriptor comes from :func:`pytest_verifier._checks.judge`, which never
 raises: whatever a comparison returns is coerced to a real ``bool``, and an exception (or a
 result whose truth value is ambiguous, such as a numpy array) becomes a failed verdict with an
 error note.
@@ -10,6 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from . import _unused
 from ._checks import Verdict, judge, truth
 from ._descriptors import CheckDescriptor, is_descriptor
 
@@ -21,7 +22,7 @@ def _require_descriptors(descriptors: tuple[Any, ...], function: str) -> None:
         if isinstance(descriptor, (list, tuple)):
             raise TypeError(
                 f"{function}() takes descriptors as separate arguments; "
-                f"use verify.{function}(*checks) to pass a list"
+                f"use checks.{function}(*descriptors) to pass a list"
             )
         if not is_descriptor(descriptor):
             raise TypeError(
@@ -38,6 +39,7 @@ def evaluate(*descriptors: CheckDescriptor) -> bool:
     cannot be evaluated (its comparison raises) counts as failed.
     """
     _require_descriptors(descriptors, "evaluate")
+    _unused.used(*descriptors)
     verdicts = [judge(d)[0] for d in descriptors]
     return all(verdicts)
 
@@ -53,6 +55,7 @@ def evaluate_detailed(*descriptors: CheckDescriptor) -> list[dict[str, Any]]:
     - ``error``: why the check could not be evaluated (only present when it could not)
     """
     _require_descriptors(descriptors, "evaluate_detailed")
+    _unused.used(*descriptors)
     results: list[dict[str, Any]] = []
     for seq, d in enumerate(descriptors):
         passed, error = judge(d)

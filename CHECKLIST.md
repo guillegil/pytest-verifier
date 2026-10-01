@@ -4,6 +4,52 @@ Every item from [`bugs-0.3.1.md`](bugs-0.3.1.md) and [`improvements-and-ideas.md
 
 Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0). Improvements are taken only when they are small and touch the same code as a fix. Ideas and items marked *discuss* wait for a conversation.
 
+Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that.
+
+## Release tasks
+
+Every release follows the same steps, written down before any code changes:
+
+1. Write the release's task list below and the plan in `.tasks.md`.
+2. Implement on `claude/project-thread-uyojpb`, with a test for every change.
+3. Test everything: the suite on Python 3.9 to 3.13, pytest 7.0.1 with pluggy 1.2, `mypy --strict`, a wheel and sdist build with the sdist's tests run against the wheel, and the fuzz and performance scripts.
+4. Update README, CHANGELOG (Keep a Changelog), CLAUDE.md and this checklist; bump the version (SemVer).
+5. Independent review of the diff; fix every finding with a test, then re-run step 3.
+6. Open the PR, get CI green, merge (squash).
+7. Release: run the release workflow on the merge commit, then check the tag, the notes and the wheel and sdist on the release page.
+8. Tick the items here, update the shared notes, and report.
+
+### 0.6.0 Rename to pytest-verifier
+
+- [x] ~~Rename the import package to `pytest_verifier` and the distribution to `pytest-verifier` (DX-1)~~
+- [x] ~~Public plugin module `pytest_verifier.plugin`, entry point named `pytest_verifier` (IMP-29)~~
+- [x] ~~Builder exported as `checks`; `verify` kept as a deprecated alias (ARCH-9)~~
+- [x] ~~`pytest_verify` compatibility package~~ dropped after review: the name belongs to another PyPI project; a leftover 0.5 install now stops pytest with a message instead
+- [x] ~~Warn about checks built with `checks.*` in a test and never used (IMP-7)~~
+- [x] ~~Tests: plugin loading (autoload, `-p`, `-p no:`, conftest), deprecation warnings, unused-check warning~~
+- [x] ~~Release workflow titles, README with a migration section, CHANGELOG, CLAUDE.md~~
+- [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
+- [x] ~~Independent review and fixes~~
+- [ ] PR, CI green, merge, release v0.6.0
+
+### 0.7.0 Clear failures
+
+- [ ] String readings in ordering checks fail with a clear error (IMP-1)
+- [ ] Types shown when values look the same; strings quoted (IMP-9)
+- [ ] `is_true`/`is_false` show the value (IMP-10)
+- [ ] Failing items of `all_satisfy`, considered branches of `guard` and `conditional` (IMP-11)
+- [ ] Escaped single-line summary, about 240 characters per value, passed section capped unless `-vv` (IMP-12)
+- [ ] Bounded descriptions, a preview for `length` (IMP-13)
+- [ ] ASCII fallback on terminals that cannot print the symbols (IMP-14)
+- [ ] `(abs)`/`(rel)` with `%` units (IMP-15)
+- [ ] NaN notes (IMP-16)
+- [ ] Compiled regexes in `matches` (IMP-17)
+- [ ] Narrower parameter types (IMP-27)
+- [ ] README, CHANGELOG, CLAUDE.md
+- [ ] Full test matrix, mypy, build, fuzz and performance scripts
+- [ ] Independent review and fixes
+- [ ] PR, CI green, merge, release v0.7.0
+
 ## Bugs
 
 ### Critical
@@ -68,23 +114,23 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 
 ## Improvements
 
-- [ ] **IMP-1** Ordering checks compare strings alphabetically · discuss (would reject string readings the soft fixture must record)
+- [ ] **IMP-1** Ordering checks compare strings alphabetically · 0.7.0 (the check fails with an error; it is still recorded)
 - [x] ~~**IMP-2** Validate tolerances and bounds when the check is built~~ · done in 0.4.0
 - [x] ~~**IMP-3** Reject a check descriptor used as a guard condition~~ · done in 0.4.0
 - [x] ~~**IMP-4** Validate composite children and `name`~~ · done in 0.4.0
 - [x] ~~**IMP-5** Helpful errors for `evaluate(list)`~~ · done in 0.4.0
 - [x] ~~**IMP-6** Make `evaluate()` and `evaluate_detailed()` total~~ · done in 0.4.0
-- [ ] **IMP-7** Warn when the module-level `verify` is used inside a test by mistake · discuss
+- [x] ~~**IMP-7** Warn when the module-level `verify` is used inside a test by mistake~~ · done in 0.6.0
 - [x] ~~**IMP-8** Detect use of a stale or forked fixture~~ · done in 0.4.0
-- [ ] **IMP-9** Show types when values look the same · discuss (changes output)
-- [ ] **IMP-10** Show the actual value for `is_true` and `is_false` · discuss (changes output)
-- [ ] **IMP-11** Say which items or branches failed · discuss (changes output)
-- [ ] **IMP-12** Escape and truncate the summary · 0.4.0 part done (a detail shows at most 100 items and 1000 characters per value, found by the PR review); escaping, a tighter limit and capping the passed section: discuss (changes output)
-- [ ] **IMP-13** Keep descriptions small · discuss (changes output)
-- [ ] **IMP-14** Readable output on non-UTF-8 terminals · discuss (changes output)
-- [ ] **IMP-15** Tell absolute and relative tolerances apart when units are `%` · discuss (changes output)
-- [ ] **IMP-16** Explain NaN comparisons · discuss (changes output)
-- [ ] **IMP-17** Render compiled regexes properly · discuss (changes output)
+- [ ] **IMP-9** Show types when values look the same · 0.7.0
+- [ ] **IMP-10** Show the actual value for `is_true` and `is_false` · 0.7.0
+- [ ] **IMP-11** Say which items or branches failed · 0.7.0
+- [ ] **IMP-12** Escape and truncate the summary · 0.4.0 part done (a detail shows at most 100 items and 1000 characters per value, found by the PR review); escaping, a tighter limit and capping the passed section: 0.7.0
+- [ ] **IMP-13** Keep descriptions small · 0.7.0
+- [ ] **IMP-14** Readable output on non-UTF-8 terminals · 0.7.0
+- [ ] **IMP-15** Tell absolute and relative tolerances apart when units are `%` · 0.7.0
+- [ ] **IMP-16** Explain NaN comparisons · 0.7.0
+- [ ] **IMP-17** Render compiled regexes properly · 0.7.0
 - [x] ~~**IMP-18** Keep the verdict out of reach of mutation~~ · done in 0.4.0
 - [x] ~~**IMP-19** Record a pre-built descriptor with the fixture~~ · done in 0.5.0
 - [x] ~~**IMP-20** Consistent per-child verdicts in composites~~ · done in 0.4.0
@@ -94,9 +140,9 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 - [x] ~~**IMP-24** Export the public types and document the reader contract~~ · done in 0.4.0 (`check_results_key` stays importable, undocumented)
 - [x] ~~**IMP-25** Make the package pass `mypy --strict`~~ · done in 0.4.0
 - [x] ~~**IMP-26** Required keys in `CheckDescriptor`~~ · done in 0.5.0
-- [ ] **IMP-27** Narrower parameter types where calls always fail · discuss
+- [ ] **IMP-27** Narrower parameter types where calls always fail · 0.7.0
 - [x] ~~**IMP-28** Remove or use `_types.py`~~ · done in 0.4.0
-- [ ] **IMP-29** Use a specific plugin name and a public plugin module · discuss (renames the plugin)
+- [x] ~~**IMP-29** Use a specific plugin name and a public plugin module~~ · done in 0.6.0
 - [x] ~~**IMP-30** Richer package metadata and a tested pytest floor~~ · done in 0.4.0
 - [x] ~~**IMP-31** Faster composite recording~~ · done in 0.4.0
 - [x] ~~**IMP-32** Test the contracts the bugs slipped through~~ · done in 0.4.0 (regression, thread, typing and sdist tests) and 0.5.0 (contract harness)
@@ -111,7 +157,7 @@ Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0)
 - [x] ~~**ARCH-6** Let pytest-reporter read results without importing pytest-verify~~ · done in 0.5.0
 - [x] ~~**ARCH-7** One thread-safe run object per attempt~~ · done in 0.4.0
 - [x] ~~**ARCH-8** One `Verify` front-end with a pluggable sink~~ · done in 0.5.0
-- [ ] **ARCH-9** Rename the module-level builder · discuss (renames public API)
+- [x] ~~**ARCH-9** Rename the module-level builder~~ · done in 0.6.0
 - [x] ~~**ARCH-10** A contract test harness driven by the registry~~ · done in 0.5.0
 
 ## Ideas: features
@@ -135,7 +181,7 @@ Not implemented until we discuss them.
 
 Not implemented until we discuss them.
 
-- [ ] **DX-1** Rename before publishing to PyPI · idea, discuss
+- [x] ~~**DX-1** Rename before publishing to PyPI~~ · done in 0.6.0 (`pytest-verifier`, chosen by the user)
 - [ ] **DX-2** Tag-driven release workflow with Trusted Publishing · idea, discuss
 - [ ] **DX-3** Turn CI into a quality-gate matrix · idea, discuss
 - [ ] **DX-4** Typing contract tests · idea, discuss

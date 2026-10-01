@@ -6,9 +6,9 @@ import threading
 
 import pytest
 
-from pytest_verify import verify as checks
-from pytest_verify._checks import render_detail
-from pytest_verify._run import Run, recording_verify
+from pytest_verifier import checks
+from pytest_verifier._checks import render_detail
+from pytest_verifier._run import Run, recording_verify
 
 
 def _recording():

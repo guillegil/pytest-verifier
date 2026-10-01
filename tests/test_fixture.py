@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from pytest_verify import ChecksFailedError
+from pytest_verifier import ChecksFailedError
 
 
 class TestFixtureBasicBehavior:
@@ -146,7 +146,7 @@ class TestFixtureTeardown:
     def test_composite_records_only_parent_not_children(self):
         """A composite consumes its child descriptors; the children must not
         remain as independent recorded results."""
-        from pytest_verify._run import Run, recording_verify
+        from pytest_verifier._run import Run, recording_verify
 
         run = Run()
         fv = recording_verify(run)
@@ -327,7 +327,7 @@ class TestUnconditionalStashWrite:
     def test_stash_written_without_reporter(self, pytester):
         """Stash is always populated regardless of whether reporter is installed."""
         pytester.makepyfile("""
-            from pytest_verify._stash import check_results_key
+            from pytest_verifier._stash import check_results_key
 
             def test_stash_present(request, verify):
                 verify.equal(1, 1, name="X")
@@ -342,7 +342,7 @@ class TestUnconditionalStashWrite:
     def test_stash_written_with_reporter(self, pytester):
         """Stash is populated when reporter is installed (unchanged behavior)."""
         pytester.makepyfile("""
-            from pytest_verify._stash import check_results_key
+            from pytest_verifier._stash import check_results_key
 
             def test_stash_present(request, verify):
                 verify.equal(1, 1, name="X")

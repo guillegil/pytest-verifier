@@ -13,8 +13,8 @@ import sys
 
 import pytest
 
-from pytest_verify import get_check_results, verify
-from pytest_verify._exceptions import ChecksFailedError
+from pytest_verifier import checks, get_check_results
+from pytest_verifier._exceptions import ChecksFailedError
 
 # ``str()`` of IntEnum members changed in Python 3.11 ('Level.ONE' -> '1'), and so did
 # ``format()`` of (str, Enum) members. Bugs that hinge on that only show on 3.9 / 3.10.
@@ -42,7 +42,7 @@ _DUMP_CONFTEST = """
 
     import pytest
 
-    from pytest_verify import get_check_results
+    from pytest_verifier import get_check_results
 
 
     @pytest.fixture
@@ -68,7 +68,7 @@ def _run_and_read_recorded(pytester: pytest.Pytester, source: str) -> dict:
 
 def _render(descriptor: dict) -> str:
     """Evaluate a module-built descriptor and return its ChecksFailedError summary."""
-    return str(ChecksFailedError([dict(descriptor, passed=verify.evaluate(descriptor))]))
+    return str(ChecksFailedError([dict(descriptor, passed=checks.evaluate(descriptor))]))
 
 
 # ======================================================================
@@ -144,12 +144,12 @@ def test_h2_module_path_length_in_unmatched_default_not_evaluated():
     """``length`` calls len() at build time, so it crashes even on the (otherwise lazy)
     module path when it sits in a branch that is never taken."""
     payload = None
-    descriptor = verify.guard(
-        branches=[(payload is None, "no payload", verify.is_none(payload, name="no payload"))],
-        default=verify.length(payload, 3, name="payload length"),
+    descriptor = checks.guard(
+        branches=[(payload is None, "no payload", checks.is_none(payload, name="no payload"))],
+        default=checks.length(payload, 3, name="payload length"),
         name="Payload",
     )
-    assert verify.evaluate(descriptor) is True
+    assert checks.evaluate(descriptor) is True
 
 
 def test_h2_unmatched_children_carry_no_failed_verdict(verify, request):
@@ -326,7 +326,7 @@ def test_h4_children_built_before_the_call_belong_to_the_composite(pytester, com
             ]""",
     }[composite]
     pytester.makepyfile(f"""
-        from pytest_verify import get_check_results
+        from pytest_verifier import get_check_results
 
         def test_output(verify, request):
             children = {children}
@@ -341,7 +341,7 @@ def test_h4_a_copy_keeps_a_reused_check_on_its_own(pytester):
     """To use a recorded check on its own and inside a composite, pass a copy. The failing
     standalone check keeps failing the test, and the copy keeps its recorded verdict."""
     pytester.makepyfile("""
-        from pytest_verify import get_check_results
+        from pytest_verifier import get_check_results
 
         def test_reuse(verify, request):
             vout = verify.approx(4.1, 3.3, abs_tol=0.05, name="Vout", units="V")  # fails
@@ -365,24 +365,24 @@ def test_h4_a_copy_keeps_a_reused_check_on_its_own(pytester):
 
 def _conditional_verdict(switch_value: object, cases: dict) -> bool:
     """Build a conditional whose default always fails, and evaluate it on the module path."""
-    descriptor = verify.conditional(
+    descriptor = checks.conditional(
         switch_value,
         cases=cases,
-        default=verify.fail("fell through to default"),
+        default=checks.fail("fell through to default"),
         name="M",
     )
-    return verify.evaluate(descriptor)
+    return checks.evaluate(descriptor)
 
 
 def test_h6_intenum_switch_matches_int_case_key():
     """Passed on 3.11+ in 0.3.1; on 3.9/3.10 str(Level.ONE) is 'Level.ONE' and falls through."""
-    ok = verify.equal(1, 1, name="ok")
-    assert _conditional_verdict(Level.ONE, {0: verify.fail("standby"), 1: ok}) is True
+    ok = checks.equal(1, 1, name="ok")
+    assert _conditional_verdict(Level.ONE, {0: checks.fail("standby"), 1: ok}) is True
 
 
 def test_h6_int_switch_matches_intenum_case_key():
-    ok = verify.equal(1, 1, name="ok")
-    assert _conditional_verdict(1, {Level.STANDBY: verify.fail("standby"), Level.ONE: ok}) is True
+    ok = checks.equal(1, 1, name="ok")
+    assert _conditional_verdict(1, {Level.STANDBY: checks.fail("standby"), Level.ONE: ok}) is True
 
 
 @pytest.mark.parametrize(
@@ -392,14 +392,14 @@ def test_h6_int_switch_matches_intenum_case_key():
 )
 def test_h6_python_equal_switch_matches_case_key(switch_value, case_key):
     """A plain dict lookup finds these keys (``switch_value in cases``); so must conditional."""
-    cases = {case_key: verify.equal(1, 1, name="ok")}
+    cases = {case_key: checks.equal(1, 1, name="ok")}
     assert switch_value in cases
     assert _conditional_verdict(switch_value, cases) is True
 
 
 def test_h6_none_switch_does_not_match_string_none_key():
     """None is not equal to the string 'None', so the always-failing default applies."""
-    cases = {"None": verify.equal(1, 1, name="literal 'None' case")}
+    cases = {"None": checks.equal(1, 1, name="literal 'None' case")}
     assert None not in cases
     assert _conditional_verdict(None, cases) is False
 
@@ -417,14 +417,14 @@ def test_l1_colliding_case_keys_not_silently_overwritten(switch_value, other_key
     """``{1: a, '1': b}`` must be rejected with ValueError at build time. If a fix instead
     keeps both keys, the case equal to the switch (``a``) must be the one selected."""
     cases = {
-        switch_value: verify.equal(1, 1, name="case equal to the switch"),
-        other_key: verify.fail("colliding case that overwrites it"),
+        switch_value: checks.equal(1, 1, name="case equal to the switch"),
+        other_key: checks.fail("colliding case that overwrites it"),
     }
     try:
-        descriptor = verify.conditional(switch_value, cases=cases, name="M")
+        descriptor = checks.conditional(switch_value, cases=cases, name="M")
     except (TypeError, ValueError):
         return  # rejected at build time: the documented fix
-    assert verify.evaluate(descriptor) is True, "the colliding later key silently won"
+    assert checks.evaluate(descriptor) is True, "the colliding later key silently won"
 
 
 def test_l1_overwritten_case_not_left_as_standalone_result(pytester):
@@ -460,7 +460,7 @@ def test_l3_composite_evaluation_error_leaves_no_orphan_children(pytester):
     """The matched (module-built) child cannot be compared; the unmatched fixture-built
     branch must still not surface as a standalone failing check."""
     recorded = _run_and_read_recorded(pytester, """
-        from pytest_verify import verify as mverify
+        from pytest_verifier import checks as mverify
 
         def test_parent_eval_raises(verify, dump_recorded):
             try:
@@ -517,8 +517,8 @@ def test_l4_conditional_displays_the_switch_it_looked_up(switch_value, case_key)
     """On 3.9/3.10 the lookup uses str() ('Level.ONE', 'StrMode.ACTIVE') but the text uses
     format() ('1', 'active'), so it reads 'M [mode=1 → no match]' while case '1' exists.
     The shown switch must be the compared one: str(switch_value) or repr(switch_value)."""
-    descriptor = verify.conditional(
-        switch_value, cases={case_key: verify.equal(1, 1, name="ok")}, name="M"
+    descriptor = checks.conditional(
+        switch_value, cases={case_key: checks.equal(1, 1, name="ok")}, name="M"
     )
     allowed = {str(switch_value), repr(switch_value)}
     shown = _displayed_switches(descriptor)
@@ -530,16 +530,16 @@ def test_l4_conditional_displays_the_switch_it_looked_up(switch_value, case_key)
 # ======================================================================
 
 def _tuple_switch_round_trip() -> tuple[dict, dict]:
-    ok = verify.equal(1, 1, name="ok")
-    descriptor = verify.conditional((1, 2), cases={(1, 2): ok}, name="pair")
+    ok = checks.equal(1, 1, name="ok")
+    descriptor = checks.conditional((1, 2), cases={(1, 2): ok}, name="pair")
     return descriptor, json.loads(json.dumps(descriptor))
 
 
 def test_m6_conditional_verdict_survives_json_round_trip():
     """A tuple switch becomes a list after JSON; the verdict must not change."""
     descriptor, round_tripped = _tuple_switch_round_trip()
-    assert verify.evaluate(descriptor) is True
-    assert verify.evaluate(round_tripped) is True
+    assert checks.evaluate(descriptor) is True
+    assert checks.evaluate(round_tripped) is True
 
 
 def test_m6_rendered_case_agrees_with_verdict_after_round_trip():

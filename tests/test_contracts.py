@@ -19,11 +19,11 @@ from typing import Any, Callable, List, NamedTuple, Optional
 
 import pytest
 
-from pytest_verify import ChecksFailedError
-from pytest_verify import verify as checks
-from pytest_verify._checks import REGISTRY, render_detail
-from pytest_verify._exceptions import format_summary
-from pytest_verify._run import Run, recording_verify
+from pytest_verifier import ChecksFailedError
+from pytest_verifier import checks
+from pytest_verifier._checks import REGISTRY, render_detail
+from pytest_verifier._exceptions import format_summary
+from pytest_verifier._run import Run, recording_verify
 
 
 class Hostile:

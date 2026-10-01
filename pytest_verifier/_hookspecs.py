@@ -1,7 +1,7 @@
-"""Hooks pytest-verify calls, so other plugins can read check results without importing it.
+"""Hooks pytest-verifier calls, so other plugins can read check results without importing it.
 
 Implement them with ``@pytest.hookimpl(optionalhook=True)``: pytest then accepts the hook even
-when pytest-verify is not installed.
+when pytest-verifier is not installed.
 """
 from __future__ import annotations
 

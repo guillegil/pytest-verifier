@@ -87,4 +87,4 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
         return (functools.partial(type(self), start=self.start), (self.results,), self.__dict__)
 
 
-ChecksFailedError.__module__ = "pytest_verify"
+ChecksFailedError.__module__ = "pytest_verifier"
