@@ -1,6 +1,7 @@
 """FEAT-3: required checks, fail-fast, and a first line that says what failed."""
 from __future__ import annotations
 
+import gc
 import json
 import sys
 from typing import Any, Dict, List
@@ -811,12 +812,27 @@ class TestRequire:
                         self.verify.require.equal(1, 2, name="h")
                     finally:
                         self.verify.equal(1, 1, name="cleaned up")
+
+                # The TestCase reports the skip first (Python < 3.11 reports every skip before
+                # the errors); the phase end replaces it with the stop.
+                def test_skipped_then_stopped(self):
+                    self.addCleanup(self.stop)
+                    self.skipTest("not today")
+
+                def stop(self):
+                    self.verify.require.equal(1, 2, name="i")
+
+                def test_stopped_then_skipped(self):
+                    self.addCleanup(self.skipTest, "not today")
+                    self.verify.require.equal(1, 2, name="j")
             """
         )
-        _run(pytester).assert_outcomes(failed=5, passed=1)
+        # Python 3.11+ reports the cleanup's skip after the stop: pytest reports it in teardown.
+        _run(pytester).assert_outcomes(failed=7, passed=1, skipped=sys.version_info >= (3, 11))
         _run(pytester, "--verify-fail-fast", "-k", "fail_fast").assert_outcomes(failed=1)
         frames = (pytester.path / "frames.txt").read_text(encoding="utf-8").split()
-        expected = ["test_required", "test_record", "test_cleanup", "<lambda>", "test_unit"]
+        expected = ["test_required", "test_record", "test_cleanup", "<lambda>"]
+        expected += ["stop", "test_stopped_then_skipped", "test_unit"]  # in name order
         assert frames == expected + ["test_fail_fast"]
 
     def test_require_is_cached_and_idempotent(self) -> None:
@@ -1093,6 +1109,49 @@ class TestFailFast:
             "disconnected.txt", "off.txt", "async-off.txt", "property.txt", "static.txt"
         }
 
+    def test_a_testcase_with_its_own_run_stays_soft_in_teardown(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        # twisted.trial and testtools have their own run(), which calls tearDown directly.
+        pytester.makepyfile(
+            """
+            import sys
+            import unittest
+
+            import pytest
+
+            class OwnRun(unittest.TestCase):
+                def run(self, result=None):
+                    result.startTest(self)
+                    try:
+                        self.setUp()
+                        try:
+                            getattr(self, self._testMethodName)()
+                        finally:
+                            self.tearDown()
+                    except Exception:
+                        result.addError(self, sys.exc_info())
+                    finally:
+                        result.stopTest(self)
+
+            class TestOwnRun(OwnRun):
+                @pytest.fixture(autouse=True)
+                def _verify(self, verify):
+                    self.verify = verify
+
+                def tearDown(self):
+                    self.verify.equal(1, 2, name="off")
+                    open("off.txt", "w").close()
+
+                def test_it(self):
+                    self.verify.equal(1, 1, name="body")
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["1 of 2 checks failed: off — expected 2, got 1"])
+        assert (pytester.path / "off.txt").exists()
+
     def test_a_testcase_that_cleans_up_itself_stays_strict(
         self, pytester: pytest.Pytester
     ) -> None:
@@ -1139,9 +1198,14 @@ class TestFailFast:
                     assert INSTANCES[0]() is None
             """
         )
-        if _run(pytester, "-p", "no:randomly").ret != 0:
-            pytest.skip("this pytest keeps TestCase instances alive itself")
-        _run(pytester, "--verify-fail-fast", "-p", "no:randomly").assert_outcomes(passed=2)
+        enabled = gc.isenabled()  # the inner module turns it off in this process
+        try:
+            if _run(pytester, "-p", "no:randomly").ret != 0:
+                pytest.skip("this pytest keeps TestCase instances alive itself")
+            _run(pytester, "--verify-fail-fast", "-p", "no:randomly").assert_outcomes(passed=2)
+        finally:
+            if enabled:
+                gc.enable()
 
 
 class TestFirstLine:

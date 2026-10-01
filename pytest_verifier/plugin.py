@@ -222,14 +222,20 @@ def _unittest_outcome(item: pytest.Item) -> Optional[BaseException]:
     return None
 
 
-def _take_place(run: Run, error: ChecksFailedError, exc: BaseException) -> Optional[BaseException]:
+def _take_place(
+    run: Run,
+    error: ChecksFailedError,
+    exc: BaseException,
+    later: Sequence[ChecksFailedError] = (),
+) -> Optional[BaseException]:
     """Prepare *error*, raised in place of *exc*; returns what it chains to.
 
     A skip stays visible as the cause. *error* lists the checks of a stop error that *exc* is
-    or is chained to, so it takes that error's place: out of the chain, instead of repeating
-    its summary, and with its traceback, so that ``--pdb`` still opens in the test.
+    or is chained to (or of a *later* one a ``TestCase`` recorded), so it takes that error's
+    place: out of the chain, instead of repeating its summary, and with its traceback, so that
+    ``--pdb`` still opens in the test.
     """
-    stops = _linked_stops(run, exc)
+    stops = _linked_stops(run, exc) + list(later)
     if stops:
         error.with_traceback(stops[0].__traceback__)
     if run.raised(exc):
@@ -258,11 +264,15 @@ def _cut_stops(run: Run, exc: BaseException) -> None:
 
 
 def _replace_unittest_outcome(
-    item: pytest.Item, run: Run, error: ChecksFailedError, recorded: BaseException
+    item: pytest.Item,
+    run: Run,
+    error: ChecksFailedError,
+    recorded: BaseException,
+    later: Sequence[ChecksFailedError],
 ) -> None:
     """Raise *error* and report it in place of the skip or stop the ``TestCase`` recorded."""
     try:
-        raise error from _take_place(run, error, recorded)
+        raise error from _take_place(run, error, recorded, later)
     except ChecksFailedError:
         item._excinfo[0] = pytest.ExceptionInfo.from_current()  # type: ignore[attr-defined]
         raise
@@ -287,9 +297,11 @@ def _take_later_stops(item: pytest.Item, run: Run) -> List[ChecksFailedError]:
     return stops
 
 
-#: What a ``TestCase`` runs to clean up after the test method, in pytest's call phase:
-#: ``_callTearDown`` calls ``tearDown`` (and ``asyncTearDown``), however it is defined.
-_CLEANUP_METHODS = ("_callTearDown", "doCleanups")
+#: What a ``TestCase`` runs to clean up after the test method, in pytest's call phase.
+#: unittest's ``run()`` calls ``tearDown`` (and ``asyncTearDown``) through ``_callTearDown``,
+#: however they are defined; frameworks with their own ``run()`` (twisted.trial, testtools)
+#: call ``tearDown`` directly.
+_CLEANUP_METHODS = ("_callTearDown", "tearDown", "asyncTearDown", "doCleanups")
 
 
 def _soft_cleanup(item: pytest.Item, run: Run) -> List[Any]:
@@ -312,6 +324,18 @@ def _soft_cleanup(item: pytest.Item, run: Run) -> List[Any]:
 
 
 def _cleaning(run: Run, method: Any) -> Any:
+    if inspect.iscoroutinefunction(method):  # IsolatedAsyncioTestCase wants a coroutine function
+
+        @functools.wraps(method)
+        async def clean_up_async(*args: Any, **kwargs: Any) -> Any:
+            cleaning, run.cleaning = run.cleaning, True
+            try:
+                return await method(*args, **kwargs)
+            finally:
+                run.cleaning = cleaning
+
+        return clean_up_async
+
     @functools.wraps(method)
     def clean_up(*args: Any, **kwargs: Any) -> Any:
         cleaning, run.cleaning = run.cleaning, True
@@ -395,7 +419,7 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
         error = _close_phase(item, run, when, recorded, later)
         if error is not None:
             if recorded is not None:
-                _replace_unittest_outcome(item, run, error, recorded)
+                _replace_unittest_outcome(item, run, error, recorded, later)
             raise error
     return result
 
