@@ -30,24 +30,24 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~Release workflow titles, README with a migration section, CHANGELOG, CLAUDE.md~~
 - [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
 - [x] ~~Independent review and fixes~~
-- [ ] PR, CI green, merge, release v0.6.0
+- [x] ~~PR, CI green, merge, release v0.6.0~~ (PR #4)
 
 ### 0.7.0 Clear failures
 
-- [ ] String readings in ordering checks fail with a clear error (IMP-1)
-- [ ] Types shown when values look the same; strings quoted (IMP-9)
-- [ ] `is_true`/`is_false` show the value (IMP-10)
-- [ ] Failing items of `all_satisfy`, considered branches of `guard` and `conditional` (IMP-11)
-- [ ] Escaped single-line summary, about 240 characters per value, passed section capped unless `-vv` (IMP-12)
-- [ ] Bounded descriptions, a preview for `length` (IMP-13)
-- [ ] ASCII fallback on terminals that cannot print the symbols (IMP-14)
-- [ ] `(abs)`/`(rel)` with `%` units (IMP-15)
-- [ ] NaN notes (IMP-16)
-- [ ] Compiled regexes in `matches` (IMP-17)
-- [ ] Narrower parameter types (IMP-27)
-- [ ] README, CHANGELOG, CLAUDE.md
-- [ ] Full test matrix, mypy, build, fuzz and performance scripts
-- [ ] Independent review and fixes
+- [x] ~~String readings in ordering checks fail with a clear error (IMP-1)~~
+- [x] ~~Types shown when values look the same; strings quoted (IMP-9)~~
+- [x] ~~`is_true`/`is_false` show the value (IMP-10)~~
+- [x] ~~Failing items of `all_satisfy`, considered branches of `guard` and `conditional` (IMP-11)~~
+- [x] ~~Escaped single-line summary, about 240 characters per value, passed section capped unless `-vv` (IMP-12)~~
+- [x] ~~Bounded descriptions, a preview for `length` (IMP-13)~~
+- [x] ~~ASCII fallback on terminals that cannot print the symbols (IMP-14)~~
+- [x] ~~`(abs)`/`(rel)` with `%` units (IMP-15)~~
+- [x] ~~NaN notes (IMP-16)~~
+- [x] ~~Compiled regexes in `matches` (IMP-17)~~
+- [x] ~~Narrower parameter types (IMP-27)~~
+- [x] ~~README, CHANGELOG, CLAUDE.md~~
+- [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
+- [x] ~~Independent review and fixes~~
 - [ ] PR, CI green, merge, release v0.7.0
 
 ## Bugs
@@ -114,7 +114,7 @@ Every release follows the same steps, written down before any code changes:
 
 ## Improvements
 
-- [ ] **IMP-1** Ordering checks compare strings alphabetically · 0.7.0 (the check fails with an error; it is still recorded)
+- [x] ~~**IMP-1** Ordering checks compare strings alphabetically~~ · done in 0.7.0
 - [x] ~~**IMP-2** Validate tolerances and bounds when the check is built~~ · done in 0.4.0
 - [x] ~~**IMP-3** Reject a check descriptor used as a guard condition~~ · done in 0.4.0
 - [x] ~~**IMP-4** Validate composite children and `name`~~ · done in 0.4.0
@@ -122,15 +122,15 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~**IMP-6** Make `evaluate()` and `evaluate_detailed()` total~~ · done in 0.4.0
 - [x] ~~**IMP-7** Warn when the module-level `verify` is used inside a test by mistake~~ · done in 0.6.0
 - [x] ~~**IMP-8** Detect use of a stale or forked fixture~~ · done in 0.4.0
-- [ ] **IMP-9** Show types when values look the same · 0.7.0
-- [ ] **IMP-10** Show the actual value for `is_true` and `is_false` · 0.7.0
-- [ ] **IMP-11** Say which items or branches failed · 0.7.0
-- [ ] **IMP-12** Escape and truncate the summary · 0.4.0 part done (a detail shows at most 100 items and 1000 characters per value, found by the PR review); escaping, a tighter limit and capping the passed section: 0.7.0
-- [ ] **IMP-13** Keep descriptions small · 0.7.0
-- [ ] **IMP-14** Readable output on non-UTF-8 terminals · 0.7.0
-- [ ] **IMP-15** Tell absolute and relative tolerances apart when units are `%` · 0.7.0
-- [ ] **IMP-16** Explain NaN comparisons · 0.7.0
-- [ ] **IMP-17** Render compiled regexes properly · 0.7.0
+- [x] ~~**IMP-9** Show types when values look the same~~ · done in 0.7.0
+- [x] ~~**IMP-10** Show the actual value for `is_true` and `is_false`~~ · done in 0.7.0
+- [x] ~~**IMP-11** Say which items or branches failed~~ · done in 0.7.0
+- [x] ~~**IMP-12** Escape and truncate the summary~~ · done in 0.7.0
+- [x] ~~**IMP-13** Keep descriptions small~~ · done in 0.7.0
+- [x] ~~**IMP-14** Readable output on non-UTF-8 terminals~~ · done in 0.7.0
+- [x] ~~**IMP-15** Tell absolute and relative tolerances apart when units are `%`~~ · done in 0.7.0
+- [x] ~~**IMP-16** Explain NaN comparisons~~ · done in 0.7.0
+- [x] ~~**IMP-17** Render compiled regexes properly~~ · done in 0.7.0
 - [x] ~~**IMP-18** Keep the verdict out of reach of mutation~~ · done in 0.4.0
 - [x] ~~**IMP-19** Record a pre-built descriptor with the fixture~~ · done in 0.5.0
 - [x] ~~**IMP-20** Consistent per-child verdicts in composites~~ · done in 0.4.0
@@ -140,7 +140,7 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~**IMP-24** Export the public types and document the reader contract~~ · done in 0.4.0 (`check_results_key` stays importable, undocumented)
 - [x] ~~**IMP-25** Make the package pass `mypy --strict`~~ · done in 0.4.0
 - [x] ~~**IMP-26** Required keys in `CheckDescriptor`~~ · done in 0.5.0
-- [ ] **IMP-27** Narrower parameter types where calls always fail · 0.7.0
+- [x] ~~**IMP-27** Narrower parameter types where calls always fail~~ · done in 0.7.0
 - [x] ~~**IMP-28** Remove or use `_types.py`~~ · done in 0.4.0
 - [x] ~~**IMP-29** Use a specific plugin name and a public plugin module~~ · done in 0.6.0
 - [x] ~~**IMP-30** Richer package metadata and a tested pytest floor~~ · done in 0.4.0

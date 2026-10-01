@@ -8,6 +8,7 @@ documented examples are known to work at runtime too.
 from __future__ import annotations
 
 import enum
+import re
 from typing import Any, List
 
 import pytest
@@ -38,6 +39,7 @@ def module_api() -> None:
     checks.is_true(True, name="Alive")
     checks.contains("hello world", "world", name="Greeting")
     checks.matches("v1.2.3", r"^v\d+\.\d+\.\d+$", name="Version")
+    checks.matches("V1.2", re.compile(r"^v\d", re.IGNORECASE), name="Compiled")
     checks.length([1, 2, 3], 3, name="Items")
     checks.fail("not implemented")
 
@@ -116,6 +118,10 @@ def error_api(error: ChecksFailedError) -> AssertionError:
     return error
 
 
+def _by_name(text: str) -> CheckDescriptor:
+    return checks.contains(text, "x", name=text)
+
+
 def misuse() -> None:
     """Never called: each line must stay a type error."""
     checks.equal(1, 1)  # type: ignore[call-arg]
@@ -124,6 +130,9 @@ def misuse() -> None:
     checks.guard(branches=[(True, checks.is_true(True, name="T"))], name="G")  # type: ignore[list-item]
     checks.conditional(1, cases={1: 5}, name="C")  # type: ignore[dict-item]
     checks.record("not a check")  # type: ignore[arg-type]
+    checks.length(5, 1, name="Len")  # type: ignore[arg-type]
+    checks.contains(5, 1, name="In")  # type: ignore[arg-type]
+    checks.all_satisfy([1, 2], _by_name, name="Names")  # type: ignore[arg-type]
     from pytest_verifier import chekcs  # type: ignore[attr-defined]  # noqa: F401
     pytest_verifier.get_check_result  # type: ignore[attr-defined]  # noqa: B018
 

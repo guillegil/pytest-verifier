@@ -100,4 +100,4 @@ def test_a_hand_built_composite_with_an_empty_child_fails_as_in_evaluate():
     assert checks.evaluate(hand) is False
     record = verify.record(hand)
     assert record["passed"] is False
-    assert record["detail"] == "expected all 1 to pass, got 1 failed"
+    assert record["detail"] == "expected all 1 to pass, got 1 failed: [0] not a check"

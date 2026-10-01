@@ -26,7 +26,7 @@ import pytest
 
 from ._checks import CompositeType, lookup
 from ._descriptors import is_descriptor, loose_children
-from ._render import safe_str
+from ._render import render_text
 
 _PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
@@ -65,7 +65,7 @@ class Built(NamedTuple):
 
     @property
     def label(self) -> str:
-        return f"'{safe_str(self.name)}' ({safe_str(self.check_type)})"
+        return f"'{render_text(self.name)}' ({render_text(self.check_type)})"
 
 
 class Tracker:
@@ -212,7 +212,8 @@ def _call_site() -> Site:
     if frame is None:
         return Site("<unknown>", 0, None)
     module = frame.f_globals.get("__name__")
-    return Site(frame.f_code.co_filename, frame.f_lineno, module if isinstance(module, str) else None)
+    module_name = module if isinstance(module, str) else None
+    return Site(frame.f_code.co_filename, frame.f_lineno, module_name)
 
 
 def warn_unused(unused: List[Built]) -> None:

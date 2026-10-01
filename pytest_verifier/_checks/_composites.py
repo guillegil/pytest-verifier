@@ -21,7 +21,7 @@ from .._descriptors import (
     select_case,
     unwrap,
 )
-from .._render import describe_error, safe_repr, safe_str, snapshot
+from .._render import describe_error, escape, render_text, safe_repr, safe_str, snapshot
 from ._base import CompositeType, child_detail, judge, register
 
 
@@ -46,6 +46,21 @@ def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
             f"{where} returned {type(built).__name__}, not a check (did you forget `return`?)"
         )
     return built, None
+
+
+#: How many failing items an ``all_satisfy`` detail lists.
+_LISTED = 3
+
+#: How many case keys or branch labels a detail lists when nothing matched.
+_CONSIDERED = 5
+
+
+def _listing(texts: List[str]) -> str:
+    """``a, b, c`` with ``and N more`` past :data:`_CONSIDERED` entries."""
+    shown = ", ".join(texts[:_CONSIDERED])
+    if len(texts) <= _CONSIDERED:
+        return shown
+    return f"{shown} and {len(texts) - _CONSIDERED} more"
 
 
 def _unbuilt(child: Any) -> Any:
@@ -103,7 +118,8 @@ class AllSatisfy(CompositeType):
             "check_type": "all_satisfy",
             "name": name,
             "description": (
-                f"Verify all items in '{name}' satisfy condition ({len(child_checks)} items)"
+                f"Verify all items in '{escape(name)}' satisfy condition "
+                f"({len(child_checks)} items)"
             ),
             "child_checks": child_checks,
         }
@@ -128,8 +144,21 @@ class AllSatisfy(CompositeType):
         total = len(children)
         if passed:
             return f"all {total} items pass"
-        failed = sum(1 for child in children if judge(child)[0] is not True)
-        return f"expected all {total} to pass, got {failed} failed"
+        failing = [(i, child) for i, child in enumerate(children) if judge(child)[0] is not True]
+        summary = f"expected all {total} to pass, got {len(failing)} failed"
+        if not failing:
+            return summary
+        # Children made by one factory usually share a name; then the index says enough.
+        names = {safe_str(child.get("name")) for child in children if is_descriptor(child)}
+        listed = []
+        for index, child in failing[:_LISTED]:
+            if not is_descriptor(child):
+                listed.append(f"[{index}] not a check")
+                continue
+            label = f"{render_text(child.get('name', ''))}: " if len(names) > 1 else ""
+            listed.append(f"[{index}] {label}{child_detail(child, False)}")
+        more = f"; and {len(failing) - _LISTED} more" if len(failing) > _LISTED else ""
+        return f"{summary}: {'; '.join(listed)}{more}"
 
 
 class _Selecting(CompositeType):
@@ -188,11 +217,14 @@ class Conditional(_Selecting):
             normalized[matched], error = _resolve(normalized[matched], where)
         elif default is not None:
             default, error = _resolve(default, "default")
-        label = safe_str(switch_value)
+        label = render_text(switch_value)
+        if matched is None and label in {render_text(key) for key in normalized}:
+            # No case matched a value that reads like one of the keys: say what it is.
+            label = f"{label} ({type(switch_value).__name__})"
         desc: CheckDescriptor = {
             "check_type": "conditional",
             "name": name,
-            "description": f"Verify '{name}' [mode={label}]",
+            "description": f"Verify '{escape(name)}' [mode={label}]",
             "switch_value": snapshot(unwrap(switch_value)),
             "switch_label": label,
             "cases": {key: _unbuilt(child) for key, child in normalized.items()},
@@ -228,14 +260,18 @@ class Conditional(_Selecting):
         }
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        mode = f"mode={d.get('switch_label', safe_str(d.get('switch_value')))}"
+        mode = f"mode={render_text(d.get('switch_label', d.get('switch_value')))}"
         selected = self.selected(d)
         if selected is None:
-            return f"[{mode} → no match]"
+            keys = [render_text(key) for key in d.get("cases") or {}]
+            if not keys:
+                return f"[{mode} → no cases]"
+            return f"[{mode} → no case matched: {_listing(keys)}]"
         child = selected[1]
         if child is None:
             return f"[{mode} → no check]"
-        return f"[{mode} → {child.get('name', '')}] — {child_detail(child, passed)}"
+        name = render_text(child.get("name", ""))
+        return f"[{mode} → {name}] — {child_detail(child, passed)}"
 
 
 def _unpack_branch(branch: object, index: int) -> Tuple[object, Any, Any]:
@@ -316,7 +352,7 @@ class Guard(_Selecting):
         desc: CheckDescriptor = {
             "check_type": "guard",
             "name": name,
-            "description": f"Verify '{name}' [guarded]",
+            "description": f"Verify '{escape(name)}' [guarded]",
             "branches": normalized,
             "default": _unbuilt(default),
             "matched_index": matched_index,
@@ -357,9 +393,15 @@ class Guard(_Selecting):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         selected = self.selected(d)
+        if selected is None and d.get("error") is not None:
+            return "[→ no branch chosen]"  # a condition could not be decided; the error says which
         if selected is None:
-            return "[→ no match]"
+            labels = [render_text(branch.get("label")) for branch in d.get("branches") or []]
+            if not labels:
+                return "[→ no branches]"
+            return f"[→ no branch matched: {_listing(labels)}]"
         label, child = selected
+        label = render_text(label)
         if child is None:
             return f"[→ {label}]"
         return f"[→ {label}] — {child_detail(child, passed)}"

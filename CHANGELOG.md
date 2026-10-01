@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-01
+
+Makes failures easier to read: values show their type when it matters, long values say where
+they differ, composites say what failed inside them, and terminals that cannot show the
+summary's symbols still get one line per check. Ordering checks now refuse to compare text
+with text, which Python does letter by letter.
+
+### Added
+
+- `matches()` accepts a pattern compiled with `re.compile`. The check stores its source as `pattern` and its flags as `flags`, and shows them as `/^v\d/i`. Every `matches` check now has a `flags` key, an `int` (`0` for a string pattern).
+- The summary lists at most 10 passed checks, then `✓ … N more passed checks (-vv shows them)`. With `-vv` it lists all of them. Every check is still recorded and passed to other plugins. `ChecksFailedError` takes `max_passed` to set the limit.
+- A failed `equal` whose values look the same once shortened says where they first differ: `first difference at [25]: expected 3.3V, got 3.9V`, a missing or unexpected key, a different length, or a window of the text or digits around the first difference.
+- On a terminal whose encoding cannot show every character of a summary, such as a Windows CI log in cp1252, the summary is printed with `x` and `ok` in place of `✗` and `✓`, and any other character the terminal cannot show is escaped (`\u2014`), line by line. This works with pytest-xdist too. Only what the terminal prints changes: the error message, `report.longrepr`, junitxml and other reports keep the summary as it is. Before, pytest escaped each character it could not print, and wrote the "Soft assertion failures" section on one line with `\n` escapes.
+
+### Changed
+
+- `greater`, `greater_equal`, `less`, `less_equal` and `between` fail when the value and a limit are both text (`str`, `bytes` or `bytearray`), with an error saying to convert them with `float()`. Before, `"100" > "20"` was compared letter by letter and gave the wrong answer without any error. Text against a number already failed with Python's `TypeError`; that error now also says to convert with `float()`. Types that compare with text on their own terms, such as `semver.Version`, work as before.
+- Values that are not numbers are shown with a `repr`, so strings are quoted: `expected 1, got '1'`. Numbers keep their units (`3.3V`). Enum members show as `Mode.ACTIVE`, and numeric ones add their value: `Gain.LOW (10dB)`. When two values still look the same, `equal`, `not_equal`, the ordering checks and `between` add their types: `expected 0.1 (float), got 0.1 (Decimal)`. Descriptions follow the same rules, e.g. `Verify 'Reply' == 'OK'`.
+- `is_true` and `is_false` show the value and how it tests, e.g. `'0' (truthy)`, instead of `True` or `False`. The value's truth is read once, when the check is judged.
+- A failed `all_satisfy` lists its first three failing items by index, with their details: `got 2 failed: [1] expected [3.2V, 3.4V], got 3.55V; [3] …`. Item names are shown when they differ.
+- A `conditional` with no matching case and no default lists the keys it tried, `[mode=7 → no case matched: 0, 1, 2]`, and adds the switch value's type when it reads like one of them: `[mode=1.5 (str) → no case matched: 1.5, 2.5]`. A `guard` lists the branch labels it tried, `[→ no branch matched: shutter closed, below floor]`, or says `[→ no branch chosen]` when a condition raised.
+- With `units` ending in `%`, an `approx` tolerance says whether it is absolute or relative: `± 2% (abs)` or `± 2% (rel)`.
+- A NaN in a comparison adds a note: `(NaN never compares equal)` for `equal`, `not_equal` and `approx`, also for a NaN inside a list, and `(NaN fails every comparison)` for the ordering checks. Verdicts are unchanged.
+- Line breaks and other control characters in names, labels, messages, units and values are escaped (`\n`), so a value can no longer add lines to the summary. A value is shortened to about 240 characters, a unit label to 40 and a `fail()` message to 1000; a summary line cuts its detail at 2000.
+- Descriptions use the same bounded rendering, so `equal(big_list, big_list)` no longer stores a description as long as the list. A recorded `length` check keeps a preview of the value (at most 100 items, text cut at about 240 characters) instead of all of it; `actual_length` has the length.
+- Narrower parameter types for type checkers. `length()` takes a `Sized`, and `contains()` and `not_contains()` a container or iterable, so `mypy` rejects a number there, and also an `Optional` value: narrow it first, e.g. `assert names is not None`. In `all_satisfy()` the factory's argument has the type of the items, so IDEs complete it in a `lambda` and type checkers check the `lambda`'s body; for loosely typed items such as `Dict[str, object]` rows, use `typing.cast`.
+
 ## [0.6.0] - 2026-10-01
 
 Renames the project to pytest-verifier, because the name `pytest-verify` belongs to another
@@ -178,7 +205,8 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/guillegil/pytest_verify/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/guillegil/pytest_verify/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/guillegil/pytest_verify/compare/v0.3.1...v0.4.0

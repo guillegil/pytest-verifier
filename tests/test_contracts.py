@@ -14,6 +14,7 @@ A new check type fails ``test_every_check_type_has_examples`` until it gets exam
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal
 from typing import Any, Callable, List, NamedTuple, Optional
 
@@ -95,6 +96,7 @@ EXAMPLES = [
     Example("greater", "fail", lambda v: v.greater(1, 1, name="gt"), False),
     Example("greater", "none", lambda v: v.greater(None, 1, name="gt"), False, True),
     Example("greater", "hostile", lambda v: v.greater(Hostile(), 1, name="gt"), False, True),
+    Example("greater", "text", lambda v: v.greater("100", "20", name="gt"), False, True),
     Example("greater_equal", "pass", lambda v: v.greater_equal(1, 1, name="ge"), True),
     Example("greater_equal", "fail", lambda v: v.greater_equal(0.5, 1, name="ge"), False),
     Example("greater_equal", "hostile",
@@ -110,6 +112,7 @@ EXAMPLES = [
             lambda v: v.between(0.5, 0.1, 0.5, inclusive=False, name="bt"), False),
     Example("between", "nan", lambda v: v.between(float("nan"), 0, 1, name="bt"), False),
     Example("between", "hostile", lambda v: v.between(Hostile(), 0, 1, name="bt"), False, True),
+    Example("between", "text", lambda v: v.between("5", "1", "9", name="bt"), False, True),
     Example("true", "pass", lambda v: v.is_true([0], name="t"), True),
     Example("true", "fail", lambda v: v.is_true("", name="t"), False),
     Example("true", "hostile", lambda v: v.is_true(Hostile(), name="t"), False, True),
@@ -132,6 +135,8 @@ EXAMPLES = [
     Example("matches", "fail", lambda v: v.matches("abc", r"^\d+$", name="m"), False),
     Example("matches", "not a string", lambda v: v.matches(12, r"\d", name="m"), False, True),
     Example("matches", "huge", lambda v: v.matches("x" * 100_000, "y", name="m"), False),
+    Example("matches", "compiled",
+            lambda v: v.matches("V1", re.compile(r"v\d", re.IGNORECASE), name="m"), True),
     Example("is_instance", "pass", lambda v: v.is_instance({}, dict, name="i"), True),
     Example("is_instance", "fail", lambda v: v.is_instance(1, (str, bytes), name="i"), False),
     Example("is_instance", "hostile", lambda v: v.is_instance(Hostile(), Hostile, name="i"), True),
