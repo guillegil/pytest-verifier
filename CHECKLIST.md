@@ -64,6 +64,7 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
 - [x] ~~Independent review and fixes~~ (40 confirmed findings, each fixed with a test)
 - [x] ~~Second review of the fixes~~ (11 confirmed findings, each fixed with a test that fails without it)
+- [x] ~~Third review of the fixes~~ (13 confirmed findings, 11 distinct, each fixed with a test that fails without it)
 - [ ] Trial upload to TestPyPI (needs the pending publisher on test.pypi.org)
 - [ ] PR, CI green, merge, release v0.8.0 to PyPI and GitHub
 

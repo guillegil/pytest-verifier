@@ -299,12 +299,41 @@ class TestRecordedLocation:
                 helper(verify)
             """
         )
-        [record] = _records(pytester, "--rootdir=config")["test_outside"]
+        pytester.makepyfile(
+            test_made="""
+            def helper(verify):
+                verify.is_true(0, name="h")
+
+            def _factory():
+                def inner(verify):
+                    helper(verify)
+                return inner
+
+            test_factory = _factory()
+
+            def check_aliased(verify):
+                helper(verify)
+
+            test_alias = check_aliased
+            test_lambda = lambda verify: helper(verify)
+            """
+        )
+        found = _records(pytester, "--rootdir=config")
         test_file = str(pytester.path / "test_outside.py")
+        [record] = found["test_outside"]
         assert record["location"] == f"{test_file}:2"
         assert record["called_from"] == f"{test_file}:5"
+        made = str(pytester.path / "test_made.py")
+        callers = {name: records[0].get("called_from") for name, records in found.items()}
+        del callers["test_outside"]
+        assert callers == {
+            "test_factory": f"{made}:6",
+            "test_alias": f"{made}:12",
+            "test_lambda": f"{made}:15",
+        }
         result = pytester.runpytest("-p", "no:cacheprovider", "--rootdir=config", "--tb=line")
         result.stdout.fnmatch_lines(["*test_outside.py:5: 1 of 1 checks failed: h *"])
+        result.stdout.fnmatch_lines(["*test_made.py:6: 1 of 1 checks failed: h *"])
 
     def test_a_test_that_calls_a_function_of_the_same_name(
         self, pytester: pytest.Pytester
@@ -568,6 +597,35 @@ class TestCrashLine:
         result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line", "-rf")
         result.stdout.fnmatch_lines(["*test_deco.py:6: 1 of 2 checks failed: body *"])
         result.stdout.no_fnmatch_line("*/deco.py:*")
+
+    def test_a_decorator_from_the_module_of_the_helper(self, pytester: pytest.Pytester) -> None:
+        # The helper's line is in reportinfo()'s file, but the test's call is the line to show.
+        pytester.makepyfile(
+            support="""
+            import inspect
+
+            def on_bench(fn):
+                def wrapper(*args, **kwargs):
+                    return fn(*args, **kwargs)
+                wrapper.__signature__ = inspect.signature(fn)
+                return wrapper
+
+            def check_rail(verify, value):
+                return verify.between(value, 3.2, 3.4, name="rail", units="V")
+            """,
+            test_board="""
+            from support import check_rail, on_bench
+
+            @on_bench
+            def test_decorated(verify):
+                check_rail(verify, 3.3)
+                check_rail(verify, 3.9)
+            """,
+        )
+        pytester.syspathinsert()
+        result = pytester.runpytest("-p", "no:cacheprovider", "--tb=line")
+        result.stdout.fnmatch_lines(["*test_board.py:6: 1 of 2 checks failed: rail *"])
+        result.stdout.no_fnmatch_line("*/support.py:*")
 
     def test_a_fixture_check_keeps_the_def_line(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(

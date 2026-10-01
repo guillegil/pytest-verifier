@@ -184,7 +184,8 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
     The ``verify`` fixture raises it at the end of the phase in which the checks were recorded:
     after the test body for checks made in fixtures' setup and in the test, and after teardown
     for checks made while fixtures are torn down. A check made through ``verify.require``, or
-    any check with ``--verify-fail-fast`` outside fixture teardown, raises it as soon as it
+    any check with ``--verify-fail-fast`` (except in fixture teardown and in a unittest
+    ``TestCase``'s ``tearDown``, ``asyncTearDown`` and cleanups), raises it as soon as it
     fails. It is an
     ``AssertionError``, so ``pytest.raises(AssertionError)`` and
     ``xfail(raises=AssertionError)`` catch it. Rerun

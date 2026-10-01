@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, Dict, List
 
 import pytest
@@ -171,22 +172,9 @@ class TestRequire:
         )
         result.stdout.no_fnmatch_line("1 of 1 checks failed*")
 
-    def test_a_stop_inside_another_error_is_shown_once(self, pytester: pytest.Pytester) -> None:
-        pytester.makeconftest(
-            """
-            import pytest
-
-            @pytest.fixture
-            def required(verify):
-                yield
-                verify.require.equal(1, 2, name="Off")
-
-            @pytest.fixture
-            def broken():
-                yield
-                raise OSError("port stuck")
-            """
-        )
+    def test_a_stop_inside_another_error(self, pytester: pytest.Pytester) -> None:
+        # A skip gives way to the failure, which takes the stop's place in the skip's chain.
+        # Another error keeps its chain and gets the section, which names the stop too.
         pytester.makepyfile(
             """
             import pytest
@@ -209,32 +197,63 @@ class TestRequire:
                     verify.require.equal(1, 2, name="Req")
                 except ChecksFailedError as exc:
                     raise RuntimeError("could not connect") from exc
-
-            def test_teardown(broken, required):
-                pass
             """
         )
         result = _run(pytester)
-        result.assert_outcomes(failed=3, passed=1, errors=1)
+        result.assert_outcomes(failed=3)
+        headline = "1 of 1 checks failed, stopped at ?0?: Req — expected 2, got 1"
         result.stdout.fnmatch_lines(
             [
-                "*ERROR at teardown of test_teardown*",
                 "*_ test_skip _*",
                 "*hardware missing*",
-                "1 of 1 checks failed, stopped at ?0?: Req — expected 2, got 1",
+                headline,
                 "*_ test_cleanup_error _*",
                 "*OSError: port busy",
+                "*Soft assertion failures*",
+                headline,
                 "*_ test_wrapped _*",
                 "*RuntimeError: could not connect",
+                "*Soft assertion failures*",
+                headline,
             ]
         )
-        result.stdout.no_fnmatch_line("*Soft assertion failures*")
-        shown = [
-            line
-            for line in result.outlines
-            if "checks failed" in line and not line.startswith(("FAILED", "ERROR"))
-        ]
-        assert len(shown) == 4, result.outlines
+        # The skip's report shows the summary once.
+        skip_report = "\n".join(result.outlines).split("_ test_cleanup_error _")[0]
+        assert skip_report.count("checks failed") == 1, skip_report
+
+    def test_a_stop_in_an_exception_group(self, pytester: pytest.Pytester) -> None:
+        # pytest < 7.2 does not show a group's members, and newer ones show 15 at most: the
+        # section lists every check.
+        if sys.version_info < (3, 11):
+            pytest.importorskip("exceptiongroup")
+        pytester.makepyfile(
+            """
+            import sys
+
+            from pytest_verifier import ChecksFailedError
+
+            if sys.version_info < (3, 11):
+                from exceptiongroup import ExceptionGroup
+
+            def test_group(verify):
+                errors = []
+                for channel in range(20):
+                    try:
+                        verify.require.equal(channel, -1, name=f"ch{channel}")
+                    except ChecksFailedError as exc:
+                        errors.append(exc)
+                raise ExceptionGroup("channels failed", errors)
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(
+            [
+                "*Soft assertion failures*",
+                "20 of 20 checks failed, stopped at ?0?: ch0 — expected -1, got 0 (+19 more)",
+                "*✗ ?19? ch19 *",
+            ]
+        )
 
     def test_results_and_report_carry_the_checks_once(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
@@ -535,10 +554,17 @@ class TestRequire:
                     verify.conditional(
                         1, cases={1: verify.equal(1, 1, name="active"), 2: standby}, name="mode"
                     )
+
+            def test_selected_later(verify):
+                standby = verify.equal(0.0, 3.3, name="standby")
+                try:
+                    verify.require(standby)
+                finally:
+                    verify.conditional(2, cases={2: standby}, name="mode")
             """
         )
         result = _run(pytester)
-        result.assert_outcomes(failed=3)
+        result.assert_outcomes(failed=4)
         result.stdout.fnmatch_lines(
             [
                 "*_ test_raised _*",
@@ -547,6 +573,9 @@ class TestRequire:
                 "1 of 1 checks failed: standby — expected 3.3, got 0.0",
                 "*_ test_later _*",
                 "1 of 2 checks failed, stopped at ?0?: standby — expected 3.3, got 0.0",
+                "*_ test_selected_later _*",
+                # Counted on its own and in the composite that selected it.
+                "2 of 2 checks failed, stopped at ?0?: standby — expected 3.3, got 0.0 (+1 more)",
             ]
         )
         reported = (pytester.path / "results.jsonl").read_text(encoding="utf-8").splitlines()
@@ -554,6 +583,7 @@ class TestRequire:
             ["test_raised", ["standby"], False],
             ["test_swallowed", ["standby"], False],
             ["test_later", ["standby", "mode"], False],
+            ["test_selected_later", ["standby", "mode"], False],
         ]
 
     def test_a_stop_lists_at_most_ten_passed_checks(self, pytester: pytest.Pytester) -> None:
@@ -680,6 +710,47 @@ class TestRequire:
         result.stdout.fnmatch_lines(["2 of 3 checks failed, stopped at ?1?: Req * (+1 more)"])
         assert sum(line.startswith("2 of 3 checks failed") for line in result.outlines) == 1
         _never(result)
+
+    def test_a_testcase_stop_after_a_skip_or_an_error(self, pytester: pytest.Pytester) -> None:
+        # tearDown's stop is reported once, in the call phase, and still named.
+        pytester.makepyfile(
+            """
+            import unittest
+
+            import pytest
+
+            class Base(unittest.TestCase):
+                @pytest.fixture(autouse=True)
+                def _verify(self, verify):
+                    self.verify = verify
+
+                def tearDown(self):
+                    self.verify.require.equal(3, 4, name="Off")
+
+            class TestSkip(Base):
+                def test_it(self):
+                    self.verify.equal(1, 1, name="Fine")
+                    self.skipTest("no hardware")
+
+            class TestError(Base):
+                def test_it(self):
+                    self.verify.equal(1, 1, name="Fine")
+                    raise OSError("port busy")
+            """
+        )
+        result = _run(pytester)
+        result.assert_outcomes(failed=2)
+        result.stdout.fnmatch_lines(
+            [
+                "*_ TestSkip.test_it _*",
+                "1 of 2 checks failed, stopped at ?1?: Off — expected 4, got 3",
+                "*_ TestError.test_it _*",
+                "*OSError: port busy",
+                "*Soft assertion failures*",
+                "1 of 2 checks failed, stopped at ?1?: Off — expected 4, got 3",
+            ]
+        )
+        result.stdout.no_fnmatch_line("*at teardown*")
 
     def test_pdb_opens_in_the_test(self, pytester: pytest.Pytester) -> None:
         # pytest's debugger starts at the last frame whose locals have no true
@@ -980,19 +1051,97 @@ class TestFailFast:
 
                 def test_it(self):
                     pass
+
+            VERIFY = []
+
+            class TestOddTearDowns(Base, unittest.TestCase):
+                @pytest.fixture(autouse=True)
+                def _keep(self, verify):
+                    VERIFY[:] = [verify]
+
+                @property
+                def tearDown(self):
+                    return self._tear_down
+
+                def _tear_down(self):
+                    self.verify.equal(1, 2, name="property")
+                    open("property.txt", "w").close()
+
+                def test_it(self):
+                    pass
+
+            class TestStaticTearDown(TestOddTearDowns):
+                @staticmethod
+                def tearDown():
+                    VERIFY[0].equal(1, 2, name="static")
+                    open("static.txt", "w").close()
             """
         )
         result = _run(pytester, "--verify-fail-fast")
-        result.assert_outcomes(failed=3)
+        result.assert_outcomes(failed=5)
         result.stdout.fnmatch_lines(
             [
                 "2 of 3 checks failed: off — expected 2, got 1 (+1 more)",
                 "1 of 2 checks failed: async off — expected 2, got 1",
                 "1 of 1 checks failed, stopped at ?0?: must be off *",
+                "1 of 1 checks failed: property — expected 2, got 1",
+                "1 of 1 checks failed: static — expected 2, got 1",
             ]
         )
         made = {path.name for path in pytester.path.iterdir() if path.suffix == ".txt"}
-        assert made == {"disconnected.txt", "off.txt", "async-off.txt"}
+        assert made == {
+            "disconnected.txt", "off.txt", "async-off.txt", "property.txt", "static.txt"
+        }
+
+    def test_a_testcase_that_cleans_up_itself_stays_strict(
+        self, pytester: pytest.Pytester
+    ) -> None:
+        # Only while unittest cleans up: the test body may call doCleanups() or tearDown().
+        pytester.makepyfile(
+            """
+            import unittest
+
+            import pytest
+
+            class TestEarlyCleanup(unittest.TestCase):
+                @pytest.fixture(autouse=True)
+                def _verify(self, verify):
+                    self.verify = verify
+
+                def test_it(self):
+                    self.addCleanup(lambda: None)
+                    self.doCleanups()
+                    self.tearDown()
+                    self.verify.equal(1, 2, name="first")
+                    open("went-on.txt", "w").close()
+            """
+        )
+        result = _run(pytester, "--verify-fail-fast")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["1 of 1 checks failed, stopped at ?0?: first *"])
+        assert not (pytester.path / "went-on.txt").exists()
+
+    def test_a_testcase_is_freed_after_its_test(self, pytester: pytest.Pytester) -> None:
+        pytester.makepyfile(
+            """
+            import gc
+            import unittest
+            import weakref
+
+            gc.disable()
+            INSTANCES = []
+
+            class TestFreed(unittest.TestCase):
+                def test_1(self):
+                    INSTANCES.append(weakref.ref(self))
+
+                def test_2(self):
+                    assert INSTANCES[0]() is None
+            """
+        )
+        if _run(pytester, "-p", "no:randomly").ret != 0:
+            pytest.skip("this pytest keeps TestCase instances alive itself")
+        _run(pytester, "--verify-fail-fast", "-p", "no:randomly").assert_outcomes(passed=2)
 
 
 class TestFirstLine:

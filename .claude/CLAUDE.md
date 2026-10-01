@@ -36,7 +36,7 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 ## Core Principles
 
 - **verify fixture is the primary API.** It evaluates checks immediately, records results, returns descriptor dicts, and raises `ChecksFailedError` once the phase that recorded a failed check ends (after the test body; after teardown for checks made in teardown). No imports needed — it's a pytest fixture.
-- **`verify.require` is the one exception to soft.** A `Require` (a `Verify` subclass, also callable with a check) whose failed checks stop the test at once; `--verify-fail-fast`/`verify_fail_fast` makes every check behave so, except in teardown and a unittest `TestCase`'s `tearDown`/`asyncTearDown`/cleanups (`run.cleaning`). `Run.stop()` raises without judging, so the phase end still judges (a swallowed stop still fails the test) and keeps the stop error (if it lists the same records) instead of adding a duplicate section; an error that replaces it gets its traceback and takes its place in the chain, and a stop linked to the phase's error (its chain, exception-group members) counts too. A stop error is marked `stops_test`; composites re-raise it instead of treating it as an error of a lazy child, condition or factory. A check that stopped the test is never absorbed by a composite.
+- **`verify.require` is the one exception to soft.** A `Require` (a `Verify` subclass, also callable with a check) whose failed checks stop the test at once; `--verify-fail-fast`/`verify_fail_fast` makes every check behave so, except in teardown and while a unittest `TestCase`'s `_callTearDown`/`doCleanups` run (`run.cleaning`; the instance wrappers are removed when the call phase ends). `Run.stop()` raises without judging, so the phase end still judges (a swallowed stop still fails the test) and keeps the stop error (if it lists the same records) instead of adding a duplicate section; an error that replaces it (or a skip chained to it) gets its traceback and takes its place in the chain; another error chained to a stop keeps its chain and gets the section, with "stopped at". A stop error is marked `stops_test`; composites re-raise it instead of treating it as an error of a lazy child, condition or factory. A check that stopped the test is never absorbed by a composite.
 - **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and still unused when the test's teardown ends gives an `UnusedCheckWarning` (`_unused.py`; tracking pauses in fixtures, setup, teardown, unittest tests and nested sessions, and keeps only labels, never the checks). `pytest_verifier.verify` is a deprecated alias of `checks`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
@@ -125,7 +125,8 @@ class CheckDescriptor(TypedDict, total=False):
    - Record a copy with `passed`, `detail`, `phase`, `location` (first frame outside the
      package; `called_from` when that is not the test function and the test function is on the
      stack, unless the frame found is installed or outside code that runs the test, such as
-     pytest-bdd's generated test) and JSON-safe snapshots of the values
+     pytest-bdd's generated test, not code in the test module) and JSON-safe snapshots of the
+     values
    - With `verify.require` or fail-fast (not in teardown or `TestCase` cleanup), a failed check raises
      `ChecksFailedError` right there; `verify.require(check)` on a failed check that is not
      pending at the top level (absorbed, or judged earlier) records a copy first. Frames of
@@ -145,8 +146,8 @@ class CheckDescriptor(TypedDict, total=False):
    - If the phase already raised, keep that error and add the summary to its report as a
      "Soft assertion failures" section (a skip, including `unittest.SkipTest`, never hides a
      failed check). A unittest `TestCase` records its failures and skips in `item._excinfo`
-     instead of raising them, so the call phase reads that list too, and drops the later stop
-     errors in it (the call summary lists their checks)
+     instead of raising them, so the call phase reads that list too, and takes the later stop
+     errors out of it (the call summary lists their checks and names the stop)
    - `ChecksFailedError` message format: a first line `N of M checks failed: <first failure>
      (+k more)`, or `N of M checks failed, stopped at [k]: <stopping check> …` after a stop,
      then failed checks (with their location) before passed, with `[seq]` indices (their index

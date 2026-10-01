@@ -32,8 +32,9 @@ failed.
   phase judged is recorded again, so the error names it, and a composite never takes the check
   that stopped the test. The checks stay recorded, so a test that catches the error still fails
   at the end of the phase. `--pdb` opens in the test, at the failed check, also when checks are
-  made after it. When another error is raised while the stop unwinds (in a `finally`), the
-  summary is shown once. The methods of `checks.require`, and calling it, raise `RuntimeError`.
+  made after it. A skip in a `finally` after a stop does not hide it, and the summary keeps
+  "stopped at"; so does the "Soft assertion failures" section of another error raised there.
+  The methods of `checks.require`, and calling it, raise `RuntimeError`.
 - `pytest_verifier.Require`, the type of `verify.require`, for annotating helpers.
 - `--verify-fail-fast` and the `verify_fail_fast` ini setting stop each test at its first
   failed check. Checks made while fixtures are torn down, or in a unittest `TestCase`'s

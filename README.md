@@ -354,6 +354,9 @@ so it should not depend on values that only its own branch can use. A child that
 just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
+A check that stopped the test (see [Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check))
+always stays on its own as well, so the summary can name it and a test that catches the error
+still fails; a composite made afterwards that selects it counts it once more.
 A composite built with `checks` (see [Building checks without the fixture](https://github.com/guillegil/pytest_verify#building-checks-without-the-fixture))
 is never recorded, so fixture checks passed to it stay separate checks.
 
