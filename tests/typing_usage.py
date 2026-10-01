@@ -8,11 +8,11 @@ documented examples are known to work at runtime too.
 from __future__ import annotations
 
 import enum
-import warnings
 from typing import Any, List
 
 import pytest
 
+import pytest_verifier
 from pytest_verifier import (
     CheckDescriptor,
     ChecksFailedError,
@@ -101,7 +101,7 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     result = fixture.equal(200, 200, name="Status")
     passed: bool | None = result.get("passed")
     assert passed is True
-    # A check built by a helper with the module-level verify can be recorded too.
+    # A check built by a helper with pytest_verifier.checks can be recorded too.
     helper = fixture.record(checks.greater(5, 1, name="Helper"))
     assert helper.get("passed") is True
     recorded: List[CheckDescriptor] = get_check_results(request.node)
@@ -124,12 +124,12 @@ def misuse() -> None:
     checks.guard(branches=[(True, checks.is_true(True, name="T"))], name="G")  # type: ignore[list-item]
     checks.conditional(1, cases={1: 5}, name="C")  # type: ignore[dict-item]
     checks.record("not a check")  # type: ignore[arg-type]
+    from pytest_verifier import chekcs  # type: ignore[attr-defined]  # noqa: F401
+    pytest_verifier.get_check_result  # type: ignore[attr-defined]  # noqa: B018
 
 
-def legacy_api() -> CheckDescriptor:
-    """The 0.5 import path keeps its types; it only adds a DeprecationWarning at runtime."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        from pytest_verify import verify as legacy
+def deprecated_alias() -> CheckDescriptor:
+    """``pytest_verifier.verify`` keeps the types of ``checks``; it warns at runtime."""
+    from pytest_verifier import verify as alias
 
-    return legacy.equal(1, 1, name="legacy")
+    return alias.equal(1, 1, name="alias")

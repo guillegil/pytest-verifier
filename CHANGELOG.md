@@ -11,29 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Renames the project to pytest-verifier, because the name `pytest-verify` belongs to another
 plugin on PyPI that also ships a `pytest_verify` package. Tests that only use the `verify`
-fixture need no change, and the old imports keep working with a `DeprecationWarning`. See
+fixture need no change; imports and options that name `pytest_verify` must be updated. See
 "Upgrading from pytest-verify" in the README.
 
 ### Added
 
-- `UnusedCheckWarning`, a `PytestWarning` shown when the body of a test builds a check with `checks.*` and never records it, evaluates it or passes it to a composite. Such a check cannot fail the test, which is what happened when a test imported the builder instead of requesting the `verify` fixture. The warning points at the line that built the first such check. Checks built in fixtures or at import time are not tracked. Filter it with `ignore::pytest_verifier.UnusedCheckWarning` where building checks without using them is intended.
+- `UnusedCheckWarning`, a `PytestWarning` shown when the body of a test builds a check with `checks.*` and, by the end of the test's teardown, has not recorded it, evaluated it or passed it to a composite. Such a check cannot fail the test, which is what happened when a test imported the builder instead of requesting the `verify` fixture. The warning names where each check was built and points at the line that built the first one. Checks built in fixtures (including ones the body requests with `request.getfixturevalue()`), at import time, during setup and teardown, and in unittest `TestCase`s are not tracked, and neither is a session that `pytester` runs inside a test. Filter it with `ignore::pytest_verifier.UnusedCheckWarning`, optionally for one module, where building checks without using them is intended.
 - `-p pytest_verifier` loads the plugin when plugin autoloading is disabled, and `-p no:pytest_verifier` turns it off.
 
 ### Changed
 
-- The distribution is now `pytest-verifier` and the import package `pytest_verifier`. Uninstall `pytest-verify` before installing it.
+- The distribution is now `pytest-verifier` and the import package `pytest_verifier`. Uninstall `pytest-verify` before installing it: pytest cannot load both, and stops with a message that says what to uninstall.
 - The module-level builder is now `checks` (`from pytest_verifier import checks`), so it cannot be confused with the `verify` fixture. `pytest_verifier.verify` still works and shows a `DeprecationWarning`.
-- The plugin module is public: `pytest_verifier.plugin`, loaded through an entry point named `pytest_verifier`. A conftest can list `pytest_plugins = ["pytest_verifier"]` (or `"pytest_verifier.plugin"`) even when autoloading is on; with 0.5, listing the plugin module there crashed pytest at startup with "Plugin already registered under a different name".
+- The plugin module is public: `pytest_verifier.plugin`, loaded through an entry point named `pytest_verifier`. A conftest can list `pytest_plugins = ["pytest_verifier"]` even when autoloading is on; with 0.5, listing the plugin module there crashed pytest at startup with "Plugin already registered under a different name".
 - `ChecksFailedError` reports its module as `pytest_verifier`.
 - Unchanged on purpose: the `verify` fixture, the `pytest_verify_results` hook and `report.verify_checks` keep their names, so pytest-reporter and other readers keep working.
 
 ### Deprecated
 
-- The `pytest_verify` package. It forwards every public name to `pytest_verifier` (`verify` being `checks`) and shows a `DeprecationWarning` at the line that imports it. `pytest_verify._fixture` loads the new plugin, so a conftest that lists it, or an entry point left behind by an old installation, still works. It will be removed in a future release.
 - `pytest_verifier.verify`, an alias of `checks`.
 
 ### Removed
 
+- The `pytest_verify` import package, with every name it had, including `pytest_verify._fixture`. Import from `pytest_verifier` instead, and list `pytest_verifier` in a conftest's `pytest_plugins`; the old name belongs to the other project.
 - The `verify` entry point name: `-p no:verify` no longer turns the plugin off; use `-p no:pytest_verifier`.
 
 ## [0.5.0] - 2026-10-01

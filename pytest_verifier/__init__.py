@@ -12,11 +12,15 @@ Building checks without recording them (secondary API)::
 
     desc = checks.approx(3.28, 3.3, abs_tol=0.05, name="Vout", units="V")
     assert checks.evaluate(desc)
+
+PYTEST_DONT_REWRITE: the package has no asserts to rewrite, and a conftest may list it in
+``pytest_plugins`` after a ``filterwarnings`` entry has imported it.
 """
 from __future__ import annotations
 
+import sys
 import warnings
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -44,17 +48,25 @@ __all__ = [
 checks: Verify = Verify()
 
 
-def __getattr__(name: str) -> Any:
-    if name == "verify":
-        warnings.warn(
-            "pytest_verifier.verify is deprecated: the builder is now called 'checks' "
-            "(from pytest_verifier import checks), so it cannot be confused with the 'verify' "
-            "fixture.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return checks
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+if TYPE_CHECKING:
+    #: Deprecated alias of :data:`checks`.
+    verify: Verify = checks
+else:
+
+    def __getattr__(name: str) -> Any:
+        if name == "verify":
+            if sys._getframe(1).f_code.co_name == "_handle_fromlist":
+                # ``from pytest_verifier import verify`` looks the name up twice; warn once.
+                return checks
+            warnings.warn(
+                "pytest_verifier.verify is deprecated: the builder is now called 'checks' "
+                "(from pytest_verifier import checks), so it cannot be confused with the "
+                "'verify' fixture.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            return checks
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_check_results(item: pytest.Item) -> list[CheckDescriptor]:

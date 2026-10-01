@@ -300,15 +300,21 @@ Pass several checks as separate arguments: `checks.evaluate(*descriptors)`. Each
 `evaluate_detailed` also has an `error` key when its check could not be evaluated.
 
 A check built with `checks` cannot fail a test by itself. If the body of a test builds one and
-never records it, evaluates it or passes it to a composite, pytest shows an
-`UnusedCheckWarning` that points at the line that built it. Checks built in fixtures or at import
-time are not tracked, so a fixture can prepare checks for later tests. Where building checks
-without using them is intended, filter the warning:
+it is not recorded, evaluated or passed to a composite by the end of the test's teardown, pytest
+shows an `UnusedCheckWarning` that points at the line that built it. A fixture can therefore
+collect checks from the test and record them when it is torn down. Checks built in fixtures, at
+import time or in a unittest `TestCase` are not tracked, so a fixture can prepare checks for
+later tests. Where building checks without using them is intended, filter the warning, for the
+whole project or for one module:
 
 ```toml
 [tool.pytest.ini_options]
 filterwarnings = ["ignore::pytest_verifier.UnusedCheckWarning"]
+# or only in tests/test_limits.py:
+# filterwarnings = ["ignore::pytest_verifier.UnusedCheckWarning:tests.test_limits"]
 ```
+
+With `-W error::pytest_verifier.UnusedCheckWarning`, the warning fails the test's teardown.
 
 A descriptor sent through JSON loses Python types: tuples become lists and dict keys become
 strings. `equal((1, 2), [1, 2])` fails, but the same descriptor passes after a JSON round-trip.
@@ -373,20 +379,29 @@ so they also reach the main process under pytest-xdist.
 ## Upgrading from pytest-verify
 
 Version 0.6.0 renamed the project, because another plugin on PyPI already uses the name
-`pytest-verify`. Tests that only use the `verify` fixture need no change. The hook
-`pytest_verify_results` and `report.verify_checks` keep their names too.
+`pytest-verify` and its `pytest_verify` package. Tests that only use the `verify` fixture need
+no change. The hook `pytest_verify_results` and `report.verify_checks` keep their names too.
+
+First uninstall the old distribution, then install the new one:
+
+```bash
+pip uninstall pytest-verify
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.6.0"
+```
+
+If pytest-verify is still installed, for example after `pip install -U` from the same git URL,
+pytest stops with a message that says so, because the two cannot be loaded together. Then update the imports and options that use the old name:
 
 | 0.5 | 0.6 |
 |-----|-----|
-| Distribution `pytest-verify` | `pytest-verifier`; run `pip uninstall pytest-verify` before installing it |
 | `from pytest_verify import verify` | `from pytest_verifier import checks` |
 | `from pytest_verify import get_check_results` (and the other names) | `from pytest_verifier import get_check_results` |
 | `-p pytest_verify._fixture`, `pytest_plugins = ["pytest_verify._fixture"]` | `-p pytest_verifier`, `pytest_plugins = ["pytest_verifier"]` |
+| `from pytest_verify._fixture import verify` in a conftest | `pytest_plugins = ["pytest_verifier"]` |
 | `-p no:verify` | `-p no:pytest_verifier` |
 
-The old imports keep working for now: `pytest_verify` forwards to `pytest_verifier` and shows a
-`DeprecationWarning` where it is imported, and so does `pytest_verifier.verify`. Both will be
-removed in a future release.
+`pytest_verifier.verify` still works as an alias of `checks` and shows a `DeprecationWarning`.
+It will be removed in a future release.
 
 ## Development
 

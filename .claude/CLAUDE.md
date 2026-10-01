@@ -36,7 +36,7 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 ## Core Principles
 
 - **verify fixture is the primary API.** It evaluates checks immediately, records results, returns descriptor dicts, and raises `ChecksFailedError` once the phase that recorded a failed check ends (after the test body; after teardown for checks made in teardown). No imports needed — it's a pytest fixture.
-- **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and never used gives an `UnusedCheckWarning` (`_unused.py`). `pytest_verifier.verify` is a deprecated alias of `checks`.
+- **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and still unused when the test's teardown ends gives an `UnusedCheckWarning` (`_unused.py`; tracking pauses in fixtures, setup, teardown, unittest tests and nested sessions, and keeps only labels, never the checks). `pytest_verifier.verify` is a deprecated alias of `checks`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
 - **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verifier.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
@@ -71,9 +71,6 @@ pytest_verifier/
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
 └── _exceptions.py           # ChecksFailedError, failure summary rendering
-
-pytest_verify/               # Deprecated 0.5 names: forwards to pytest_verifier with a
-                             #   DeprecationWarning; _fixture.py loads the new plugin
 ```
 
 The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
@@ -267,7 +264,8 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 
 ## File Boundaries
 
-- Safe to edit: `pytest_verifier/`, `pytest_verify/`, `tests/`
+- Safe to edit: `pytest_verifier/`, `tests/`
+- Never ship a `pytest_verify` package: that import name belongs to another project on PyPI
 - Never touch: `venv/`, `__pycache__/`, `.pytest_cache/`, `dist/`, `*.egg-info/`
 
 ## Testing Strategy

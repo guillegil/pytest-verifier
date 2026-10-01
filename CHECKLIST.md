@@ -21,15 +21,15 @@ Every release follows the same steps, written down before any code changes:
 
 ### 0.6.0 Rename to pytest-verifier
 
-- [ ] Rename the import package to `pytest_verifier` and the distribution to `pytest-verifier` (DX-1)
-- [ ] Public plugin module `pytest_verifier.plugin`, entry point named `pytest_verifier` (IMP-29)
-- [ ] Builder exported as `checks`; `verify` kept as a deprecated alias (ARCH-9)
-- [ ] `pytest_verify` compatibility package that warns and forwards, old entry point included
-- [ ] Warn about checks built with `checks.*` in a test and never used (IMP-7)
-- [ ] Tests: plugin loading (autoload, `-p`, `-p no:`, conftest), deprecation warnings, unused-check warning
-- [ ] Release workflow titles, README with a migration section, CHANGELOG, CLAUDE.md
-- [ ] Full test matrix, mypy, build, fuzz and performance scripts
-- [ ] Independent review and fixes
+- [x] ~~Rename the import package to `pytest_verifier` and the distribution to `pytest-verifier` (DX-1)~~
+- [x] ~~Public plugin module `pytest_verifier.plugin`, entry point named `pytest_verifier` (IMP-29)~~
+- [x] ~~Builder exported as `checks`; `verify` kept as a deprecated alias (ARCH-9)~~
+- [x] ~~`pytest_verify` compatibility package~~ dropped after review: the name belongs to another PyPI project; a leftover 0.5 install now stops pytest with a message instead
+- [x] ~~Warn about checks built with `checks.*` in a test and never used (IMP-7)~~
+- [x] ~~Tests: plugin loading (autoload, `-p`, `-p no:`, conftest), deprecation warnings, unused-check warning~~
+- [x] ~~Release workflow titles, README with a migration section, CHANGELOG, CLAUDE.md~~
+- [x] ~~Full test matrix, mypy, build, fuzz and performance scripts~~
+- [x] ~~Independent review and fixes~~
 - [ ] PR, CI green, merge, release v0.6.0
 
 ### 0.7.0 Clear failures
@@ -120,7 +120,7 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~**IMP-4** Validate composite children and `name`~~ · done in 0.4.0
 - [x] ~~**IMP-5** Helpful errors for `evaluate(list)`~~ · done in 0.4.0
 - [x] ~~**IMP-6** Make `evaluate()` and `evaluate_detailed()` total~~ · done in 0.4.0
-- [ ] **IMP-7** Warn when the module-level `verify` is used inside a test by mistake · 0.6.0
+- [x] ~~**IMP-7** Warn when the module-level `verify` is used inside a test by mistake~~ · done in 0.6.0
 - [x] ~~**IMP-8** Detect use of a stale or forked fixture~~ · done in 0.4.0
 - [ ] **IMP-9** Show types when values look the same · 0.7.0
 - [ ] **IMP-10** Show the actual value for `is_true` and `is_false` · 0.7.0
@@ -142,7 +142,7 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~**IMP-26** Required keys in `CheckDescriptor`~~ · done in 0.5.0
 - [ ] **IMP-27** Narrower parameter types where calls always fail · 0.7.0
 - [x] ~~**IMP-28** Remove or use `_types.py`~~ · done in 0.4.0
-- [ ] **IMP-29** Use a specific plugin name and a public plugin module · 0.6.0
+- [x] ~~**IMP-29** Use a specific plugin name and a public plugin module~~ · done in 0.6.0
 - [x] ~~**IMP-30** Richer package metadata and a tested pytest floor~~ · done in 0.4.0
 - [x] ~~**IMP-31** Faster composite recording~~ · done in 0.4.0
 - [x] ~~**IMP-32** Test the contracts the bugs slipped through~~ · done in 0.4.0 (regression, thread, typing and sdist tests) and 0.5.0 (contract harness)
@@ -157,7 +157,7 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~**ARCH-6** Let pytest-reporter read results without importing pytest-verify~~ · done in 0.5.0
 - [x] ~~**ARCH-7** One thread-safe run object per attempt~~ · done in 0.4.0
 - [x] ~~**ARCH-8** One `Verify` front-end with a pluggable sink~~ · done in 0.5.0
-- [ ] **ARCH-9** Rename the module-level builder · 0.6.0
+- [x] ~~**ARCH-9** Rename the module-level builder~~ · done in 0.6.0
 - [x] ~~**ARCH-10** A contract test harness driven by the registry~~ · done in 0.5.0
 
 ## Ideas: features
@@ -181,7 +181,7 @@ Not implemented until we discuss them.
 
 Not implemented until we discuss them.
 
-- [ ] **DX-1** Rename before publishing to PyPI · 0.6.0 (`pytest-verifier`, chosen by the user)
+- [x] ~~**DX-1** Rename before publishing to PyPI~~ · done in 0.6.0 (`pytest-verifier`, chosen by the user)
 - [ ] **DX-2** Tag-driven release workflow with Trusted Publishing · idea, discuss
 - [ ] **DX-3** Turn CI into a quality-gate matrix · idea, discuss
 - [ ] **DX-4** Typing contract tests · idea, discuss

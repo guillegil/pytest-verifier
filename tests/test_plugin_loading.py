@@ -1,12 +1,10 @@
-"""How pytest finds the plugin, and the deprecated ``pytest_verify`` names that still work.
+"""How pytest finds the plugin, the deprecated ``pytest_verifier.verify`` alias, and what
+happens next to an old pytest-verify installation.
 
 The loading tests run pytest in a subprocess, so that entry points are discovered as in a real
 session.
 """
 from __future__ import annotations
-
-import sys
-import warnings
 
 import pytest
 
@@ -101,61 +99,84 @@ def test_unknown_attributes_still_raise() -> None:
         pytest_verifier.nope  # noqa: B018
 
 
-def test_the_old_package_warns_where_it_is_imported() -> None:
-    sys.modules.pop("pytest_verify", None)
-    with pytest.warns(DeprecationWarning, match="renamed to pytest_verifier") as record:
-        import pytest_verify
-    assert record[0].filename == __file__
-    assert pytest_verify.verify is pytest_verifier.checks
-    for name in ("CheckDescriptor", "ChecksFailedError", "GuardBranch", "Verify"):
-        assert getattr(pytest_verify, name) is getattr(pytest_verifier, name)
-    assert pytest_verify.get_check_results is pytest_verifier.get_check_results
+def test_from_import_of_the_alias_warns_once() -> None:
+    with pytest.warns(DeprecationWarning) as record:
+        from pytest_verifier import verify  # noqa: F401
+    assert len(record) == 1
 
 
-def test_the_old_import_keeps_working_in_a_test_suite(pytester: pytest.Pytester) -> None:
-    """A 0.5 test module runs unchanged and is told, at its import line, what to change."""
-    pytester.makepyfile("""
-        from pytest_verify import verify as old_builder
-
-        def test_a(verify):
-            verify.record(old_builder.equal(1, 2, name="legacy"))
-    """)
-    result = _run(pytester)
-    result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines([
-        "*1 of 1 checks failed*",
-        "*test_the_old_import_keeps_working_in_a_test_suite.py:1: DeprecationWarning: "
-        "pytest_verify was renamed to pytest_verifier*",
-    ])
-
-
-def test_the_old_plugin_module_in_a_conftest_keeps_working(pytester: pytest.Pytester) -> None:
-    pytester.makeconftest('pytest_plugins = ["pytest_verify._fixture"]\n')
-    pytester.makepyfile(_FAILING_TEST)
-    result = _run(pytester)
-    result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(
-        ["*1 of 1 checks failed*", "*DeprecationWarning: pytest_verify was renamed*"]
-    )
-
-
-def test_a_leftover_pytest_verify_installation_is_reported(pytester: pytest.Pytester) -> None:
-    """Installing pytest-verifier over pytest-verify 0.5 leaves the old ``verify`` entry point,
-    which now loads the compatibility module; the session says how to clean up."""
+def _old_installation(pytester: pytest.Pytester) -> None:
+    """What pytest-verify 0.5 installs: its entry point, its hook spec and its plugin module."""
     info = pytester.mkdir("pytest_verify-0.5.0.dist-info")
     (info / "METADATA").write_text("Metadata-Version: 2.1\nName: pytest-verify\nVersion: 0.5.0\n")
     (info / "entry_points.txt").write_text("[pytest11]\nverify = pytest_verify._fixture\n")
+    package = pytester.mkpydir("pytest_verify")
+    (package / "_hookspecs.py").write_text(
+        "import pytest\n\n"
+        "@pytest.hookspec\n"
+        "def pytest_verify_results(item, when, checks, passed):\n"
+        "    pass\n"
+    )
+    (package / "_fixture.py").write_text(
+        "def pytest_addhooks(pluginmanager):\n"
+        "    from pytest_verify import _hookspecs\n"
+        "    pluginmanager.add_hookspecs(_hookspecs)\n"
+    )
+
+
+def test_an_old_installation_is_a_usage_error(pytester: pytest.Pytester) -> None:
+    """Both plugins register the same hook; the session says what to uninstall."""
+    _old_installation(pytester)
     pytester.makepyfile(_FAILING_TEST)
     result = _run(pytester)
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines(["*pytest-verify, the previous name of pytest-verifier, is still*"])
+
+
+def test_an_old_installation_is_detected_whichever_plugin_loads_first(
+    pytester: pytest.Pytester,
+) -> None:
+    from pytest_verifier import plugin
+
+    _old_installation(pytester)
+    manager = pytest.PytestPluginManager()
+    with pytest.MonkeyPatch.context() as patch:
+        patch.syspath_prepend(str(pytester.path))
+        assert plugin._old_plugin_will_load(manager)
+        manager.set_blocked("verify")
+        assert not plugin._old_plugin_will_load(manager)
+
+
+def test_an_old_installation_that_is_not_loaded_is_fine(pytester: pytest.Pytester) -> None:
+    _old_installation(pytester)
+    pytester.makepyfile(_FAILING_TEST)
+    result = _run(pytester, "-p", "no:verify")
     result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines([
-        "*1 of 1 checks failed*",
-        "*PytestConfigWarning: pytest-verify 0.5 is still installed next to pytest-verifier*",
-    ])
 
 
-def test_the_old_plugin_module_loads_the_new_plugin() -> None:
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        from pytest_verify import _fixture
-    assert _fixture.pytest_plugins == ["pytest_verifier.plugin"]
+def test_a_conftest_listing_the_package_after_a_filter_imported_it(
+    pytester: pytest.Pytester, no_autoload: None
+) -> None:
+    """The documented filter imports the package before conftests load; listing it then must
+    not warn that it cannot be rewritten."""
+    pytester.makeini("""
+        [pytest]
+        filterwarnings =
+            error
+            ignore::pytest_verifier.UnusedCheckWarning
+    """)
+    pytester.makeconftest('pytest_plugins = ["pytest_verifier"]\n')
+    pytester.makepyfile("def test_a(verify):\n    verify.equal(1, 1, name='one')\n")
+    result = _run(pytester)
+    result.assert_outcomes(passed=1)
+    assert "PytestAssertRewriteWarning" not in result.stdout.str() + result.stderr.str()
+
+
+def test_blocking_the_package_name_does_not_stop_the_plugin_module(
+    pytester: pytest.Pytester, no_autoload: None
+) -> None:
+    pytester.makeconftest('pytest_plugins = ["pytest_verifier.plugin"]\n')
+    pytester.makepyfile(_FAILING_TEST)
+    result = _run(pytester, "-p", "no:pytest_verifier")
+    result.assert_outcomes(failed=1)
+    result.stdout.fnmatch_lines(["*'-p no:pytest_verifier' did not turn the plugin off*"])

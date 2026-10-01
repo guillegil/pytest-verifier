@@ -38,7 +38,7 @@ class CheckDescriptor(_CheckIdentity, total=False):
     check-type-specific and may or may not be present depending on the check that produced
     the descriptor.
 
-    Descriptors built by the module-level ``verify`` hold the values they were given, so they
+    Descriptors built by ``pytest_verifier.checks`` hold the values they were given, so they
     can be evaluated later. Descriptors recorded by the ``verify`` fixture are already judged:
     they carry ``passed``, a rendered ``detail``, an ``error`` when the check could not be
     evaluated, the test ``phase`` they were made in (``"setup"``, ``"call"`` or

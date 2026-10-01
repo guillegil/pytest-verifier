@@ -240,7 +240,7 @@ class TestEvaluate:
     def test_a_list_argument_gets_a_helpful_error(self) -> None:
         checks = [mverify.is_true(True, name="T")]
         for function in (mverify.evaluate, mverify.evaluate_detailed):
-            with pytest.raises(TypeError, match=r"use verify\.evaluate(_detailed)?\(\*checks\)"):
+            with pytest.raises(TypeError, match=r"use checks\.evaluate(_detailed)?\(\*descriptors\)"):
                 function(checks)  # type: ignore[arg-type]
 
     def test_a_non_descriptor_argument_is_rejected(self) -> None:

@@ -22,7 +22,7 @@ def _require_descriptors(descriptors: tuple[Any, ...], function: str) -> None:
         if isinstance(descriptor, (list, tuple)):
             raise TypeError(
                 f"{function}() takes descriptors as separate arguments; "
-                f"use verify.{function}(*checks) to pass a list"
+                f"use checks.{function}(*descriptors) to pass a list"
             )
         if not is_descriptor(descriptor):
             raise TypeError(

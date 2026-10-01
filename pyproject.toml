@@ -39,12 +39,11 @@ Issues = "https://github.com/guillegil/pytest_verify/issues"
 pytest_verifier = "pytest_verifier"
 
 [tool.setuptools.packages.find]
-# pytest_verify: deprecated compatibility package, kept until the PyPI release.
-include = ["pytest_verifier*", "pytest_verify"]
+# Only pytest_verifier: the pytest_verify name belongs to another project on PyPI.
+include = ["pytest_verifier*"]
 
 [tool.setuptools.package-data]
 pytest_verifier = ["py.typed"]
-pytest_verify = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -53,4 +52,4 @@ filterwarnings = ["ignore::pytest_verifier.UnusedCheckWarning"]
 
 [tool.mypy]
 strict = true
-files = ["pytest_verifier", "pytest_verify", "tests/typing_usage.py"]
+files = ["pytest_verifier", "tests/typing_usage.py"]
