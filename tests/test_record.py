@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from pytest_verify import verify as checks
-from pytest_verify._run import Run, recording_verify
+from pytest_verifier import checks
+from pytest_verifier._run import Run, recording_verify
 
 
 def _recording():
@@ -74,10 +74,10 @@ def test_a_hand_built_descriptor_with_an_unknown_type_fails():
 
 def test_recorded_helper_checks_fail_the_test(pytester):
     pytester.makepyfile(helpers="""
-        from pytest_verify import verify
+        from pytest_verifier import checks
 
         def rail_ok(voltage):
-            return verify.between(voltage, 3.2, 3.4, name="rail", units="V")
+            return checks.between(voltage, 3.2, 3.4, name="rail", units="V")
     """)
     pytester.makepyfile("""
         from helpers import rail_ok

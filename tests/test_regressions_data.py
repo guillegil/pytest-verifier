@@ -38,10 +38,10 @@ from typing import Any, Callable
 
 import pytest
 
-from pytest_verify import CheckDescriptor, Verify, get_check_results
-from pytest_verify import verify as mverify
-from pytest_verify._exceptions import ChecksFailedError
-from pytest_verify._run import Run, recording_verify
+from pytest_verifier import CheckDescriptor, Verify, get_check_results
+from pytest_verifier import checks as mverify
+from pytest_verifier._exceptions import ChecksFailedError
+from pytest_verifier._run import Run, recording_verify
 
 
 # ── H-5: module-level is_instance matches by bare class name ────────
@@ -105,7 +105,7 @@ def test_h5_fixture_composite_with_same_name_module_child_fails(pytester):
     pytester.makepyfile("""
         import types
 
-        from pytest_verify import verify as mverify
+        from pytest_verifier import checks as mverify
 
 
         def _make_class(module):

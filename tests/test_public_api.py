@@ -1,7 +1,7 @@
 """Tests for the public API added in pytest-verify 0.2.0.
 
 Covers:
-- get_check_results() exported from pytest_verify
+- get_check_results() exported from pytest_verifier
 - Unconditional stash write (reporter detection removed)
 - Soft-assert failure behavior unchanged
 """
@@ -13,12 +13,12 @@ class TestGetCheckResultsExported:
 
     def test_importable_from_package(self):
         # Must not raise ImportError
-        from pytest_verify import get_check_results  # noqa: F401
+        from pytest_verifier import get_check_results  # noqa: F401
 
     def test_in_all(self):
-        import pytest_verify
+        import pytest_verifier
 
-        assert "get_check_results" in pytest_verify.__all__
+        assert "get_check_results" in pytest_verifier.__all__
 
 
 class TestGetCheckResultsReturnsDescriptors:
@@ -27,7 +27,7 @@ class TestGetCheckResultsReturnsDescriptors:
     def test_returns_list_of_check_descriptors(self, pytester):
         """Scenario 1: item with N checks returns list of N CheckDescriptors."""
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
+            from pytest_verifier import get_check_results
 
             def test_inner(request, verify):
                 verify.equal(1, 1, name="A")
@@ -45,7 +45,7 @@ class TestGetCheckResultsReturnsDescriptors:
     def test_returns_empty_list_for_unchecked_item(self, pytester):
         """Scenario 2: item with no checks returns []."""
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
+            from pytest_verifier import get_check_results
 
             def test_inner(request):
                 item = request.node
@@ -59,8 +59,8 @@ class TestGetCheckResultsReturnsDescriptors:
     def test_returned_list_is_a_copy(self, pytester):
         """R1.4 — Mutating the returned list does NOT affect the stash."""
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
-            from pytest_verify._stash import check_results_key
+            from pytest_verifier import get_check_results
+            from pytest_verifier._stash import check_results_key
 
             def test_inner(request, verify):
                 verify.equal(1, 1, name="Only")
@@ -82,7 +82,7 @@ class TestUnconditionalStashWrite:
     def test_stash_populated_without_reporter(self, pytester):
         """Scenario 3: stash populated even when reporter is NOT installed."""
         pytester.makepyfile("""
-            from pytest_verify._stash import check_results_key
+            from pytest_verifier._stash import check_results_key
 
             def test_no_reporter(request, verify):
                 verify.equal(1, 1, name="X")
@@ -98,7 +98,7 @@ class TestUnconditionalStashWrite:
     def test_stash_populated_with_is_instance(self, pytester):
         """R2.1 — is_instance also writes unconditionally."""
         pytester.makepyfile("""
-            from pytest_verify._stash import check_results_key
+            from pytest_verifier._stash import check_results_key
 
             def test_is_instance_stash(request, verify):
                 verify.is_instance({}, dict, name="Dict")
@@ -135,8 +135,8 @@ class TestSoftAssertFailureBehaviorUnchanged:
     def test_mixed_checks_all_stashed(self, pytester):
         """All checks (pass AND fail) are recorded in stash."""
         pytester.makepyfile("""
-            from pytest_verify._stash import check_results_key
-            from pytest_verify import get_check_results
+            from pytest_verifier._stash import check_results_key
+            from pytest_verifier import get_check_results
 
             def test_mixed(request, verify):
                 verify.equal(1, 1, name="Pass")
@@ -162,7 +162,7 @@ class TestCompositeSchemaThroughReader:
 
     def test_guard_parent_only_with_nested_branches(self, pytester):
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
+            from pytest_verifier import get_check_results
 
             def test_g(request, verify):
                 verify.guard(
@@ -190,7 +190,7 @@ class TestCompositeSchemaThroughReader:
 
     def test_conditional_parent_only_with_nested_cases(self, pytester):
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
+            from pytest_verifier import get_check_results
 
             def test_c(request, verify):
                 verify.conditional(
@@ -214,8 +214,8 @@ class TestCompositeSchemaThroughReader:
 
     def test_all_satisfy_parent_only_with_nested_children(self, pytester):
         pytester.makepyfile("""
-            from pytest_verify import get_check_results
-            from pytest_verify import verify as checks
+            from pytest_verifier import get_check_results
+            from pytest_verifier import checks
 
             def test_a(request, verify):
                 verify.all_satisfy(

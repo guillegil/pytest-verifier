@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from pytest_verify import ChecksFailedError, Verify
-from pytest_verify import verify as mverify
+from pytest_verifier import ChecksFailedError, Verify
+from pytest_verifier import checks as mverify
 
 from .typing_usage import error_api, fixture_api, module_api
 

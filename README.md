@@ -1,4 +1,4 @@
-# pytest-verify
+# pytest-verifier
 
 [![CI](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest_verify)
@@ -7,6 +7,8 @@
 
 A pytest plugin providing **soft assertions** for test verification. Failed checks never stop
 the test — all checks run to completion, and failures are reported together at test end.
+
+Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](#upgrading-from-pytest-verify).
 
 ## Installation
 
@@ -19,8 +21,12 @@ pip install "git+https://github.com/guillegil/pytest_verify.git"
 Or, to pin a release:
 
 ```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.4.0"
+pip install "git+https://github.com/guillegil/pytest_verify.git@v0.6.0"
 ```
+
+This installs the `pytest-verifier` distribution and the `pytest_verifier` package. pytest loads
+the plugin automatically. When plugin autoloading is disabled (`PYTEST_DISABLE_PLUGIN_AUTOLOAD`),
+load it with `-p pytest_verifier`; to turn it off for one run, use `-p no:pytest_verifier`.
 
 Requires Python 3.9+, pytest 7+ and pluggy 1.2+.
 
@@ -227,8 +233,8 @@ so it should not depend on values that only its own branch can use. A child that
 just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
-A composite built with the module-level `verify` is never recorded, so fixture checks passed to
-it stay separate checks.
+A composite built with `checks` (see [Building checks without the fixture](#building-checks-without-the-fixture))
+is never recorded, so fixture checks passed to it stay separate checks.
 
 ### Lazy children — build only the selected branch
 
@@ -276,20 +282,33 @@ Useful as the `default` branch of a `conditional`, or to mark an unreachable pat
 verify.fail(f"Unexpected state: {state}")
 ```
 
-## Module-Level API
+## Building checks without the fixture
 
-For building descriptors outside of tests (e.g., in helper functions):
+`checks` has the same methods as the fixture, but it only builds checks: each call returns an
+unevaluated descriptor, and nothing is recorded. Use it in helper functions, or to evaluate
+checks yourself:
 
 ```python
-from pytest_verify import verify
+from pytest_verifier import checks
 
-descriptor = verify.approx(3.28, 3.3, abs_tol=0.05, name="Vout")
-result = verify.evaluate(descriptor)       # True / False
-details = verify.evaluate_detailed(descriptor)  # [{passed, details, seq, t}]
+descriptor = checks.approx(3.28, 3.3, abs_tol=0.05, name="Vout")
+result = checks.evaluate(descriptor)       # True / False
+details = checks.evaluate_detailed(descriptor)  # [{passed, details, seq, t}]
 ```
 
-Pass several checks as separate arguments: `verify.evaluate(*checks)`. Each result of
+Pass several checks as separate arguments: `checks.evaluate(*descriptors)`. Each result of
 `evaluate_detailed` also has an `error` key when its check could not be evaluated.
+
+A check built with `checks` cannot fail a test by itself. If the body of a test builds one and
+never records it, evaluates it or passes it to a composite, pytest shows an
+`UnusedCheckWarning` that points at the line that built it. Checks built in fixtures or at import
+time are not tracked, so a fixture can prepare checks for later tests. Where building checks
+without using them is intended, filter the warning:
+
+```toml
+[tool.pytest.ini_options]
+filterwarnings = ["ignore::pytest_verifier.UnusedCheckWarning"]
+```
 
 A descriptor sent through JSON loses Python types: tuples become lists and dict keys become
 strings. `equal((1, 2), [1, 2])` fails, but the same descriptor passes after a JSON round-trip.
@@ -297,31 +316,30 @@ Results recorded by the fixture carry their `passed` verdict, and `evaluate()` k
 
 ### Recording checks built by helpers
 
-A helper that builds checks with the module-level `verify` does not need the fixture. In the
-test, pass what it returns to the fixture's `verify.record()`. The check is then judged and
-reported like any other, and a composite absorbs the fixture checks passed to it.
+A helper that builds checks with `checks` does not need the fixture. In the test, pass what it
+returns to the fixture's `verify.record()`. The check is then judged and reported like any
+other, and a composite absorbs the fixture checks passed to it.
 
 ```python
 # helpers.py
-from pytest_verify import verify
+from pytest_verifier import checks
 
 def rail_ok(voltage):
-    return verify.between(voltage, 3.2, 3.4, name="3V3 rail", units="V")
+    return checks.between(voltage, 3.2, 3.4, name="3V3 rail", units="V")
 
 # test_power.py
 def test_rails(verify):
     verify.record(rail_ok(measure("3V3")))
 ```
 
-Calling `record()` on the module-level `verify` raises `RuntimeError`, because only the
-fixture records checks.
+Calling `checks.record()` raises `RuntimeError`, because only the fixture records checks.
 
 ## Reading Results from Another Plugin
 
 Reporters and other plugins read a test's checks with `get_check_results(item)`:
 
 ```python
-from pytest_verify import get_check_results
+from pytest_verifier import get_check_results
 
 def pytest_runtest_makereport(item, call):
     for check in get_check_results(item):
@@ -335,11 +353,11 @@ it), and holds JSON-safe copies of the checked values taken when the check was m
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
 this to render verification cards.
 
-A plugin that should not import pytest-verify can implement the `pytest_verify_results` hook
+A plugin that should not import pytest-verifier can implement the `pytest_verify_results` hook
 instead. It is called when a phase ends with checks to judge: when the test body ends, for the
 checks made in setup and in the body, and when teardown ends, for the checks made in teardown.
 If setup fails or skips, it is called with `when="setup"` for the checks made so far.
-Mark it optional, so it also loads where pytest-verify is not installed:
+Mark it optional, so it also loads where pytest-verifier is not installed:
 
 ```python
 import pytest
@@ -351,6 +369,24 @@ def pytest_verify_results(item, when, checks, passed):
 
 The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
 so they also reach the main process under pytest-xdist.
+
+## Upgrading from pytest-verify
+
+Version 0.6.0 renamed the project, because another plugin on PyPI already uses the name
+`pytest-verify`. Tests that only use the `verify` fixture need no change. The hook
+`pytest_verify_results` and `report.verify_checks` keep their names too.
+
+| 0.5 | 0.6 |
+|-----|-----|
+| Distribution `pytest-verify` | `pytest-verifier`; run `pip uninstall pytest-verify` before installing it |
+| `from pytest_verify import verify` | `from pytest_verifier import checks` |
+| `from pytest_verify import get_check_results` (and the other names) | `from pytest_verifier import get_check_results` |
+| `-p pytest_verify._fixture`, `pytest_plugins = ["pytest_verify._fixture"]` | `-p pytest_verifier`, `pytest_plugins = ["pytest_verifier"]` |
+| `-p no:verify` | `-p no:pytest_verifier` |
+
+The old imports keep working for now: `pytest_verify` forwards to `pytest_verifier` and shows a
+`DeprecationWarning` where it is imported, and so does `pytest_verifier.verify`. Both will be
+removed in a future release.
 
 ## Development
 
@@ -376,7 +412,7 @@ release with the CHANGELOG notes and the built sdist and wheel.
 
 ## Known Issues and Roadmap
 
-Version 0.4.0 fixes every bug found by the review of 0.3.1. The report is in
+Version 0.4.0 fixed every bug found by the review of 0.3.1. The report is in
 [`bugs-0.3.1.md`](bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
 for each bug.
 

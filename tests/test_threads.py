@@ -11,8 +11,8 @@ from typing import Any, Iterator
 
 import pytest
 
-from pytest_verify import Verify
-from pytest_verify._run import Run, recording_verify
+from pytest_verifier import Verify
+from pytest_verifier._run import Run, recording_verify
 
 THREADS = 8
 PER_THREAD = 40
@@ -125,7 +125,7 @@ def test_l9_concurrent_first_checks_all_reach_the_results(pytester: pytest.Pytes
 
         import pytest
 
-        from pytest_verify import get_check_results
+        from pytest_verifier import get_check_results
 
         @pytest.mark.parametrize("run", range(300))
         def test_first_checks(verify, request, run):

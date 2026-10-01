@@ -34,7 +34,7 @@ from typing import Any
 
 import pytest
 
-from pytest_verify import verify as mverify
+from pytest_verifier import checks as mverify
 
 
 #: Python's int-to-str digit limit (0 = disabled, or an interpreter that predates it).
@@ -126,7 +126,7 @@ def _inner_module(*bodies: str) -> str:
         "import sys",
         "from typing import Any",
         "",
-        "from pytest_verify import verify as mverify",
+        "from pytest_verifier import checks as mverify",
     ]
     parts += ["\n" + inspect.getsource(helper) for helper in _HELPERS]
     parts += ["\n" + textwrap.dedent(body) for body in bodies]
@@ -141,7 +141,7 @@ _RECORDING_CONFTEST = """
 
     import pytest
 
-    from pytest_verify import get_check_results
+    from pytest_verifier import get_check_results
 
 
     @pytest.hookimpl(hookwrapper=True)

@@ -2,12 +2,13 @@
 
 Each method builds a descriptor with its check type and hands it to the instance's sink. The
 module-level ``verify``'s sink returns it unevaluated; the fixture's sink judges and records it
-(see :mod:`pytest_verify._run`).
+(see :mod:`pytest_verifier._run`).
 """
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, Tuple
 
+from . import _unused
 from ._checks import (
     ALL_SATISFY,
     APPROX,
@@ -30,8 +31,9 @@ from ._checks import (
     MATCHES,
     NOT_CONTAINS,
     NOT_EQUAL,
+    child_checks,
 )
-from ._descriptors import CheckDescriptor, Child, ClassInfo
+from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 
@@ -49,6 +51,7 @@ class Sink:
 
     def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         """Take a check that has no children."""
+        _unused.built(descriptor)
         return descriptor
 
     def composite(
@@ -58,10 +61,18 @@ class Sink:
 
         *arguments* are the containers of its children, for cleanup when *build* raises.
         """
-        return build()
+        try:
+            descriptor = build()
+        except BaseException:
+            _unused.used(*loose_children(*arguments))
+            raise
+        _unused.used(*child_checks(descriptor))
+        _unused.built(descriptor)
+        return descriptor
 
     def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         """Take a check built elsewhere."""
+        _unused.used(descriptor)  # the error below already says what went wrong
         raise RuntimeError(_RECORD_NEEDS_FIXTURE)
 
 

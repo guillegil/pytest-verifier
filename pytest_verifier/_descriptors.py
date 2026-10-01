@@ -1,7 +1,7 @@
 """The descriptor types and the helpers that check types share.
 
 A check descriptor is a plain dict. :class:`CheckDescriptor` types it; the check types that
-build and judge descriptors live in :mod:`pytest_verify._checks`.
+build and judge descriptors live in :mod:`pytest_verifier._checks`.
 """
 from __future__ import annotations
 
@@ -126,6 +126,30 @@ def require_child(value: object, where: str) -> Any:
     if callable(value) and not is_descriptor(value):
         return value
     return require_descriptor(value, where, " or a callable that returns one")
+
+
+def loose_children(*containers: Any) -> List[Any]:
+    """Best-effort list of the descriptors passed to a composite whose arguments were invalid."""
+    found: List[Any] = []
+
+    def visit(value: Any, depth: int) -> None:
+        if depth > 3:
+            return
+        if is_descriptor(value):
+            found.append(value)
+        elif isinstance(value, Mapping):
+            for item in value.values():
+                visit(item, depth + 1)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                visit(item, depth + 1)
+
+    for container in containers:
+        try:
+            visit(container, 0)
+        except Exception:
+            pass
+    return found
 
 
 def is_real(value: object) -> bool:

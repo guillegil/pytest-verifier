@@ -1,7 +1,7 @@
 """The check builders under plain function names, for tests that build descriptors directly."""
 from __future__ import annotations
 
-from pytest_verify import _checks
+from pytest_verifier import _checks
 
 build_equal = _checks.EQUAL.build
 build_not_equal = _checks.NOT_EQUAL.build

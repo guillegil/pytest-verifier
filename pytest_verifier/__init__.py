@@ -1,0 +1,75 @@
+"""pytest-verifier: soft assertions for pytest.
+
+Usage as a **pytest fixture** (primary API)::
+
+    def test_example(verify):
+        verify.approx(3.28, 3.3, abs_tol=0.05, name="Vout", units="V")
+        verify.greater(100, 50, name="Throughput", units="Mbps")
+
+Building checks without recording them (secondary API)::
+
+    from pytest_verifier import checks
+
+    desc = checks.approx(3.28, 3.3, abs_tol=0.05, name="Vout", units="V")
+    assert checks.evaluate(desc)
+"""
+from __future__ import annotations
+
+import warnings
+from typing import Any
+
+import pytest
+
+from ._descriptors import CheckDescriptor, GuardBranch
+from ._exceptions import ChecksFailedError
+from ._stash import check_results_key
+from ._unused import UnusedCheckWarning
+from ._verify import Verify
+
+#: The pytest plugin. The ``pytest_verifier`` entry point names this package, which loads it.
+pytest_plugins = ["pytest_verifier.plugin"]
+
+__all__ = [
+    "CheckDescriptor",
+    "ChecksFailedError",
+    "GuardBranch",
+    "UnusedCheckWarning",
+    "Verify",
+    "checks",
+    "get_check_results",
+]
+
+#: Builds checks without recording them: every method returns an unevaluated descriptor.
+#: In a test, use the ``verify`` fixture instead; it records the checks that decide the outcome.
+checks: Verify = Verify()
+
+
+def __getattr__(name: str) -> Any:
+    if name == "verify":
+        warnings.warn(
+            "pytest_verifier.verify is deprecated: the builder is now called 'checks' "
+            "(from pytest_verifier import checks), so it cannot be confused with the 'verify' "
+            "fixture.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return checks
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def get_check_results(item: pytest.Item) -> list[CheckDescriptor]:
+    """Return verification check descriptors recorded for this test item.
+
+    Args:
+        item: The pytest test item whose check results to retrieve.
+
+    Returns:
+        A new list (copy) of every ``CheckDescriptor`` recorded for *item*
+        during its execution.  Returns ``[]`` if no checks were recorded.
+        Each descriptor carries ``passed`` and ``detail`` and holds JSON-safe
+        snapshots of the checked values, so ``json.dumps`` works on it. Checks
+        nested in a composite are inside their parent, not listed on their own.
+        If the item was rerun, only the last attempt's checks are returned.
+    """
+    results = item.stash.get(check_results_key, None)
+    return [] if results is None else list(results)

@@ -21,12 +21,12 @@ from typing import Any, Iterator
 
 import pytest
 
-from pytest_verify import ChecksFailedError, get_check_results
-from pytest_verify import verify as mverify
-from pytest_verify._descriptors import _NO_CASE, select_case
-from pytest_verify._exceptions import format_summary, render_detail
-from pytest_verify._render import bounded_format, safe_format, safe_repr, safe_str, snapshot
-from pytest_verify._settle import settle
+from pytest_verifier import ChecksFailedError, get_check_results
+from pytest_verifier import checks as mverify
+from pytest_verifier._descriptors import _NO_CASE, select_case
+from pytest_verifier._exceptions import format_summary, render_detail
+from pytest_verifier._render import bounded_format, safe_format, safe_repr, safe_str, snapshot
+from pytest_verifier._settle import settle
 
 
 def _dumps(value: Any) -> str:
@@ -111,7 +111,7 @@ class TestUsageErrors:
         pytester.makepyfile(
             """
             import pytest
-            from pytest_verify import get_check_results
+            from pytest_verifier import get_check_results
 
             def test_bad_range(verify, request):
                 with pytest.raises(ValueError):

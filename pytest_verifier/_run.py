@@ -15,20 +15,21 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from . import _unused
 from ._checks import child_checks
-from ._descriptors import CheckDescriptor, is_descriptor, require_descriptor
+from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._settle import settle
 from ._verify import Sink, Verify
 
 _CLOSED = (
-    "pytest-verify: this 'verify' fixture belongs to a test that has already finished, so the "
+    "pytest-verifier: this 'verify' fixture belongs to a test that has already finished, so the "
     "check would be lost. Request the 'verify' fixture in the test that makes the check."
 )
 
 _FORKED = (
-    "pytest-verify: this check was made in a child process (for example a multiprocessing "
+    "pytest-verifier: this check was made in a child process (for example a multiprocessing "
     "worker), so it could never reach the test's results. Make the check in the test's own "
     "process, for example on a value the worker returns."
 )
@@ -130,30 +131,6 @@ class Run:
             return len(self.records) - len(pending), pending  # type: ignore[return-value]
 
 
-def _loose_children(*containers: Any) -> List[Any]:
-    """Best-effort list of the descriptors passed to a composite whose arguments were invalid."""
-    found: List[Any] = []
-
-    def visit(value: Any, depth: int) -> None:
-        if depth > 3:
-            return
-        if is_descriptor(value):
-            found.append(value)
-        elif isinstance(value, Mapping):
-            for item in value.values():
-                visit(item, depth + 1)
-        elif isinstance(value, (list, tuple)):
-            for item in value:
-                visit(item, depth + 1)
-
-    for container in containers:
-        try:
-            visit(container, 0)
-        except Exception:
-            pass
-    return found
-
-
 class Recorder(Sink):
     """The fixture's sink: judges, snapshots and records every check in a :class:`Run`."""
 
@@ -177,8 +154,11 @@ class Recorder(Sink):
             # Invalid arguments, or a lazy child or condition that skipped or failed the test:
             # the checks passed to this call were never selected, so they must not linger as
             # standalone checks.
-            run.absorb(_loose_children(*arguments))
+            loose = loose_children(*arguments)
+            _unused.used(*loose)
+            run.absorb(loose)
             raise
+        _unused.used(*child_checks(descriptor))
         record, passed = settle(descriptor, run.known)
         run.add(record, passed, absorb=child_checks(descriptor))
         return record
@@ -190,6 +170,7 @@ class Recorder(Sink):
         hit = run.known(descriptor)
         if hit is not None:
             return hit[1]
+        _unused.used(descriptor)
         record, passed = settle(descriptor, run.known)
         run.add(record, passed, absorb=child_checks(descriptor))
         return record

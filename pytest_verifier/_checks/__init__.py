@@ -1,4 +1,4 @@
-"""Check types. See :mod:`pytest_verify._checks._base` for how they fit together."""
+"""Check types. See :mod:`pytest_verifier._checks._base` for how they fit together."""
 from __future__ import annotations
 
 from ._base import (

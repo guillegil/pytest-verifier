@@ -30,13 +30,13 @@ class _Collector:
 
 def test_every_record_says_its_phase(pytester):
     pytester.makepyfile(_PHASES + """
-    import pytest_verify
+    import pytest_verifier
 
     @pytest.fixture(autouse=True)
     def show(request):
         yield
         print("PHASES", [(r["name"], r["phase"]) for r in
-                         pytest_verify.get_check_results(request.node)])
+                         pytest_verifier.get_check_results(request.node)])
     """)
     result = pytester.runpytest("-s")
     result.stdout.fnmatch_lines([
@@ -130,7 +130,7 @@ def test_an_optional_hook_works_without_the_plugin(pytester):
     result = pytester.runpytest("-s")
     result.stdout.fnmatch_lines(["*RESULTS call [[]'ok'[]] True*"])
     result.assert_outcomes(passed=1)
-    result = pytester.runpytest("-p", "no:verify")
+    result = pytester.runpytest("-p", "no:pytest_verifier")
     assert "pytest_verify_results" not in result.stdout.str()
     result.assert_outcomes(errors=1)  # the fixture is gone, but the hook is not an error
 

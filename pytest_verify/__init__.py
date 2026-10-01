@@ -1,26 +1,28 @@
-"""pytest-verify — soft assertions for pytest.
+"""Deprecated: pytest-verify is now pytest-verifier.
 
-Usage as a **pytest fixture** (primary API)::
+Import from ``pytest_verifier`` instead. The builder is now called ``checks``, so it cannot be
+confused with the ``verify`` fixture::
 
-    def test_example(verify):
-        verify.approx(3.28, 3.3, abs_tol=0.05, name="Vout", units="V")
-        verify.greater(100, 50, name="Throughput", units="Mbps")
+    from pytest_verifier import checks
 
-Usage as a **module** (secondary API)::
-
-    from pytest_verify import verify
-
-    desc = verify.approx(3.28, 3.3, abs_tol=0.05, name="Vout", units="V")
-    assert verify.evaluate(desc)
+This package only forwards to ``pytest_verifier`` and will be removed in a future release.
 """
 from __future__ import annotations
 
-import pytest
+import os
+import sys
+import warnings
+from types import FrameType
+from typing import Optional
 
-from ._descriptors import CheckDescriptor, GuardBranch
-from ._exceptions import ChecksFailedError
-from ._stash import check_results_key
-from ._verify import Verify
+from pytest_verifier import (
+    CheckDescriptor,
+    ChecksFailedError,
+    GuardBranch,
+    Verify,
+    get_check_results,
+)
+from pytest_verifier import checks as verify
 
 __all__ = [
     "CheckDescriptor",
@@ -31,23 +33,41 @@ __all__ = [
     "verify",
 ]
 
-#: Module-level ``Verify`` instance.  Returns unevaluated descriptors.
-verify: Verify = Verify()
+_RENAMED = (
+    "pytest_verify was renamed to pytest_verifier, and its 'verify' builder to 'checks': use "
+    "'from pytest_verifier import checks'. The pytest_verify package will be removed in a "
+    "future release."
+)
 
 
-def get_check_results(item: pytest.Item) -> list[CheckDescriptor]:
-    """Return verification check descriptors recorded for this test item.
+def _import_machinery(filename: str) -> bool:
+    """Frames between the importing module and this one: importlib and pytest's import hook."""
+    return (
+        filename == __file__
+        or filename.startswith("<frozen importlib")
+        or filename.endswith(os.path.join("_pytest", "assertion", "rewrite.py"))
+        or os.path.join("importlib", "_bootstrap") in filename
+    )
 
-    Args:
-        item: The pytest test item whose check results to retrieve.
 
-    Returns:
-        A new list (copy) of every ``CheckDescriptor`` recorded for *item*
-        during its execution.  Returns ``[]`` if no checks were recorded.
-        Each descriptor carries ``passed`` and ``detail`` and holds JSON-safe
-        snapshots of the checked values, so ``json.dumps`` works on it. Checks
-        nested in a composite are inside their parent, not listed on their own.
-        If the item was rerun, only the last attempt's checks are returned.
-    """
-    results = item.stash.get(check_results_key, None)
-    return [] if results is None else list(results)
+def _warn_at_importer() -> None:
+    """Warn at the line that imported this package, past the import machinery."""
+    frame: Optional[FrameType] = sys._getframe(1)
+    while frame is not None and _import_machinery(frame.f_code.co_filename):
+        frame = frame.f_back
+    if frame is None:
+        warnings.warn(_RENAMED, DeprecationWarning, stacklevel=2)
+        return
+    module_globals = frame.f_globals
+    warnings.warn_explicit(
+        _RENAMED,
+        DeprecationWarning,
+        frame.f_code.co_filename,
+        frame.f_lineno,
+        module=module_globals.get("__name__"),
+        registry=module_globals.setdefault("__warningregistry__", {}),
+        module_globals=module_globals,
+    )
+
+
+_warn_at_importer()

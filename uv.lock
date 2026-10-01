@@ -121,8 +121,8 @@ wheels = [
 ]
 
 [[package]]
-name = "pytest-verify"
-version = "0.4.0"
+name = "pytest-verifier"
+version = "0.6.0"
 source = { editable = "." }
 dependencies = [
     { name = "pluggy" },

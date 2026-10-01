@@ -1,15 +1,15 @@
-# CLAUDE.md — pytest-verify
+# CLAUDE.md — pytest-verifier
 
 ## Project Overview
 
-`pytest-verify` is a pytest plugin that provides soft assertions for test verification. It is the **judge** — the only plugin that determines pass/fail for check-based assertions. It works standalone and optionally integrates with `pytest-reporter` for rich HTML rendering.
+`pytest-verifier` (import package `pytest_verifier`; called `pytest-verify` until 0.5) is a pytest plugin that provides soft assertions for test verification. It is the **judge** — the only plugin that determines pass/fail for check-based assertions. It works standalone and optionally integrates with `pytest-reporter` for rich HTML rendering.
 
 **Specification:** The authoritative spec lives in Notion under "Pytest Verify" (child of "Pytest Reporter"). Always consult the spec for schema details, edge cases, and design decisions.
 
 ## Architecture
 
 ```
-pytest-verify (this plugin)          pytest-reporter (separate plugin)
+pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 ┌──────────────────────────┐         ┌────────────────────────────────┐
 │ verify fixture (scope:   │         │ step(check=descriptor)         │
 │   test)                  │         │   → reads descriptor           │
@@ -24,9 +24,10 @@ pytest-verify (this plugin)          pytest-reporter (separate plugin)
 │   after the test body    │         │                                │
 └──────────────────────────┘         └────────────────────────────────┘
          │                                        │
-         │  pytest-verify never imports reporter. │
+         │  pytest-verifier never imports the     │
+         │  reporter.                             │
          │  Reporter reads results through        │
-         │  pytest_verify.get_check_results(item),│
+         │  pytest_verifier.get_check_results(),  │
          │  the pytest_verify_results hook, or    │
          │  report.verify_checks.                 │
          └────────────────────────────────────────┘
@@ -35,18 +36,19 @@ pytest-verify (this plugin)          pytest-reporter (separate plugin)
 ## Core Principles
 
 - **verify fixture is the primary API.** It evaluates checks immediately, records results, returns descriptor dicts, and raises `ChecksFailedError` once the phase that recorded a failed check ends (after the test body; after teardown for checks made in teardown). No imports needed — it's a pytest fixture.
-- **verify module is the secondary API.** `from pytest_verify import verify` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `verify.evaluate()`.
+- **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and never used gives an `UnusedCheckWarning` (`_unused.py`). `pytest_verifier.verify` is a deprecated alias of `checks`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
-- **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verify.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
+- **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verifier.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
 - **One class per check type.** Everything specific to a `check_type` (build, compare, detail, children) lives in its class in `_checks/`. No other module branches on `check_type`; they dispatch through `REGISTRY`.
 
 ## Package Structure
 
 ```
-pytest_verify/
-├── __init__.py              # Exports: verify, Verify, CheckDescriptor, GuardBranch,
-│                            #   ChecksFailedError, get_check_results
+pytest_verifier/
+├── __init__.py              # Exports: checks, Verify, CheckDescriptor, GuardBranch,
+│                            #   ChecksFailedError, UnusedCheckWarning, get_check_results;
+│                            #   pytest_plugins = ["pytest_verifier.plugin"]
 ├── py.typed                 # PEP 561 marker — REQUIRED
 ├── _verify.py               # Verify class: typed public signatures and docstrings; each
 │                            #   method builds a descriptor and hands it to a Sink
@@ -63,12 +65,20 @@ pytest_verify/
 │                            #   snapshots, child verdicts)
 ├── _run.py                  # Run (per-attempt, thread-safe state) and Recorder (the
 │                            #   fixture's Sink: judges, records, absorbs children)
-├── _fixture.py              # Plugin entry point: verify fixture, runtest hook wrappers that
+├── plugin.py                # The pytest plugin: verify fixture, runtest hook wrappers that
 │                            #   raise ChecksFailedError, report.verify_checks
+├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
 └── _exceptions.py           # ChecksFailedError, failure summary rendering
+
+pytest_verify/               # Deprecated 0.5 names: forwards to pytest_verifier with a
+                             #   DeprecationWarning; _fixture.py loads the new plugin
 ```
+
+The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
+module, so `-p pytest_verifier` and `-p no:pytest_verifier` work, and the package loads
+`pytest_verifier.plugin` through `pytest_plugins`.
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
 `detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`),
@@ -132,9 +142,9 @@ class CheckDescriptor(TypedDict, total=False):
 
 ### Results contract (shared with pytest-reporter §15.1)
 
-Other plugins call `pytest_verify.get_check_results(item)`. A `StashKey` works by identity, so a
+Other plugins call `pytest_verifier.get_check_results(item)`. A `StashKey` works by identity, so a
 key created by another plugin can never see these results; the key in `_stash.py` is private.
-Plugins that must not import pytest-verify implement `pytest_verify_results(item, when, checks,
+Plugins that must not import pytest-verifier implement `pytest_verify_results(item, when, checks,
 passed)` with `optionalhook=True`, or read `report.verify_checks` (JSON-safe, survives xdist).
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
@@ -194,7 +204,7 @@ Implementation requirements:
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-the module-level `verify`; on the module-level instance it raises `RuntimeError`.
+`checks`; `checks.record()` raises `RuntimeError`.
 
 ## Evaluation Logic
 
@@ -257,7 +267,7 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 
 ## File Boundaries
 
-- Safe to edit: `pytest_verify/`, `tests/`
+- Safe to edit: `pytest_verifier/`, `pytest_verify/`, `tests/`
 - Never touch: `venv/`, `__pycache__/`, `.pytest_cache/`, `dist/`, `*.egg-info/`
 
 ## Testing Strategy
@@ -284,5 +294,5 @@ When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 
 - **Lazy children are stored as built.** A `conditional`/`guard` callable that was selected is replaced by the check it returned; one that was not is stored as `None`, and so is a guard condition that was not called.
 - **`conditional` keys match by equality.** Enum members compare by value, and an `int` matches its decimal string. Keys are stored as strings; keys that would collide raise `ValueError`.
 - **`is_instance` stores type as string.** The descriptor contains `"expected_type": "dict"`, not the actual type object.
-- **Fixture vs module:** The fixture evaluates and stores. The module just builds descriptors. Don't mix up which does what.
+- **Fixture vs `checks`:** The fixture evaluates and stores. `checks` just builds descriptors. Don't mix up which does what.
 - **Results are always recorded.** Other plugins read them with `get_check_results(item)`.

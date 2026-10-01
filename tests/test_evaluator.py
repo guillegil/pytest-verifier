@@ -24,7 +24,7 @@ from tests._builders import (
     build_conditional,
     build_guard,
 )
-from pytest_verify._evaluator import evaluate, evaluate_detailed
+from pytest_verifier._evaluator import evaluate, evaluate_detailed
 
 
 # ── Per-check-type pass/fail ─────────────────────────────────────────

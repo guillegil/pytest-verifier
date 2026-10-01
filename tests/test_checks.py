@@ -9,8 +9,8 @@ from __future__ import annotations
 import pytest
 
 from tests._builders import build_equal, build_greater
-from pytest_verify._evaluator import evaluate
-from pytest_verify._verify import Verify
+from pytest_verifier._evaluator import evaluate
+from pytest_verifier._verify import Verify
 
 # Module-level instance for fail-path tests (no teardown side effects)
 v = Verify()

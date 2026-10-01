@@ -16,7 +16,7 @@ from tests._builders import (
     build_is_true,
     build_length,
 )
-from pytest_verify._exceptions import ChecksFailedError
+from pytest_verifier._exceptions import ChecksFailedError
 
 
 def _evaluated(builder, *args, passed, **kwargs):
