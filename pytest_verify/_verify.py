@@ -30,8 +30,6 @@ from ._checks import (
     MATCHES,
     NOT_CONTAINS,
     NOT_EQUAL,
-    RunChild,
-    call,
 )
 from ._descriptors import CheckDescriptor, Child, ClassInfo
 from ._evaluator import evaluate as _evaluate
@@ -54,13 +52,13 @@ class Sink:
         return descriptor
 
     def composite(
-        self, build: Callable[[RunChild], CheckDescriptor], arguments: Sequence[Any]
+        self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
     ) -> CheckDescriptor:
-        """Build a composite with *build*, giving it the function that runs lazy children.
+        """Take a check that has children, built by calling *build*.
 
         *arguments* are the containers of its children, for cleanup when *build* raises.
         """
-        return build(call)
+        return build()
 
     def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         """Take a check built elsewhere."""
@@ -408,7 +406,7 @@ class Verify:
             A :class:`CheckDescriptor` dict.
         """
         return self._sink.composite(
-            lambda run: ALL_SATISFY.build(items, descriptor_factory, name=name, run=run), ()
+            lambda: ALL_SATISFY.build(items, descriptor_factory, name=name), ()
         )
 
     def conditional(
@@ -444,9 +442,7 @@ class Verify:
             A :class:`CheckDescriptor` dict.
         """
         return self._sink.composite(
-            lambda run: CONDITIONAL.build(
-                switch_value, cases=cases, default=default, name=name, run=run
-            ),
+            lambda: CONDITIONAL.build(switch_value, cases=cases, default=default, name=name),
             (cases, default),
         )
 
@@ -478,7 +474,7 @@ class Verify:
             A :class:`CheckDescriptor` dict.
         """
         return self._sink.composite(
-            lambda run: GUARD.build(branches, default=default, name=name, run=run),
+            lambda: GUARD.build(branches, default=default, name=name),
             (branches, default),
         )
 

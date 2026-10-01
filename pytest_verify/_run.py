@@ -4,32 +4,20 @@ Each attempt (pytest-rerunfailures runs the same item several times) gets a fres
 The fixture's ``Verify`` sends its checks to a :class:`Recorder`, which judges each one once,
 snapshots it and adds it to the run.
 
-A composite's children belong to it, not to the top level of the run. Every check is placed
-in a list when it is recorded: the run's top level, or the collector of the composite whose
-child callable (a lazy ``conditional``/``guard`` child, or an ``all_satisfy`` factory) this
-thread is running. When the composite is recorded, its children are taken out of whichever list
-holds them, by identity. Checks a child callable recorded but did not return are put back where
-the composite itself goes.
+A composite's children belong to it, not to the top level of the run. Every check is recorded
+at the top level when it is made, including the ones a child callable (a lazy
+``conditional``/``guard`` child, or an ``all_satisfy`` factory) makes. When the composite is
+recorded, it absorbs its children: they are taken out of the top level, by identity. So a check
+a callable made but did not return stays on its own, and if building the composite is
+interrupted (``pytest.skip`` in an ``all_satisfy`` factory), the checks made so far still count.
 """
 from __future__ import annotations
 
-import contextlib
 import os
 import threading
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Mapping,
-    Optional,
-    Sequence,
-    Tuple,
-)
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
-from ._checks import RunChild, child_checks
+from ._checks import child_checks
 from ._descriptors import CheckDescriptor, is_descriptor, require_descriptor
 from ._settle import settle
 from ._verify import Sink, Verify
@@ -49,14 +37,13 @@ _FORKED = (
 class _Entry:
     """What the run knows about one recorded descriptor."""
 
-    __slots__ = ("record", "passed", "home", "judged")
+    __slots__ = ("record", "passed", "top_level", "judged")
 
     def __init__(self, record: CheckDescriptor, passed: bool) -> None:
         self.record = record
         self.passed = passed
-        #: The list that holds the record (the top level or a collector); ``None`` once a
-        #: composite has absorbed it.
-        self.home: Optional[List[CheckDescriptor]] = None
+        #: Whether the record is in :attr:`Run.records`, that is, no composite absorbed it.
+        self.top_level = True
         self.judged = False
 
 
@@ -76,7 +63,6 @@ class Run:
         #: Checks judged at the end of each phase, waiting to be attached to its report.
         self.judged: Dict[str, List[CheckDescriptor]] = {}
         self._entries: Dict[int, _Entry] = {}
-        self._local = threading.local()
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
         entry = self._entries.get(id(descriptor))
@@ -90,55 +76,18 @@ class Run:
         if os.getpid() != self.pid:
             raise RuntimeError(_FORKED)
 
-    # ------------------------------------------------------------------
-    # Where a new record goes
-    # ------------------------------------------------------------------
-
-    def _stack(self) -> List[List[CheckDescriptor]]:
-        stack: Optional[List[List[CheckDescriptor]]] = getattr(self._local, "stack", None)
-        if stack is None:
-            stack = self._local.stack = []
-        return stack
-
-    @contextlib.contextmanager
-    def collecting(self, collected: List[CheckDescriptor]) -> Iterator[None]:
-        """Send the checks this thread records into *collected* instead of the top level."""
-        stack = self._stack()
-        stack.append(collected)
-        try:
-            yield
-        finally:
-            stack.pop()
-
-    def _place(self, record: CheckDescriptor) -> None:
-        stack = self._stack()
-        home = stack[-1] if stack else self.records
-        home.append(record)
-        self._entries[id(record)].home = home
-
     def add(self, record: CheckDescriptor, passed: bool, absorb: Iterable[Any] = ()) -> None:
-        """Record a check, first absorbing the eager children of a composite (see
-        :meth:`absorb`). It goes to the collector of the composite being built in this thread,
-        if any, else to the top level."""
+        """Record a check at the top level, first absorbing the children of a composite (see
+        :meth:`absorb`)."""
         with self.lock:
             self.ensure_open()
             self.absorb(absorb)
             record["phase"] = self.phase
             self._entries[id(record)] = _Entry(record, passed)
-            self._place(record)
-
-    def release(self, collected: List[CheckDescriptor], keep: Any) -> None:
-        """Put the checks left in a finished collector, except *keep* (the child its callable
-        returned), where the composite itself goes."""
-        with self.lock:
-            for record in list(collected):
-                if record is not keep:
-                    self._place(record)
-            collected.clear()
+            self.records.append(record)
 
     def absorb(self, children: Iterable[Any]) -> None:
-        """Take the recorded checks passed to a composite as children out of the list that
-        holds them.
+        """Take the recorded checks passed to a composite as children out of the top level.
 
         A child belongs to the composite whenever it was recorded, so building ``cases`` or
         ``branches`` in a variable before the call works like building them inline. To keep a
@@ -146,16 +95,24 @@ class Run:
         itself is absorbed.
         """
         with self.lock:
+            ids = set()
             for child in children:
                 entry = self._entries.get(id(child))
-                if entry is None or entry.record is not child or entry.home is None:
+                if entry is None or entry.record is not child or not entry.top_level:
                     continue
-                home, entry.home = entry.home, None
-                # Children are usually the most recent records, so search from the end.
-                for index in range(len(home) - 1, -1, -1):
-                    if home[index] is child:
-                        del home[index]
-                        break
+                entry.top_level = False
+                ids.add(id(child))
+            if not ids:
+                return
+            # Children are usually the most recent records: find the oldest one from the end,
+            # then rebuild only the tail, in one pass. The list object is the results stash, so
+            # it is changed in place.
+            records, remaining, start = self.records, len(ids), len(self.records)
+            while remaining and start > 0:
+                start -= 1
+                if id(records[start]) in ids:
+                    remaining -= 1
+            records[start:] = [record for record in records[start:] if id(record) not in ids]
 
     def take_unjudged(self) -> Tuple[int, List[CheckDescriptor]]:
         """Top-level checks not judged by an earlier phase, each with its private verdict.
@@ -210,25 +167,15 @@ class Recorder(Sink):
         return record
 
     def composite(
-        self, build: Callable[[RunChild], CheckDescriptor], arguments: Sequence[Any]
+        self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
     ) -> CheckDescriptor:
         run = self._run
         run.ensure_open()
-
-        def run_child(thunk: Callable[[], Any]) -> Any:
-            child: Any = None
-            collected: List[CheckDescriptor] = []
-            try:
-                with run.collecting(collected):
-                    child = thunk()
-            finally:
-                run.release(collected, keep=child)
-            return child
-
         try:
-            descriptor = build(run_child)
-        except Exception:
-            # Invalid arguments: the eager children built for this call must not linger as
+            descriptor = build()
+        except BaseException:
+            # Invalid arguments, or a lazy child or condition that skipped or failed the test:
+            # the checks passed to this call were never selected, so they must not linger as
             # standalone checks.
             run.absorb(_loose_children(*arguments))
             raise

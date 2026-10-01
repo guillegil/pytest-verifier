@@ -93,6 +93,8 @@ def _settle_composite(
 
     def place(child: Any) -> Any:
         if child is None:
+            if id(child) in chosen:  # a selected slot with no check fails
+                verdicts.append(False)
             return None
         if id(child) in chosen:
             child_record, child_passed = settle(child, known)

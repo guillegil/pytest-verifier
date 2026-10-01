@@ -16,16 +16,6 @@ from .._render import bounded_format, describe_error, safe_repr, safe_str
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
 Verdict = Tuple[bool, Optional[str]]
 
-#: Runs a zero-argument callable that builds a child check and returns what it returned. The
-#: fixture runs it so that checks recorded inside belong to the composite.
-RunChild = Callable[[Callable[[], Any]], Any]
-
-
-def call(thunk: Callable[[], Any]) -> Any:
-    """The :data:`RunChild` of the module-level API: just call it."""
-    return thunk()
-
-
 class CheckType:
     """One kind of check. Subclasses set ``check_type`` and implement ``compare`` and ``detail``.
 

@@ -91,3 +91,13 @@ def test_recorded_helper_checks_fail_the_test(pytester):
     result.stdout.fnmatch_lines(
         ["*1 of 2 checks failed*", "*rail — expected [[]3.2V, 3.4V[]], got 3.6V"]
     )
+
+
+def test_a_hand_built_composite_with_an_empty_child_fails_as_in_evaluate():
+    _, verify = _recording()
+    hand = {"check_type": "all_satisfy", "name": "hand", "description": "Verify 'hand'",
+            "child_checks": [None]}
+    assert checks.evaluate(hand) is False
+    record = verify.record(hand)
+    assert record["passed"] is False
+    assert record["detail"] == "expected all 1 to pass, got 1 failed"

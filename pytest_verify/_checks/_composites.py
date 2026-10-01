@@ -1,14 +1,12 @@
 """Composite check types: their verdict comes from child checks.
 
 A child check can be a descriptor, or (for ``conditional`` and ``guard``) a zero-argument
-callable that builds it. Only the selected callable is called, through the ``run`` function the
-caller passes: the module-level API just calls it, and the fixture also collects the checks
-recorded inside it, so they belong to the composite. A callable that was not selected leaves
-``None`` in its slot.
+callable that builds it. Only the selected callable is called; one that was not selected leaves
+``None`` in its slot. With the fixture, the check a callable returns is recorded when it is
+built and absorbed by the composite like any other child.
 """
 from __future__ import annotations
 
-import functools
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .._descriptors import (
@@ -24,14 +22,14 @@ from .._descriptors import (
     unwrap,
 )
 from .._render import describe_error, safe_repr, safe_str, snapshot
-from ._base import CompositeType, RunChild, call, child_detail, judge, register
+from ._base import CompositeType, child_detail, judge, register
 
 
 def _is_lazy(child: object) -> bool:
     return callable(child) and not is_descriptor(child)
 
 
-def _resolve(child: Any, where: str, run: RunChild) -> Tuple[Any, Optional[str]]:
+def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
     """Build a selected lazy child. Returns ``(child, error)``; a descriptor is returned as is.
 
     A callable that raises, or returns something that is not a check, leaves ``None`` and an
@@ -40,7 +38,7 @@ def _resolve(child: Any, where: str, run: RunChild) -> Tuple[Any, Optional[str]]
     if not _is_lazy(child):
         return child, None
     try:
-        built = run(child)
+        built = child()
     except Exception as exc:
         return None, f"{where} raised {describe_error(exc)}"
     if not is_descriptor(built):
@@ -65,7 +63,6 @@ class AllSatisfy(CompositeType):
         descriptor_factory: Callable[[Any], CheckDescriptor],
         *,
         name: str,
-        run: RunChild = call,
     ) -> CheckDescriptor:
         """Build one child check per item by calling *descriptor_factory* right away.
 
@@ -90,7 +87,7 @@ class AllSatisfy(CompositeType):
                 error = f"iterating items raised {describe_error(exc)}"
                 break
             try:
-                child = run(functools.partial(descriptor_factory, item))
+                child = descriptor_factory(item)
             except Exception as exc:
                 error = f"descriptor_factory raised {describe_error(exc)} for item {index}"
                 break
@@ -166,7 +163,6 @@ class Conditional(_Selecting):
         cases: Mapping[Any, Child],
         default: Optional[Child] = None,
         name: str,
-        run: RunChild = call,
     ) -> CheckDescriptor:
         require_name(name, "conditional")
         if not isinstance(cases, Mapping):
@@ -189,9 +185,9 @@ class Conditional(_Selecting):
         error: Optional[str] = None
         if matched is not None:
             where = f"case {safe_repr(originals[matched])}"
-            normalized[matched], error = _resolve(normalized[matched], where, run)
+            normalized[matched], error = _resolve(normalized[matched], where)
         elif default is not None:
-            default, error = _resolve(default, "default", run)
+            default, error = _resolve(default, "default")
         label = safe_str(switch_value)
         desc: CheckDescriptor = {
             "check_type": "conditional",
@@ -271,7 +267,6 @@ class Guard(_Selecting):
         *,
         default: Optional[Child] = None,
         name: str,
-        run: RunChild = call,
     ) -> CheckDescriptor:
         """Build a guard descriptor: an ordered if/elif/else chain.
 
@@ -289,28 +284,33 @@ class Guard(_Selecting):
         for index, (condition, label, check) in enumerate(unpacked):
             deciding = matched_index is None and error is None
             truth: Optional[bool]
-            if _is_lazy(condition) and not deciding:
+            lazy = _is_lazy(condition)
+            if lazy and not deciding:
                 truth = None  # not called: an earlier branch already decided
             else:
+                problem: Optional[str] = None
                 try:
-                    lazy = _is_lazy(condition)
-                    truth = bool(condition() if lazy else condition)  # type: ignore[operator]
-                except Exception as exc:
-                    truth = False
-                    if deciding:
-                        error = (
-                            f"condition of branch {index} ({safe_str(label)}) raised "
-                            f"{describe_error(exc)}"
+                    value = condition() if lazy else condition  # type: ignore[operator]
+                    if is_descriptor(value):
+                        truth, problem = False, (
+                            "returned a check, which is always truthy; return its verdict "
+                            "instead, e.g. check['passed']"
                         )
+                    else:
+                        truth = bool(value)
+                except Exception as exc:
+                    truth, problem = False, f"raised {describe_error(exc)}"
+                if problem is not None and deciding:
+                    error = f"condition of branch {index} ({safe_str(label)}) {problem}"
                 if truth and deciding and error is None:
                     matched_index = index
             normalized.append({"condition": truth, "label": label, "check": check})
         if error is None and matched_index is not None:
             branch = normalized[matched_index]
             where = f"branch {matched_index} ({safe_str(branch['label'])})"
-            branch["check"], error = _resolve(branch["check"], where, run)
+            branch["check"], error = _resolve(branch["check"], where)
         elif error is None and default is not None:
-            default, error = _resolve(default, "default", run)
+            default, error = _resolve(default, "default")
         for branch in normalized:
             branch["check"] = _unbuilt(branch["check"])
         desc: CheckDescriptor = {

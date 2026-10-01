@@ -273,3 +273,98 @@ def test_failed_lazy_child_fails_the_test(pytester):
     result.stdout.fnmatch_lines(
         ["*Mode [[]mode=fast → latency[]] — expected < 10ms, got 12ms*"]
     )
+
+
+class TestInterruptedComposites:
+    """A child callable or condition that skips or fails the test (review of 0.5.0)."""
+
+    def test_factory_skip_keeps_the_checks_made_so_far(self, pytester):
+        pytester.makepyfile("""
+            import pytest
+
+            def test_channels(verify):
+                def check(i):
+                    if i == 1:
+                        pytest.skip("channel 1 not fitted")
+                    return verify.equal(i, 99, name=f"ch{i}")
+
+                verify.all_satisfy([0, 1], check, name="Channels")
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*1 of 1 checks failed*", "*ch0 — expected 99, got 0*"])
+
+    def test_lazy_default_that_skips_drops_the_unselected_cases(self, pytester):
+        pytester.makepyfile("""
+            import pytest
+
+            def test_output(verify):
+                verify.conditional(
+                    3,
+                    cases={1: verify.equal(10, 0, name="mode1"),
+                           2: verify.equal(10, 99, name="mode2")},
+                    default=lambda: pytest.skip("mode not supported"),
+                    name="Output",
+                )
+        """)
+        result = pytester.runpytest("-rs")
+        result.assert_outcomes(skipped=1)
+        result.stdout.fnmatch_lines(["*mode not supported*"])
+
+    def test_lazy_condition_that_fails_lists_no_unselected_check(self, pytester):
+        pytester.makepyfile("""
+            import pytest
+
+            def test_guard(verify):
+                verify.guard(
+                    [(lambda: pytest.fail("rig not ready"), "ready",
+                      verify.equal(1, 2, name="unselected"))],
+                    name="G",
+                )
+        """)
+        result = pytester.runpytest()
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*Failed: rig not ready*"])
+        result.stdout.no_fnmatch_line("*Soft assertion failures*")
+        result.stdout.no_fnmatch_line("*checks failed*")
+
+
+def test_a_lazy_condition_that_returns_a_check_is_an_error():
+    run, verify = _recording()
+    record = verify.guard(
+        [(lambda: verify.is_true(False, name="precondition"), "on",
+          verify.equal(1, 1, name="body"))],
+        default=verify.fail("off"),
+        name="G",
+    )
+    assert record["passed"] is False
+    assert record["matched_index"] is None
+    assert record["error"] == (
+        "condition of branch 0 (on) returned a check, which is always truthy; return its "
+        "verdict instead, e.g. check['passed']"
+    )
+    # The check the condition made is the user's own; the branch checks belong to the guard.
+    assert [r["name"] for r in run.records] == ["precondition", "G"]
+
+
+class _CountingList(list):
+    """Counts reads by index, to show absorption does not rescan the records per child."""
+
+    reads = 0
+
+    def __getitem__(self, index):
+        if isinstance(index, int):
+            self.reads += 1
+        return super().__getitem__(index)
+
+
+def test_absorbing_many_children_reads_each_record_once():
+    run, verify = _recording()
+    run.records = _CountingList()
+    for i in range(500):
+        verify.equal(i, i, name=f"before{i}")
+    made = [verify.greater(i, -1, name=f"x{i}") for i in range(2000)]
+    verify.all_satisfy(made, lambda check: check, name="All")
+    assert [r["name"] for r in run.records][-2:] == ["before499", "All"]
+    assert len(run.records) == 501
+    assert run.records.reads <= 2000

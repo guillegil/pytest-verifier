@@ -186,10 +186,11 @@ def test_sensor_output(verify):
     )
 ```
 
-Conditions can be any truthy or falsy value. A failed guard reports the branch it took, e.g.
-`✗ [0] Sensor output [→ below floor] — expected 0, got 7`. Passing a check as a condition
-raises `TypeError`, because a check is always truthy. Use its result instead, e.g.
-`check["passed"]`.
+Conditions can be any truthy or falsy value, and a condition that is a function is called
+(see [Lazy children](#lazy-children--build-only-the-selected-branch)). A failed guard reports
+the branch it took, e.g. `✗ [0] Sensor output [→ below floor] — expected 0, got 7`. Passing a
+check as a condition raises `TypeError`, because a check is always truthy. Use its result
+instead, e.g. `check["passed"]`.
 
 ### `all_satisfy` — apply one check to every item
 
@@ -234,7 +235,9 @@ it stay separate checks.
 A `conditional` case or default, and a `guard` check or default, can be a function with no
 arguments that returns the check, such as a `lambda`. Only the selected one is called, so the
 other branches never touch values they cannot use. A `guard` condition can be a function too.
-Conditions are called in order until one is true, and the ones after it are not called.
+Conditions are called in order until one is true, and the ones after it are not called. A
+condition function that returns a check instead of a truth value makes the guard fail with an
+error, because a check is always truthy.
 
 ```python
 def test_sensor_output(verify):
@@ -335,6 +338,7 @@ this to render verification cards.
 A plugin that should not import pytest-verify can implement the `pytest_verify_results` hook
 instead. It is called when a phase ends with checks to judge: when the test body ends, for the
 checks made in setup and in the body, and when teardown ends, for the checks made in teardown.
+If setup fails or skips, it is called with `when="setup"` for the checks made so far.
 Mark it optional, so it also loads where pytest-verify is not installed:
 
 ```python

@@ -110,10 +110,10 @@ class CheckDescriptor(TypedDict, total=False):
    - A composite absorbs every recorded check passed to it as a child, by identity, whenever
      it was built (`dict(check)` keeps a copy standalone); each evaluated child carries its
      own `passed`, unselected children carry none
-   - A lazy child (a callable) runs under a per-thread collector of its composite, so the
-     checks it records belong there; ones it records but does not return are put back
-     where the composite goes. Every record remembers the list that holds it, so absorption
-     also works for composites built inside a lazy child
+   - A lazy child (a callable) is just called: the checks it records go to the top level, and
+     the composite then absorbs the one it returned like an eager child. If building the
+     composite raises (a usage error, or `pytest.skip` in a lazy child), the checks passed
+     to the call are absorbed; the ones a factory or lazy child made so far stay standalone
    - Return the recorded dict
 
 2. **At the end of each phase (runtest hook wrappers):**
