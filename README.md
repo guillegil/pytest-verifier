@@ -131,7 +131,8 @@ An option on the command line wins over its ini setting. `--verify-summary` adds
 after the failures that groups the checks of every test by name, with their section titles,
 including the checks inside composites. Names with a failed check come first; `failed` lists
 only those, and `stats` adds the range of numeric values and the smallest margin, how close the
-nearest value came to its limit (negative when it was past it):
+nearest value came to its limit (negative when it was past it; `0` at the limit itself, which
+fails `greater`, `less` and an exclusive `between`):
 
 ```text
 ======================= pytest-verifier: checks by name ========================
@@ -572,6 +573,7 @@ formatted:
 ```json
 {
     "nodeid": "tests/test_rails.py::test_rails",
+    "attempt": 1,
     "when": "call",
     "outcome": "failed",
     "index": 3,
@@ -591,15 +593,18 @@ formatted:
 }
 ```
 
-`when` is the test phase that judged the check, `outcome` that phase's outcome (`"rerun"` for
-an attempt that pytest-rerunfailures repeats), `index` the check's `[k]` in the summary, and
-`check` the recorded check (see
+`attempt` counts the runs of the test from 1: pytest-rerunfailures repeats a failed test in a
+new attempt, so keep the lines of each test's last attempt. `when` is the test phase that judged
+the check, `outcome` that phase's outcome (`"rerun"` for the report that made
+pytest-rerunfailures repeat the test), `index` the check's `[k]` in the summary, and `check` the
+recorded check (see
 [Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
-The path works like `--junitxml`'s: relative to where pytest runs, folders created, and the
-file replaced on each run.
+The path works like `--junitxml`'s: relative to where pytest runs, with `~` and environment
+variables expanded, and folders created. The file is replaced when the tests start.
 
 `verify_junit_properties` adds checks to the junit XML report (`--junitxml`) as properties of
-their test case: `none` (the default), `failed` or `all`.
+their test case: `none` (the default), `failed` or `all`. With pytest-rerunfailures, only the
+last attempt's checks are added.
 
 ```toml
 [tool.pytest.ini_options]

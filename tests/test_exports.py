@@ -8,7 +8,30 @@ from types import SimpleNamespace
 
 import pytest
 
-from pytest_verifier.plugin import _JSON_PLUGIN, _JsonLines
+from pytest_verifier.plugin import _JSON_PLUGIN, _JUNIT_PLUGIN, _JsonLines
+
+from .test_regressions_lifecycle import _RERUN_CONFTEST, _RERUN_CONFTEST_LOGS_TEARDOWN
+
+#: The two ways pytest-rerunfailures logs a repeated attempt: before 16.6.1 it stops at the
+#: report it marks "rerun"; from 16.6.1 it also logs the attempt's teardown report.
+_RERUNS = pytest.mark.parametrize(
+    "rerun_conftest", [_RERUN_CONFTEST, _RERUN_CONFTEST_LOGS_TEARDOWN], ids=["older", "16.6.1+"]
+)
+
+_FLAKY = """
+    import pytest
+
+    ATTEMPTS = {"n": 0}
+
+    @pytest.fixture
+    def rig(verify):
+        yield
+        verify.is_true(True, name=f"teardown of attempt {ATTEMPTS['n']}")
+
+    def test_flaky(rig, verify):
+        ATTEMPTS["n"] += 1
+        verify.equal(ATTEMPTS["n"], 2, name="attempt")
+"""
 
 _TESTS = """
     import pytest
@@ -106,31 +129,84 @@ class TestJunitProperties:
         if warned:
             result.stdout.fnmatch_lines(["*junit_family 'xunit2' does not allow*xunit1*"])
 
-    def test_a_rerun_keeps_only_the_last_attempt(self, pytester: pytest.Pytester):
-        from .test_regressions_lifecycle import _RERUN_CONFTEST
-
-        pytester.makeconftest(
-            _RERUN_CONFTEST
-            + """
-    def pytest_runtest_logreport(report):
-        print("PROPS", report.when, report.outcome, report.user_properties)
-"""
+    @_RERUNS
+    def test_a_rerun_keeps_only_the_last_attempt(self, pytester: pytest.Pytester, rerun_conftest):
+        pytester.makeconftest(rerun_conftest)
+        pytester.makepyfile(_FLAKY)
+        result = pytester.runpytest(
+            "--junitxml=out.xml", "-o", "junit_family=xunit1", "-o", "verify_junit_properties=all"
         )
-        pytester.makepyfile("""
-            ATTEMPTS = {"n": 0}
-
-            def test_flaky(verify):
-                ATTEMPTS["n"] += 1
-                verify.equal(ATTEMPTS["n"], 2, name="attempt")
-        """)
-        result = pytester.runpytest("-s", "-o", "verify_junit_properties=all")
         result.assert_outcomes(passed=1)
-        result.stdout.fnmatch_lines(
-            [
-                "*PROPS call rerun [[]('verify[[]0] attempt', 'failed: expected 2, got 1')]",
-                "PROPS teardown passed [[]('verify[[]0] attempt', 'passed: 2 == 2')]",
-            ]
-        )
+        root = ET.parse(str(pytester.path / "out.xml")).getroot()
+        cases = [
+            [(prop.get("name"), prop.get("value")) for prop in case.iter("property")]
+            for case in root.iter("testcase")
+        ]
+        # 16.6.1+ makes a test case of the repeated attempt too: it gets none of its checks.
+        assert cases[:-1] == [[]] * (len(cases) - 1)
+        assert cases[-1] == [
+            ("verify[0] attempt", "passed: 2 == 2"),
+            ("verify[1] teardown of attempt 2", "passed: True"),
+        ]
+
+    def test_names_are_valid_xml(self, pytester: pytest.Pytester):
+        pytester.makepyfile("""
+            def test_odd_names(verify):
+                verify.equal(1, 2, name="file caf\\udce9.csv")
+                with verify.section("s\\uffff"):
+                    verify.equal(1, 2, name="n\\ufffe")
+        """)
+        cases = _properties(pytester, "-o", "verify_junit_properties=all")
+        assert [name for name, _ in cases["test_odd_names"]] == [
+            "verify[0] file caf\\udce9.csv",
+            "verify[1] s\\uffff › n\\ufffe",
+        ]
+
+    def test_a_check_judged_earlier_keeps_its_index(self, pytester: pytest.Pytester):
+        """A teardown composite of checks the test body made: they were judged and numbered
+        with the body, so they stay on their own and every index is used once."""
+        pytester.makepyfile("""
+            import pytest
+
+            @pytest.fixture
+            def rig(verify):
+                made = []
+                yield made
+                verify.all_satisfy(made, lambda c: c, name="all rails")
+                verify.equal(1, 2, name="teardown fail")
+
+            def test_absorb(rig, verify):
+                rig.append(verify.equal(1, 1, name="a"))
+                verify.equal(1, 1, name="b")
+        """)
+        cases = _properties(pytester, "-o", "verify_junit_properties=all", "--verify-json=o.jsonl")
+        assert [name for name, _ in cases["test_absorb"]] == [
+            "verify[0] a", "verify[1] b", "verify[2] all rails", "verify[3] teardown fail",
+        ]
+        lines = _lines(pytester.path / "o.jsonl")
+        assert [(line["index"], line["check"]["name"]) for line in lines] == [
+            (0, "a"), (1, "b"), (2, "all rails"), (3, "teardown fail"),
+        ]
+        assert lines[2]["check"]["child_checks"][0]["name"] == "a"
+
+    def test_a_worker_never_warns(self, pytester: pytest.Pytester):
+        config = pytester.parseconfig("--junitxml=out.xml", "-o", "verify_junit_properties=all")
+        config.workerinput = {}  # type: ignore[attr-defined]
+        config._do_configure()
+        try:
+            assert config.pluginmanager.get_plugin(_JUNIT_PLUGIN) is None
+        finally:
+            config._ensure_unconfigure()
+
+    def test_warns_when_a_conftest_turns_the_report_on(self, pytester: pytest.Pytester):
+        pytester.makeconftest("""
+            def pytest_configure(config):
+                config.option.xmlpath = "auto.xml"
+        """)
+        pytester.makepyfile("def test_a(verify):\n    verify.is_true(True, name='a')\n")
+        result = pytester.runpytest("-o", "verify_junit_properties=all")
+        result.assert_outcomes(passed=1, warnings=1)
+        result.stdout.fnmatch_lines(["*junit_family 'xunit2' does not allow*xunit1*"])
 
 
 def _lines(path) -> list:
@@ -144,6 +220,7 @@ class TestJsonLines:
             failed=1, passed=1, errors=1
         )
         lines = _lines(pytester.path / "out.jsonl")
+        assert {line["attempt"] for line in lines} == {1}
         summary = [
             (line["nodeid"].split("::")[1], line["when"], line["outcome"], line["index"],
              line["check"]["name"], line["check"]["passed"])
@@ -172,6 +249,51 @@ class TestJsonLines:
         assert _lines(pytester.path / "home" / "runs" / "a.jsonl")[0]["check"]["name"] == "a"
         pytester.runpytest("--verify-json", "reports/b.jsonl").assert_outcomes(passed=1)
         assert len(_lines(pytester.path / "reports" / "b.jsonl")) == 1
+        monkeypatch.setenv("VERIFY_OUT", str(pytester.path / "env"))
+        pytester.runpytest("--verify-json", "$VERIFY_OUT/c.jsonl").assert_outcomes(passed=1)
+        assert len(_lines(pytester.path / "env" / "c.jsonl")) == 1
+
+    def test_help_keeps_the_last_results(self, pytester: pytest.Pytester):
+        (pytester.path / "out.jsonl").write_text("last run\n", encoding="utf-8")
+        assert pytester.runpytest("--verify-json", "out.jsonl", "--markers").ret == 0
+        assert (pytester.path / "out.jsonl").read_text(encoding="utf-8") == "last run\n"
+
+    def test_text_that_utf_8_cannot_encode(self, pytester: pytest.Pytester):
+        """``os.listdir`` makes lone surrogates of a file name that is not UTF-8."""
+        pytester.makepyfile("""
+            def test_listdir(verify):
+                verify.contains(["caf\\udce9.csv"], "report.csv", name="written \\udce9")
+
+            def test_next(verify):
+                verify.is_true(True, name="next")
+        """)
+        result = pytester.runpytest("--verify-json", "out.jsonl")
+        result.assert_outcomes(failed=1, passed=1)
+        first = _lines(pytester.path / "out.jsonl")[0]["check"]
+        assert first["name"] == "written \\udce9"
+        assert first["haystack"] == ["caf\\udce9.csv"]
+
+    def test_a_hand_built_check_with_a_key_that_is_not_text(self, pytester: pytest.Pytester):
+        pytester.makepyfile("""
+            from pytest_verifier import checks
+
+            def test_odd_key(verify):
+                check = checks.is_true(True, name="odd")
+                check[(1, 2)] = 3
+                verify.record(check)
+        """)
+        pytester.runpytest("--verify-json", "out.jsonl").assert_outcomes(passed=1)
+        assert _lines(pytester.path / "out.jsonl")[0]["check"]["(1, 2)"] == 3
+
+    def test_one_line_per_check_whatever_the_text(self, pytester: pytest.Pytester):
+        pytester.makepyfile("""
+            def test_separators(verify):
+                verify.equal("a\\u2028b\\u2029c\\x85d", "x", name="separators")
+        """)
+        pytester.runpytest("--verify-json", "out.jsonl").assert_outcomes(failed=1)
+        text = (pytester.path / "out.jsonl").read_text(encoding="utf-8")
+        assert len(text.splitlines()) == 1
+        assert json.loads(text)["check"]["actual"] == "a\u2028b\u2029c\x85d"
 
     def test_the_file_is_replaced_and_always_written(self, pytester: pytest.Pytester):
         (pytester.path / "out.jsonl").write_text("old\n", encoding="utf-8")
@@ -185,25 +307,21 @@ class TestJsonLines:
         assert result.ret == pytest.ExitCode.USAGE_ERROR
         result.stderr.fnmatch_lines(["ERROR: --verify-json: cannot write *out.jsonl: *"])
 
-    def test_reruns_are_marked_and_numbered_from_zero(self, pytester: pytest.Pytester):
-        from .test_regressions_lifecycle import _RERUN_CONFTEST
-
-        pytester.makeconftest(_RERUN_CONFTEST)
-        pytester.makepyfile("""
-            ATTEMPTS = {"n": 0}
-
-            def test_flaky(verify):
-                ATTEMPTS["n"] += 1
-                verify.equal(ATTEMPTS["n"], 2, name="attempt")
-                verify.is_true(True, name="other")
-        """)
+    @_RERUNS
+    def test_reruns_are_numbered_by_attempt(self, pytester: pytest.Pytester, rerun_conftest):
+        pytester.makeconftest(rerun_conftest)
+        pytester.makepyfile(_FLAKY)
         pytester.runpytest("--verify-json", "out.jsonl").assert_outcomes(passed=1)
-        lines = _lines(pytester.path / "out.jsonl")
-        assert [(line["outcome"], line["index"], line["check"]["passed"]) for line in lines] == [
-            ("rerun", 0, False),
-            ("rerun", 1, True),
-            ("passed", 0, True),
-            ("passed", 1, True),
+        lines = [
+            (line["attempt"], line["when"], line["outcome"], line["index"], line["check"]["name"])
+            for line in _lines(pytester.path / "out.jsonl")
+        ]
+        repeated = [(1, "call", "rerun", 0, "attempt")]
+        if rerun_conftest is _RERUN_CONFTEST_LOGS_TEARDOWN:
+            repeated.append((1, "teardown", "passed", 1, "teardown of attempt 1"))
+        assert lines == repeated + [
+            (2, "call", "passed", 0, "attempt"),
+            (2, "teardown", "passed", 1, "teardown of attempt 2"),
         ]
 
     def test_an_xdist_worker_does_not_write(self, pytester: pytest.Pytester):
@@ -220,7 +338,8 @@ class TestJsonLines:
         """With ``--dist each`` the same test runs on several workers at once, and their
         reports interleave on the controller."""
         path = tmp_path / "out.jsonl"
-        writer = _JsonLines(path.open("w", encoding="utf-8"))
+        writer = _JsonLines(str(path))
+        writer.pytest_sessionstart()
 
         def report(node, when, *names):
             checks = [{"name": name, "passed": True} for name in names]
@@ -241,3 +360,4 @@ class TestJsonLines:
         assert [(line["check"]["name"], line["index"]) for line in _lines(path)] == [
             ("a", 0), ("b", 1), ("a", 0), ("c", 1), ("c", 2),
         ]
+        assert {line["attempt"] for line in _lines(path)} == {1}

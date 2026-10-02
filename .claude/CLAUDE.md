@@ -143,7 +143,8 @@ class CheckDescriptor(TypedDict, total=False):
      this package set `__tracebackhide__ = hide_stop_frames`, so `--pdb` opens in the test
    - A composite absorbs every recorded check passed to it as a child, by identity, whenever
      it was built (`dict(check)` keeps a copy standalone), except a check that stopped the
-     test; each evaluated child carries its own `passed`, unselected children carry none
+     test or that an earlier phase judged (it was reported and numbered there); each
+     evaluated child carries its own `passed`, unselected children carry none
    - A lazy child (a callable) is just called: the checks it records go to the top level, and
      the composite then absorbs the one it returned like an eager child. If building the
      composite raises (a usage error, or `pytest.skip` in a lazy child), the checks passed
@@ -168,8 +169,12 @@ class CheckDescriptor(TypedDict, total=False):
    - The judged checks go to the `pytest_verify_results` hook and to that phase's report as
      `report.verify_checks`; with `verify_junit_properties` (`none`/`failed`/`all`) also to
      `item.user_properties` (`verify[k] label`, `passed: detail`), dropped at the next
-     attempt's setup. `--verify-json PATH` registers `_JsonLines` on the controller only,
-     which writes a line per check from `report.verify_checks` (index counted per attempt)
+     attempt's setup; on the controller `_JunitAttempts` strips them from the reports of an
+     attempt pytest-rerunfailures repeats (16.6.1+ logs its teardown report) and warns about
+     an xunit2 report at session start. `--verify-json PATH` registers `_JsonLines` on the
+     controller only (path checked at configure, file emptied at session start), which writes
+     a line per check from `report.verify_checks` with its `attempt` (`_Attempts`, by node ID
+     and worker) and index (counted per attempt)
 
 3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 
@@ -336,9 +341,12 @@ as `d["error"]`.
 Options read at configure (each also an ini setting of the same name; the option wins):
 `--verify-show-passed` (stash, default 10; `-vv` lists all), `--verify-ascii` (`_ASCII_TERMINAL`
 ContextVar, reset by a config cleanup, read when a report prints), `--verify-summary`
-(`_Summary` plugin on the controller, from `report.verify_checks`, rerun reports skipped; margins
-from `CheckType.margin`, which ordering checks, `between` and `approx` implement), `--verify-json`
-and `verify_junit_properties` (see Fixture Behavior).
+(`_Summary` plugin on the controller, from `report.verify_checks`, counting an attempt at its
+teardown report unless one of its reports was a rerun; margins from `CheckType.margin`, which
+ordering checks, `between` and `approx` implement, computed as the verdict is: exact unless the
+check compares in floats), `--verify-json` and `verify_junit_properties` (see Fixture Behavior).
+Text in records goes through `utf8_safe` (lone surrogates escaped), and `escape` also escapes
+surrogates and U+FFFE/U+FFFF, so records encode as UTF-8 and junit reports stay well-formed.
 
 The summary text (`ChecksFailedError`'s message, the "Soft assertion failures" section) is
 always Unicode. Only the terminal gets another form: `plugin.pytest_runtest_logreport` makes a

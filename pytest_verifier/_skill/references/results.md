@@ -6,16 +6,18 @@ records as read-only: they are shared, and changing `passed` does not change the
 
 ## Without code
 
-- `--verify-json PATH` writes one JSON object per check and line: `{"nodeid": ..., "when":
-  "call", "outcome": "failed", "index": 1, "check": {...}}`. `when` is the phase that judged
-  the check, `outcome` that phase's report outcome (`"rerun"` for an attempt
-  pytest-rerunfailures repeats), `index` the `[k]` of the summary, `check` the record (keys
-  below). The path works like `--junitxml`'s; the file is replaced each run. Works under
-  pytest-xdist.
+- `--verify-json PATH` writes one JSON object per check and line: `{"nodeid": ...,
+  "attempt": 1, "when": "call", "outcome": "failed", "index": 1, "check": {...}}`. `attempt`
+  counts the test's runs from 1 (pytest-rerunfailures repeats a test in a new attempt: keep
+  each test's last), `when` is the phase that judged the check, `outcome` that phase's report
+  outcome, `index` the `[k]` of the summary, `check` the record (keys below). The path works
+  like `--junitxml`'s (`~` and `$VARS` expanded); the file is replaced when the tests start.
+  Works under pytest-xdist.
 - `verify_junit_properties = failed` or `all` (ini, or `-o`) adds a junit `<property>` per
-  check to its test case: name `verify[k] <section › name>`, value `passed: <detail>` or
-  `failed: <detail>`. The default is `none`. pytest's default `junit_family` (xunit2) does
-  not allow properties, so pytest-verifier warns; set `junit_family = xunit1`.
+  check to its test case (the last attempt's, after a rerun): name `verify[k] <section ›
+  name>`, value `passed: <detail>` or `failed: <detail>`. The default is `none`. pytest's
+  default `junit_family` (xunit2) does not allow properties, so pytest-verifier warns; set
+  `junit_family = xunit1`.
 
 ## Three ways in
 

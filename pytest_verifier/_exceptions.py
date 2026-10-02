@@ -228,7 +228,8 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
         start: Index of the first of them among all the checks of the test, so that checks
             raised after teardown keep the numbers ``get_check_results`` gives them.
         max_passed: List at most this many passed checks (all when ``None``). The plugin
-            lists 10 unless pytest runs with ``-vv``.
+            lists ``verify_show_passed`` (``--verify-show-passed``, 10 by default), all with
+            ``-vv``.
         stopped_at: Index (counted like *start*) of the failed check that stopped the test,
             if one did.
 

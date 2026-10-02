@@ -55,7 +55,7 @@ class TestShowPassed:
             ["*stopped at*", "  ✓ … 3 more passed checks (-vv shows them)"]
         )
 
-    @pytest.mark.parametrize("value", ["-1", "ten", "", "1.5"])
+    @pytest.mark.parametrize("value", ["-1", "ten", "", "1.5", "²", "١"])
     def test_an_invalid_value_is_a_usage_error(self, pytester: pytest.Pytester, value):
         pytester.makepyfile(_MANY)
         result = pytester.runpytest(f"--verify-show-passed={value}")
@@ -95,8 +95,28 @@ class TestAscii:
         )
         result.stdout.fnmatch_lines(["FAILED *::test_a - 1 of 2 checks failed: rail \\u2014 *"])
         assert "✗" not in result.stdout.str() and "✓" not in result.stdout.str()
-        xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
-        assert "  ✗ [0] rail (test_the_terminal_gets_the_ascii_form.py:2) — " in xml
+
+    def test_reports_keep_the_unicode_text(self, pytester: pytest.Pytester):
+        import xml.etree.ElementTree as ET
+
+        pytester.makeconftest("""
+            def pytest_runtest_logreport(report):
+                if report.failed:
+                    print("LONGREPR", report.longreprtext.splitlines()[0])
+        """)
+        pytester.makepyfile(self._TEST)
+        result = pytester.runpytest("-s", "--junitxml=out.xml", "--verify-ascii")
+        result.stdout.fnmatch_lines(["*LONGREPR 1 of 2 checks failed: rail — expected *µV*"])
+        root = ET.parse(str(pytester.path / "out.xml")).getroot()
+        failure = next(root.iter("failure"))
+        assert "  ✗ [0] rail (test_reports_keep_the_unicode_text.py:2) — " in (failure.text or "")
+
+    @pytest.mark.parametrize("value", ["maybe", "yes please"])
+    def test_an_invalid_value_is_a_usage_error(self, pytester: pytest.Pytester, value):
+        pytester.makepyfile(self._TEST)
+        result = pytester.runpytest("-o", f"verify_ascii={value}")
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        result.stderr.fnmatch_lines(["ERROR: verify_ascii must be true or false: *"])
 
     def test_off_by_default(self, pytester: pytest.Pytester):
         pytester.makepyfile(self._TEST)
@@ -197,19 +217,56 @@ class TestSessionSummary:
             "  x 3V3 \\u203a Vout: 1 of 2 failed (first: test_the_ascii_form.py::test_rail[hot])"
         )
 
-    def test_reruns_count_once(self, pytester: pytest.Pytester):
-        from .test_regressions_lifecycle import _RERUN_CONFTEST
+    @pytest.mark.parametrize("logs_teardown", [False, True], ids=["older", "16.6.1+"])
+    def test_reruns_count_once(self, pytester: pytest.Pytester, logs_teardown):
+        from .test_regressions_lifecycle import _RERUN_CONFTEST, _RERUN_CONFTEST_LOGS_TEARDOWN
 
-        pytester.makeconftest(_RERUN_CONFTEST)
+        pytester.makeconftest(_RERUN_CONFTEST_LOGS_TEARDOWN if logs_teardown else _RERUN_CONFTEST)
         pytester.makepyfile("""
-            ATTEMPTS = {"n": 0}
+            import pytest
 
-            def test_flaky(verify):
+            ATTEMPTS = {"n": 0, "teardown": 0}
+
+            @pytest.fixture
+            def rig(verify):
+                yield
+                verify.is_true(True, name="in teardown")
+
+            def test_flaky(rig, verify):
                 ATTEMPTS["n"] += 1
                 verify.equal(ATTEMPTS["n"], 2, name="attempt")
+
+            @pytest.fixture
+            def flaky_teardown(verify):
+                yield
+                ATTEMPTS["teardown"] += 1
+                verify.equal(ATTEMPTS["teardown"], 2, name="teardown attempt")
+
+            def test_flaky_teardown(flaky_teardown, verify):
+                verify.is_true(True, name="body")
         """)
         result = pytester.runpytest("--verify-summary=all")
-        assert self._section(result) == ["  ✓ attempt: 1 passed"]
+        assert self._section(result) == [
+            "  ✓ attempt: 1 passed",
+            "  ✓ in teardown: 1 passed",
+            "  ✓ body: 1 passed",
+            "  ✓ teardown attempt: 1 passed",
+        ]
+
+    def test_huge_ints(self, pytester: pytest.Pytester):
+        pytester.makepyfile("""
+            def test_ids(verify):
+                verify.equal(2**1100, 2**1100, name="id")
+                verify.greater(10**400, 0, name="big")
+                verify.less(1.5, 2, name="small")
+        """)
+        result = pytester.runpytest("--verify-summary=stats")
+        assert result.ret == pytest.ExitCode.OK
+        section = self._section(result)
+        assert section[0].startswith("  ✓ id: 1 passed; 1")  # the int itself, bounded
+        assert section[1].startswith("  ✓ big: 1 passed; 1")  # no margin: too large for a float
+        assert "margin" not in section[1]
+        assert section[2] == "  ✓ small: 1 passed; 1.5, margin 0.5"
 
     @pytest.mark.parametrize("value", ["on", "", "FAILED"])
     def test_an_invalid_value_is_a_usage_error(self, pytester: pytest.Pytester, value):
@@ -258,6 +315,12 @@ class TestMargin:
             (checks.approx(3.38, 3.3, abs_tol=0.05, name="a"), -0.03),
             (checks.approx(3.3, 3.3, abs_tol=0.01, rel_tol=0.02, name="a"), 0.066),
             (checks.approx(10, 10, rel_tol=0.1, name="a"), 1),
+            # Exact, as the verdicts: ints are never rounded to floats.
+            (checks.approx(10**17 + 9, 10**17, abs_tol=9, name="a"), 0),
+            (checks.approx(10**17 + 10, 10**17, abs_tol=9, name="a"), -1),
+            (checks.less(2**53 + 1, 2**53, name="a"), -1),
+            (checks.between(2**53 + 1, 0, 2**53, name="a"), -1),
+            (checks.greater(2**53, 2.0**53, name="a"), 0),
         ],
     )
     def test_how_far_inside_the_limit(self, check, expected):

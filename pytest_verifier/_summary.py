@@ -36,10 +36,12 @@ class _Group:
 
     def measure(self, check: Mapping[str, Any]) -> None:
         actual = check.get("actual")
-        if isinstance(actual, (int, float)) and not isinstance(actual, bool):
-            if math.isfinite(actual):
-                self.low = actual if self.low is None else min(self.low, actual)
-                self.high = actual if self.high is None else max(self.high, actual)
+        # An int is never NaN or infinite (and may be too large for a float).
+        if isinstance(actual, int) and not isinstance(actual, bool) or (
+            isinstance(actual, float) and math.isfinite(actual)
+        ):
+            self.low = actual if self.low is None else min(self.low, actual)
+            self.high = actual if self.high is None else max(self.high, actual)
         found = margin(check)
         if found is not None:
             self.margin = found if self.margin is None else min(self.margin, found)

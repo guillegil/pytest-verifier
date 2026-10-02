@@ -48,6 +48,7 @@ from ._checks import child_checks
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
 from ._location import NOWHERE, FunctionCode, Site, locate
+from ._render import utf8_safe
 from ._settle import settle
 from ._verify import Sink, Verify
 
@@ -197,7 +198,9 @@ class Run:
         itself is absorbed.
 
         A check that stopped the test stays at the top level too: the end of the phase must
-        judge it, and the summary names it as the check the test stopped at.
+        judge it, and the summary names it as the check the test stopped at. So does a check
+        an earlier phase judged (a teardown composite of checks made in the test body): it was
+        reported, and numbered, with that phase.
         """
         with self.lock:
             ids = set()
@@ -208,6 +211,7 @@ class Run:
                     entry is None
                     or entry.record is not child
                     or not entry.top_level
+                    or entry.judged
                     or id(child) in triggers
                 ):
                     continue
@@ -315,8 +319,8 @@ class _Section:
 
     def __init__(self, run: Run, title: str) -> None:
         self._run = run
-        # A plain str: a str subclass (a str Enum member) could not be pickled or sent by xdist.
-        self._title = str.__str__(title)
+        # Plain text: a str subclass (a str Enum member) could not be pickled or sent by xdist.
+        self._title = utf8_safe(str.__str__(title))
         self._owner = object()
 
     def __enter__(self) -> None:

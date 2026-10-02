@@ -25,8 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Sections nest and follow `contextvars`: an asyncio task created in a section is in it, a
   plain `threading.Thread` started in it is not. `checks.section()` raises `RuntimeError`.
 - `--verify-json PATH` writes every check to a JSON Lines file, one object per check with the
-  test's node ID, the phase that judged it, the report's outcome, its index in the summary and
-  the recorded check. It is written from the reports, so it works under pytest-xdist.
+  test's node ID, its attempt (more than one when pytest-rerunfailures repeats the test), the
+  phase that judged it, the report's outcome, its index in the summary and the recorded check.
+  It is written from the reports, so it works under pytest-xdist.
 - The `verify_junit_properties` setting (`none`, `failed` or `all`; default `none`) adds checks
   to the junit XML report as `<property name="verify[3] 5V0 › Ripple" value="failed: …"/>`. A
   rerun keeps only the last attempt's. With a junit family that does not allow properties
@@ -46,6 +47,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `verify.require(value)` with something that is not a check named `record()` in its error; it
   now names `require()`.
+- A composite made in teardown no longer takes in checks that the test body made: they were
+  judged and numbered when the body ended, so they stay listed on their own. Before, the
+  teardown summary could give two checks the same `[k]`.
+- Recorded checks can always be written as UTF-8: text with lone surrogates, such as a file name
+  `os.listdir` could not decode, is kept as `\udce9` escapes. Such text stopped pytest-xdist
+  workers. A hand-built check whose key is not text gets the key's `repr`, so records stay
+  JSON-safe.
+- Summaries show lone surrogates and the noncharacters U+FFFE and U+FFFF as escapes, so they
+  print on any terminal and junit reports stay well-formed.
 
 ## [0.8.0] - 2026-10-02
 
