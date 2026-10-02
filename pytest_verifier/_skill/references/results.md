@@ -61,6 +61,7 @@ def pytest_sessionfinish(session):
 | `error` | Only when the check could not be evaluated: the exception, e.g. `"TypeError: ..."` |
 | `phase` | `"setup"`, `"call"` or `"teardown"`: the test phase that made it |
 | `location`, `called_from` | `"tests/test_psu.py:9"`, relative to the rootdir; `called_from` only when a helper made it. Hand-built and `checks` descriptors have neither |
+| `section` | Only for a check recorded in `verify.section` blocks: their titles, outermost first (`["3V3", "Load"]`) |
 | values | Per type: `actual`, `expected`, `units`, `abs_tol`, `rel_tol`, `threshold`, `low`, `high`, `inclusive`, `haystack`, `needle`, `pattern`, `flags`, `expected_type`, `actual_length`, `msg` ... as JSON-safe snapshots: tuples become lists; sets, bytes, enums, `Decimal`, NaN, dicts with non-text keys and other objects become their repr text (`"Decimal('0.1')"`, `"nan"`) |
 
 Composites nest their children, which carry their own `passed`; a child that was not selected

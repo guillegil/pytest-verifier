@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version. `python -m pytest_verifier` runs the same command.
 - pytest's header says when the skill in the project's `.claude/skills` or `.agents/skills` is
   for another version of pytest-verifier, and how to update it.
+- `verify.section(title)`, a context manager that groups the checks recorded in its block.
+  Summaries name them after their sections (`✗ [3] 5V0 › Ripple …`), also in the first line,
+  and each record has their titles in a new `section` field (`["5V0"]`, outermost first).
+  Sections nest and follow `contextvars`: an asyncio task created in a section is in it, a
+  thread started in it is not. `checks.section()` raises `RuntimeError`.
 
 ### Fixed
 

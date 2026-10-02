@@ -168,7 +168,9 @@ def _close_phase(
     # Also when *exc* links to a stop: pytest may print it in the chain too, but only this
     # section shows the summary with every pytest (groups only from 7.2, 15 members at most)
     # and in the terminal's encoding.
-    run.sections[when] = format_summary(pending, start=start, stopped_at=stopped_at, **options)
+    run.report_sections[when] = format_summary(
+        pending, start=start, stopped_at=stopped_at, **options
+    )
     return None
 
 
@@ -591,7 +593,7 @@ def _decorate_report(
     if checks:
         # JSON-safe, so it survives the serialization of reports (pytest-xdist).
         report.verify_checks = checks  # type: ignore[attr-defined]
-    section = run.sections.pop(call.when, None)
+    section = run.report_sections.pop(call.when, None)
     if section is not None and report.failed:
         longrepr = report.longrepr
         if hasattr(longrepr, "addsection"):

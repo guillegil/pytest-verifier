@@ -1,6 +1,6 @@
 ---
 name: pytest-verifier
-description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, record, require), the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; hardware, lab, bench or production tests), even if the plugin is not named.
+description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, record, require, section), the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; hardware, lab, bench or production tests), even if the plugin is not named.
 metadata:
   version: "0.9.0"
 ---
@@ -30,8 +30,9 @@ def test_3v3_rail(verify, psu):
   or limit, positionally (`equal(measured, expected)`, `greater(measured, limit)`): the report
   reads `expected <second>, got <first>`. Everything else is keyword-only: `name=`, `units=`,
   `abs_tol=`, `rel_tol=`, `inclusive=`. `name` is required on every check except `fail` and
-  must be a `str`. Make names specific and unique within the test (`f"{rail} ripple"`, not
-  `"ripple"`): the report identifies checks by name.
+  must be a `str`. Make names specific and unique within the test (`f"{rail} ripple"`, or
+  `"Ripple"` in a `verify.section(rail)`, not a bare `"ripple"` in a loop): the report
+  identifies checks by name.
 - **Soft checks never raise.** Do not `assert verify.equal(...)` or write `if verify.equal(...)`
   (the returned dict is always truthy), and do not wrap checks in `try`/`except` or
   `pytest.raises`: nothing is raised until the test body ends. To branch on a verdict, read
@@ -141,6 +142,22 @@ that error. Checks a lazy child records besides the one it returns stay separate
 check several things in one case, return a group:
 `lambda: verify.all_satisfy([verify.equal(...), verify.less(...)], lambda c: c, name="Boost")`.
 
+## Grouping checks
+
+`with verify.section(title):` puts every check recorded in the block under `title`: the
+report names them `3V3 › Vout`, and each record gets `section` (`["3V3"]`). Sections nest
+(`["3V3", "Load"]`). A check gets the section of the code that records it, so
+`verify.record(check)` gives the section of that call, and a thread started in the block is
+outside it. A section opened around a fixture's `yield` also covers the test body.
+`checks.section` raises `RuntimeError`.
+
+```python
+for rail, nominal in {"3V3": 3.3, "5V0": 5.0}.items():
+    with verify.section(rail):
+        verify.approx(float(dut.vout(rail)), nominal, rel_tol=0.02, name="Vout", units="V")
+        verify.less(float(dut.ripple_mv(rail)), 20, name="Ripple", units="mV")
+```
+
 ## Stopping a test at a failed check
 
 Use `verify.require` when a failure makes the rest of the test meaningless (no connection, no
@@ -172,8 +189,8 @@ for one run). Checks made while fixtures are torn down stay soft, and so do a un
   `@pytest.fixture(autouse=True)` on `def _verify(self, verify): self.verify = verify`.
 - Threads may make checks; join them before the test returns, or their checks are lost. A
   child process cannot make checks: return its values and check them in the test.
-- Soft failures belong to the whole test, not to a pytest subtest: put the loop variable in
-  the name (`name=f"ch{i} Vout"`) or parametrize the test.
+- Soft failures belong to the whole test, not to a pytest subtest: group each iteration's
+  checks with `verify.section(f"ch{i}")`, or parametrize the test.
 - `fixture 'verify' not found` means the plugin is not loaded (for example with
   `PYTEST_DISABLE_PLUGIN_AUTOLOAD`): add `-p pytest_verifier`.
 - A helper can take the fixture as a parameter; annotate it `Verify` (or `Require` for

@@ -14,6 +14,7 @@ from typing import (
     Any,
     Callable,
     Container,
+    ContextManager,
     Iterable,
     Mapping,
     Optional,
@@ -62,6 +63,12 @@ _RECORD_NEEDS_FIXTURE = (
     "the 'verify' fixture in the test and call verify.record() on it."
 )
 
+_SECTION_NEEDS_FIXTURE = (
+    "checks.section() cannot group checks: pytest_verifier.checks only builds checks, and only "
+    "recorded checks belong to a section. Request the 'verify' fixture in the test and use "
+    "verify.section() on it."
+)
+
 _REQUIRE_NEEDS_FIXTURE = (
     "checks.require cannot stop a test: pytest_verifier.checks only builds checks. Request the "
     "'verify' fixture in the test and use verify.require on it."
@@ -103,6 +110,10 @@ class Sink:
     def hard(self) -> Sink:
         """The sink of ``require``: its checks stop the test when they fail."""
         return _NO_REQUIRE
+
+    def section(self, title: str) -> ContextManager[None]:
+        """Group the checks recorded while the block runs under *title*."""
+        raise RuntimeError(_SECTION_NEEDS_FIXTURE)
 
 
 class _NoRequire(Sink):
@@ -600,6 +611,40 @@ class Verify:
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.record(check)
+
+    def section(self, title: str) -> ContextManager[None]:
+        """Group the checks recorded in a ``with`` block under *title*.
+
+        Every check recorded while the block runs gets a ``section``: the titles of the
+        sections it is in, outermost first (``["3V3"]``, or ``["3V3", "Load"]`` when sections
+        nest). Summaries show it before the check's name::
+
+            for rail in RAILS:
+                with verify.section(rail.name):  # summaries say "3V3 › Vout"
+                    verify.approx(rail.vout(), rail.nominal, rel_tol=0.02, name="Vout")
+
+        A check gets the section in which it is recorded: ``verify.record(check)`` gives a
+        check built elsewhere the section of that call. Sections are kept in a context
+        variable: an asyncio task created in the block is in the section, and a thread is only
+        when it runs in a copy of the context (``contextvars.copy_context().run``, or any
+        thread on free-threaded Python 3.14+).
+
+        Args:
+            title: The title of the section: a non-empty string.
+
+        Returns:
+            A context manager for a ``with`` statement.
+
+        Raises:
+            TypeError: If *title* is not a string.
+            ValueError: If *title* is empty.
+            RuntimeError: When called on ``pytest_verifier.checks``.
+        """
+        if not isinstance(title, str):
+            raise TypeError(f"section() title must be a string, not {type(title).__name__}")
+        if not title.strip():
+            raise ValueError("section() title must not be empty")
+        return self._sink.section(title)
 
     @property
     def require(self) -> Require:

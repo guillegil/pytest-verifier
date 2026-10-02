@@ -43,7 +43,8 @@ class CheckDescriptor(_CheckIdentity, total=False):
     they carry ``passed``, a rendered ``detail``, an ``error`` when the check could not be
     evaluated, the test ``phase`` they were made in (``"setup"``, ``"call"`` or
     ``"teardown"``), where they were made (``location``, and ``called_from`` when a helper made
-    them), and JSON-safe snapshots of the checked values.
+    them), the titles of the ``verify.section`` blocks they were made in (``section``), and
+    JSON-safe snapshots of the checked values.
     """
 
     # --- set when recorded (fixture path) ---
@@ -55,6 +56,8 @@ class CheckDescriptor(_CheckIdentity, total=False):
     location: str
     #: ``"path:line"`` in the test function that led to it, when that is another line.
     called_from: str
+    #: The titles of the ``verify.section`` blocks it was recorded in, outermost first.
+    section: List[str]
 
     # --- check-type-specific ---
     actual: Any

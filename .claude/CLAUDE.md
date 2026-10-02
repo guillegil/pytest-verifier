@@ -107,6 +107,7 @@ class CheckDescriptor(TypedDict, total=False):
     phase: str               # Fixture only: "setup", "call" or "teardown"
     location: str            # Fixture only: "path:line" that made it, rootdir-relative, "/"
     called_from: str         # Fixture only: test function line that led to it, if another
+    section: list[str]       # Fixture only: titles of the verify.section blocks, if any
     error: str               # Why the check could not be evaluated (it then fails)
     actual: Any              # Check-type-specific
     expected: Any            # Check-type-specific
@@ -130,7 +131,9 @@ class CheckDescriptor(TypedDict, total=False):
    - Record a copy with `passed`, `detail`, `phase`, `location` (first frame outside the
      package; `called_from` when that is not the test function and the test function is on the
      stack, unless the frame found is installed or outside code that runs the test, such as
-     pytest-bdd's generated test, not code in the test module) and JSON-safe snapshots of the
+     pytest-bdd's generated test, not code in the test module), `section` (the titles of the
+     `verify.section` blocks the recording code is in: a `ContextVar` keyed by the run, so
+     asyncio tasks inherit it and threads start outside it) and JSON-safe snapshots of the
      values
    - With `verify.require` or fail-fast (not in teardown or `TestCase` cleanup), a failed check raises
      `ChecksFailedError` right there; `verify.require(check)` on a failed check that is not
@@ -211,7 +214,7 @@ Implementation requirements:
 - Docstrings on all public methods
 - Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (21 check functions, plus `record`)
+## Function Catalog (21 check functions, plus `record` and `section`)
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -255,7 +258,9 @@ Implementation requirements:
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-`checks`; `checks.record()` raises `RuntimeError`. `verify.require` has every check method and is
+`checks`; `checks.record()` raises `RuntimeError`. `verify.section(title)` (fixture only) is a
+context manager whose recorded checks get its title in `section`; summaries show
+`3V3 › Vout`; `checks.section()` raises `RuntimeError`. `verify.require` has every check method and is
 callable like `record`; its failed checks stop the test. The methods of `checks.require`, and
 calling it, raise `RuntimeError`.
 

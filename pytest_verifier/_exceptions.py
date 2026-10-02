@@ -107,10 +107,23 @@ def _place(site: str) -> str:
     return shorten(text, _SITE_LIMIT)
 
 
-def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
+#: Between the titles of a check's sections and its name: ``3V3 › Vout``.
+SECTION_SEPARATOR = " › "
+
+
+def label(result: Mapping[str, Any]) -> str:
+    """The check's name, after the titles of the sections it was recorded in, if any."""
     name = render_text(result.get("name", ""))
+    section = result.get("section")
+    if not isinstance(section, (list, tuple)) or not section:
+        return name
+    return SECTION_SEPARATOR.join([*(render_text(title) for title in section), name])
+
+
+def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
     site = "" if passed else _site(result)
-    return f"  {marker} [{idx}] {name}{site}{summary_separator(result)}{_detail(result, passed)}"
+    detail = _detail(result, passed)
+    return f"  {marker} [{idx}] {label(result)}{site}{summary_separator(result)}{detail}"
 
 
 def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> str:
@@ -124,8 +137,9 @@ def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> 
         index, result = headline(failed, stopped_at)
         if index == stopped_at:
             header += f", stopped at [{index}]"
-        name = render_text(result.get("name", ""))
-        first = shorten(f"{name}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT)
+        first = shorten(
+            f"{label(result)}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT
+        )
     except Exception:
         return header
     more = f" (+{len(failed) - 1} more)" if len(failed) > 1 else ""

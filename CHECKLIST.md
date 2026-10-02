@@ -78,11 +78,11 @@ Scope: the agent skill and its installer, asked for by the user. The reporting i
 FEAT-4, FEAT-12) are the proposed rest of 0.9.0, waiting for the user's confirmation.
 
 - [ ] Agent skill `pytest-verifier` in the package (`pytest_verifier/_skill/`), written with skill-creator, every claim checked against the code (DX-11)
-- [ ] Test prompts run with and without the skill, graded, reviewed, skill revised (DX-11)
-- [ ] `pytest-verifier skill install` with `--claude`, `--agents` (`--generic`), `--global` and `--force`; `python -m pytest_verifier` too (DX-11)
-- [ ] Tests that keep the skill current: every public method, export and option named in it, its version equal to the package's, its examples compile (DX-11)
-- [ ] pytest's header says when a project's installed skill was made for another version (DX-11)
-- [ ] `verify.section()` to group checks: a `section` path on records, `3V3 › Vout` in summaries (FEAT-8)
+- [x] ~~Test prompts run with and without the skill, graded, reviewed, skill revised (DX-11)~~ (2 rounds, 7 tasks)
+- [x] ~~`pytest-verifier skill install` with `--claude`, `--agents` (`--generic`), `--global` and `--force`; `python -m pytest_verifier` too (DX-11)~~
+- [x] ~~Tests that keep the skill current: every public method, export and option named in it, its version equal to the package's, its examples compile (DX-11)~~
+- [x] ~~pytest's header says when a project's installed skill was made for another version (DX-11)~~
+- [x] ~~`verify.section()` to group checks: a `section` path on records, `3V3 › Vout` in summaries (FEAT-8)~~
 - [ ] Export checks to junit properties and a JSON Lines file (FEAT-4)
 - [ ] `--verify-show-passed`, `--verify-ascii` and a session summary (FEAT-12)
 - [ ] The skill covers every new API and option

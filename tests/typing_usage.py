@@ -120,6 +120,11 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     assert _connect(fixture.require).get("passed") is True
     version: str = pytest_verifier.__version__
     assert version
+    # Sections group the checks recorded in a block; records carry the titles.
+    with fixture.section("3V3"), fixture.require.section("Load"):
+        grouped = fixture.approx(3.31, 3.3, abs_tol=0.05, name="Vout", units="V")
+    titles: List[str] | None = grouped.get("section")
+    assert titles == ["3V3", "Load"]
 
 
 def _connect(require: Require) -> CheckDescriptor:
@@ -151,6 +156,7 @@ def misuse() -> None:
     checks.all_satisfy([1, 2], _by_name, name="Names")  # type: ignore[arg-type]
     checks.require("not a check")  # type: ignore[arg-type]
     checks.require.equal(1, 1)  # type: ignore[call-arg]
+    checks.section(["3V3"])  # type: ignore[arg-type]
     from pytest_verifier import chekcs  # type: ignore[attr-defined]  # noqa: F401
     pytest_verifier.get_check_result  # type: ignore[attr-defined]  # noqa: B018
 

@@ -20,15 +20,20 @@ for an error of that child, and the check that stopped the test stays at the top
 
 This module's frames hide themselves from tracebacks of such errors (``__tracebackhide__``), so
 ``--pdb`` opens in the test.
+
+``verify.section`` blocks are kept in a context variable, so that each asyncio task and thread
+has its own: a check is in the sections of the code that records it.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import sys
 import threading
 from typing import (
     Any,
     Callable,
+    ContextManager,
     Dict,
     Iterable,
     List,
@@ -59,6 +64,12 @@ _FORKED = (
 
 
 _NO_TEST = FunctionCode()
+
+#: The ``verify.section`` blocks the code running now is in: the key of their run and their
+#: titles, outermost first. Keyed by run, so sections never carry over to another test.
+_SECTIONS: contextvars.ContextVar[Tuple[object, Tuple[str, ...]]] = contextvars.ContextVar(
+    "pytest_verifier_sections", default=(None, ())
+)
 
 
 class _Entry:
@@ -93,7 +104,7 @@ class Run:
         #: The test phase running now; recorded on every check.
         self.phase = "setup"
         #: Soft summaries waiting to be attached to the report of a phase that also errored.
-        self.sections: Dict[str, str] = {}
+        self.report_sections: Dict[str, str] = {}
         #: Checks judged at the end of each phase, waiting to be attached to its report.
         self.judged: Dict[str, List[CheckDescriptor]] = {}
         #: Where locations are relative to, and the code of the test function.
@@ -109,6 +120,13 @@ class Run:
         #: The errors :meth:`stop` raised, each with the check that made it stop.
         self._stops: List[Tuple[ChecksFailedError, CheckDescriptor]] = []
         self._entries: Dict[int, _Entry] = {}
+        #: Identifies this run's sections in :data:`_SECTIONS` without keeping the run alive.
+        self.key = object()
+
+    def section_path(self) -> Tuple[str, ...]:
+        """The titles of this run's sections the code running now is in, outermost first."""
+        key, path = _SECTIONS.get()
+        return path if key is self.key else ()
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
         entry = self._entries.get(id(descriptor))
@@ -142,13 +160,18 @@ class Run:
             self.ensure_open()
             self.absorb(absorb)
             record["phase"] = self.phase
-            # A copy of another record brings that record's site; this one may have none.
+            # A copy of another record brings that record's site and section; this one may
+            # have none.
             record.pop("location", None)
             record.pop("called_from", None)
+            record.pop("section", None)
             if location is not None:
                 record["location"] = location
             if called_from is not None:
                 record["called_from"] = called_from
+            section = self.section_path()
+            if section:
+                record["section"] = list(section)
             self._entries[id(record)] = _Entry(record, passed)
             self.records.append(record)
 
@@ -267,6 +290,33 @@ class Run:
         return None
 
 
+class _Section:
+    """A ``verify.section`` block: see :meth:`Verify.section`. Reusable, also nested."""
+
+    __slots__ = ("_run", "_title", "_tokens")
+
+    def __init__(self, run: Run, title: str) -> None:
+        self._run = run
+        self._title = title
+        self._tokens: List[contextvars.Token[Tuple[object, Tuple[str, ...]]]] = []
+
+    def __enter__(self) -> None:
+        run = self._run
+        run.ensure_open()
+        self._tokens.append(_SECTIONS.set((run.key, run.section_path() + (self._title,))))
+
+    def __exit__(self, *exc_info: Any) -> None:
+        if not self._tokens:
+            return
+        token = self._tokens.pop()
+        try:
+            _SECTIONS.reset(token)
+        except ValueError:
+            # Exited in another context than it was entered in (an async fixture resumed in
+            # another task): that context never entered the section.
+            pass
+
+
 def cause_of(exc: BaseException) -> Optional[BaseException]:
     """What *exc* is chained to, so that an error raised in its place keeps that chain."""
     if exc.__cause__ is not None or exc.__suppress_context__:
@@ -288,6 +338,9 @@ class Recorder(Sink):
 
     def hard(self) -> Sink:
         return self if self._hard else Recorder(self._run, hard=True)
+
+    def section(self, title: str) -> ContextManager[None]:
+        return _Section(self._run, title)
 
     def _enforce(self, record: CheckDescriptor, passed: bool) -> None:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest

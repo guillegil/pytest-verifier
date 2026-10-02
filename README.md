@@ -278,6 +278,37 @@ whose checks stop the test when they fail (see
 Most checks read like their table entry — `verify.equal(status, 200, name="Status")`.
 The ones below take a little more setup.
 
+### `section` — group checks under a title
+
+When the same checks run for several rails, channels or units, put each group in a section.
+Every check recorded in the `with` block is named after the section in reports:
+
+```python
+RAILS = {"3V3": 3.3, "5V0": 5.0}
+
+def test_rails(verify, dut):
+    for rail, nominal in RAILS.items():
+        with verify.section(rail):
+            verify.approx(dut.vout(rail), nominal, rel_tol=0.02, name="Vout", units="V")
+            verify.less(dut.ripple_mv(rail), 20, name="Ripple", units="mV")
+```
+
+```text
+1 of 4 checks failed: 5V0 › Ripple — expected < 20mV, got 27.0mV
+
+  ✗ [3] 5V0 › Ripple (tests/test_rails.py:7) — expected < 20mV, got 27.0mV
+
+  ✓ [0] 3V3 › Vout — 3.31V == 3.3V ± 2%
+  ✓ [1] 3V3 › Ripple — 12.0mV < 20mV
+  ✓ [2] 5V0 › Vout — 4.98V == 5.0V ± 2%
+```
+
+Sections nest, and each recorded check keeps their titles, outermost first, in its `section`
+field (`["5V0"]`). A check is in the sections of the code that records it:
+`verify.record(check)` gives a check built elsewhere the section of that call. Sections follow
+`contextvars`, so an asyncio task created in a section is in it, while a thread started in it
+is not. A section opened around a fixture's `yield` also covers the test body.
+
 ### `conditional` — pick one branch by a switch value
 
 Only the case whose key matches `switch_value` counts. Use `default` for the no-match case;
@@ -502,7 +533,8 @@ def pytest_runtest_makereport(item, call):
 It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
 `passed`, `detail`, `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
 it) and `location` (`"tests/test_psu.py:3"`, where it was made, relative to the rootdir). When
-a helper made the check, `called_from` holds the line of the test function that led to it. Each
+a helper made the check, `called_from` holds the line of the test function that led to it, and
+a check made in a `verify.section` has the titles in `section` (`["3V3", "Load"]`). Each
 check holds JSON-safe copies of the checked values taken when the check was made, so
 `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
