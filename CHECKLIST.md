@@ -75,7 +75,7 @@ Every release follows the same steps, written down before any code changes:
 ### 0.9.0 Agent skill and reporting
 
 Scope: the agent skill and its installer, asked for by the user, plus the reporting items
-(FEAT-8, FEAT-4, FEAT-12), included by default while the scope question waits for the user.
+(FEAT-8, FEAT-4, FEAT-12), which the user confirmed for 0.9.0.
 
 - [x] ~~Agent skill `pytest-verifier` in the package (`pytest_verifier/_skill/`), written with skill-creator, every claim checked against the code (DX-11)~~ (33 fact-check findings fixed)
 - [x] ~~Test prompts run with and without the skill, graded, reviewed, skill revised (DX-11)~~ (2 rounds, 7 tasks)
