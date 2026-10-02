@@ -4,7 +4,7 @@ from __future__ import annotations
 import codecs
 import functools
 import re
-from typing import Any, Iterable, List, Mapping, Optional
+from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 import pytest
 
@@ -124,6 +124,17 @@ def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str
     site = "" if passed else _site(result)
     detail = _detail(result, passed)
     return f"  {marker} [{idx}] {label(result)}{site}{summary_separator(result)}{detail}"
+
+
+def junit_property(index: int, result: Mapping[str, Any]) -> Tuple[str, str]:
+    """The junit ``<property>`` of a judged check: ``("verify[3] 5V0 › Ripple", "failed:
+    expected < 20mV, got 27.0mV")``. Never raises."""
+    passed = result.get("passed") is True
+    try:
+        name, detail = label(result), _detail(result, passed)
+    except Exception as exc:
+        name, detail = "", f"<check could not be rendered: {describe_error(exc)}>"
+    return f"verify[{index}] {name}", f"{'passed' if passed else 'failed'}: {detail}"
 
 
 def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> str:

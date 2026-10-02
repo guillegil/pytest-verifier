@@ -250,10 +250,15 @@ def test_rails(verify, psu):
 
 ## Results for reports and plugins
 
-To read results from code (a conftest, a reporter, a CSV export), read
-[references/results.md](references/results.md): `get_check_results(item)`, the
-`pytest_verify_results` hook (`optionalhook=True`), `report.verify_checks` (works under
-pytest-xdist) and the keys of a recorded check. Do not parse the terminal text.
+Do not parse the terminal text. For a file of every check, run with
+`--verify-json checks.jsonl`: one JSON object per check (`nodeid`, `when`, `outcome`,
+`index`, and the recorded `check`), also under pytest-xdist. `verify_junit_properties = failed`
+(or `all`) in the pytest configuration adds checks to the `--junitxml` report as
+`<property name="verify[1] 3V3 › Vout" value="failed: expected ...">`; set
+`junit_family = xunit1` if a tool validates the report. To read results from code (a
+conftest, a reporter), read [references/results.md](references/results.md):
+`get_check_results(item)`, the `pytest_verify_results` hook (`optionalhook=True`),
+`report.verify_checks` (works under pytest-xdist) and the keys of a recorded check.
 
 ## This skill's version
 

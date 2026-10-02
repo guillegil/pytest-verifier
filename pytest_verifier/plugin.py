@@ -20,7 +20,10 @@ does not raise its failures and skips: pytest records them on the item and repor
 afterwards, so the call phase reads that record too.
 
 The checks judged at the end of a phase are also passed to the ``pytest_verify_results`` hook
-and attached to that phase's report as ``report.verify_checks``.
+and attached to that phase's report as ``report.verify_checks``. With the
+``verify_junit_properties`` setting they also become ``user_properties`` that junitxml writes,
+and ``--verify-json`` writes them to a JSON Lines file, from the reports, so both work under
+pytest-xdist.
 
 A check made through ``verify.require``, or any check with ``--verify-fail-fast`` (except in
 teardown and a unittest ``TestCase``'s cleanup), raises ``ChecksFailedError`` as soon as it
@@ -35,17 +38,36 @@ from __future__ import annotations
 import contextlib
 import functools
 import inspect
+import json
 import os
 import re
 import sys
 from types import CodeType
-from typing import Any, Dict, FrozenSet, Generator, Iterator, List, Optional, Sequence, Set
+from typing import (
+    IO,
+    Any,
+    Dict,
+    FrozenSet,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 import pytest
 
 from . import _unused
 from ._descriptors import CheckDescriptor
-from ._exceptions import ChecksFailedError, for_terminal, format_summary, headline
+from ._exceptions import (
+    ChecksFailedError,
+    for_terminal,
+    format_summary,
+    headline,
+    junit_property,
+)
 from ._location import FunctionCode, display_path, split
 from ._run import Run, cause_of, recording_verify
 from ._stash import check_results_key
@@ -61,6 +83,10 @@ _NOT_ACTIVE = (
 _run_key = pytest.StashKey[Run]()
 _tracker_key = pytest.StashKey[_unused.Tracker]()
 _paused_key = pytest.StashKey[bool]()
+#: Which checks become junit properties: ``"none"``, ``"failed"`` or ``"all"``.
+_junit_key = pytest.StashKey[str]()
+#: The ``user_properties`` entries the checks of the current attempt added.
+_properties_key = pytest.StashKey[List[Tuple[str, object]]]()
 
 
 _OLD_INSTALL = (
@@ -96,6 +122,19 @@ _FAIL_FAST_HELP = (
 )
 
 
+_JUNIT_CHOICES = ("none", "failed", "all")
+
+_JUNIT_HELP = (
+    "Write checks to the junit XML report (--junitxml) as <property> elements of their test: "
+    "none, failed (failed checks only) or all. Default: none."
+)
+
+_JSON_HELP = (
+    "Write every check to PATH as JSON Lines: one object per check, with the test's node ID, "
+    "the phase that judged it, the report's outcome, its index in the test and the check."
+)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("pytest-verifier", "soft assertions (pytest-verifier)")
     group.addoption(
@@ -105,7 +144,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         dest="verify_fail_fast",
         help=_FAIL_FAST_HELP + " Default: the verify_fail_fast ini setting (false).",
     )
+    group.addoption(
+        "--verify-json",
+        action="store",
+        dest="verify_json",
+        metavar="PATH",
+        default=None,
+        help=_JSON_HELP,
+    )
     parser.addini("verify_fail_fast", _FAIL_FAST_HELP, type="bool", default=False)
+    parser.addini("verify_junit_properties", _JUNIT_HELP, default="none")
 
 
 def _fail_fast(config: pytest.Config) -> bool:
@@ -150,6 +198,7 @@ def _close_phase(
     run.judged[when] = pending
     checks: List[CheckDescriptor] = [dict(record) for record in pending]  # type: ignore[misc]
     item.ihook.pytest_verify_results(item=item, when=when, checks=checks, passed=passed)
+    _add_properties(item, start, pending)
     if passed:
         return None
     options = _summary_options(item.config)
@@ -172,6 +221,35 @@ def _close_phase(
         pending, start=start, stopped_at=stopped_at, **options
     )
     return None
+
+
+def _add_properties(item: pytest.Item, start: int, pending: List[CheckDescriptor]) -> None:
+    """Add the judged checks to the test's ``user_properties`` for junitxml, as
+    ``record_property`` does, when ``verify_junit_properties`` asks for them.
+
+    pytest copies the item's properties into each report it makes afterwards, and junitxml
+    writes the teardown report's, so the properties also reach an xdist controller.
+    """
+    which = item.config.stash.get(_junit_key, "none")
+    if which == "none":
+        return
+    added = item.stash.setdefault(_properties_key, [])
+    for index, record in enumerate(pending, start):
+        if which == "failed" and record.get("passed") is True:
+            continue
+        entry: Tuple[str, object] = junit_property(index, record)
+        item.user_properties.append(entry)
+        added.append(entry)
+
+
+def _drop_properties(item: pytest.Item) -> None:
+    """Take out the properties of an earlier attempt (pytest-rerunfailures reuses the item)."""
+    added = item.stash.get(_properties_key, None)
+    if not added:
+        return
+    del item.stash[_properties_key]
+    ids = {id(entry) for entry in added}
+    item.user_properties[:] = [entry for entry in item.user_properties if id(entry) not in ids]
 
 
 def _linked_stops(run: Run, exc: Optional[BaseException]) -> List[ChecksFailedError]:
@@ -430,6 +508,7 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
 def pytest_runtest_setup(item: pytest.Item) -> Generator[None, Any, Any]:
     """Start a fresh run for every attempt (pytest-rerunfailures reuses the item)."""
     _finish_tracking(item, warn=False)  # left over by an attempt that did not reach teardown
+    _drop_properties(item)
     config = item.config
     run = Run(
         str(config.rootpath),
@@ -554,6 +633,84 @@ def pytest_configure(config: pytest.Config) -> None:
     manager = config.pluginmanager
     if manager.is_blocked("pytest_verifier") and manager.get_plugin("pytest_verifier") is None:
         config.issue_config_time_warning(pytest.PytestConfigWarning(_NOT_BLOCKED), stacklevel=2)
+    config.stash[_junit_key] = _junit_setting(config)
+    path = config.getoption("verify_json", None)
+    if path and not hasattr(config, "workerinput"):  # an xdist controller writes it
+        manager.register(_JsonLines(_open_json(path)), _JSON_PLUGIN)
+
+
+def _junit_setting(config: pytest.Config) -> str:
+    value = str(config.getini("verify_junit_properties")).strip()
+    if value not in _JUNIT_CHOICES:
+        raise pytest.UsageError(
+            f"verify_junit_properties must be none, failed or all, not {value!r}"
+        )
+    if value == "none" or not config.getoption("xmlpath", None):  # no junit report
+        return value
+    family = str(config.getini("junit_family"))
+    if family not in _JUNIT_FAMILIES:
+        config.issue_config_time_warning(
+            pytest.PytestConfigWarning(
+                f"verify_junit_properties writes <property> elements, which junit_family "
+                f"{family!r} does not allow: tools that validate the report against its "
+                f"schema reject it. Set junit_family = xunit1 for them."
+            ),
+            stacklevel=2,
+        )
+    return value
+
+
+#: The junit families whose schema allows properties on a test case.
+_JUNIT_FAMILIES = ("xunit1", "legacy")
+
+_JSON_PLUGIN = "pytest_verifier_json"
+
+
+def _open_json(path: str) -> IO[str]:
+    """Open the ``--verify-json`` file: *path* relative to the folder pytest was started in,
+    as ``--junitxml`` takes it, its folders created."""
+    path = os.path.normpath(os.path.abspath(os.path.expanduser(path)))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        return open(path, "w", encoding="utf-8", buffering=1)
+    except OSError as exc:
+        raise pytest.UsageError(f"--verify-json: cannot write {path}: {exc}") from exc
+
+
+class _JsonLines:
+    """``--verify-json``: one JSON object per judged check, from the reports, so it works on an
+    xdist controller too. Each line holds the test's node ID, the phase that judged the check
+    (``when``), the report's outcome (``"rerun"`` for an attempt pytest-rerunfailures repeats),
+    the check's index in the test, as summaries number it, and the check."""
+
+    def __init__(self, file: IO[str]) -> None:
+        self._file = file
+        #: Checks seen so far in each test attempt, by node ID and xdist worker.
+        self._counts: Dict[Tuple[str, Any], int] = {}
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        key = (report.nodeid, getattr(report, "node", None))
+        if report.when == "setup":  # a new attempt
+            self._counts[key] = 0
+        checks = getattr(report, "verify_checks", None) or []
+        index = self._counts.get(key, 0)
+        for check in checks:
+            line = {
+                "nodeid": report.nodeid,
+                "when": report.when,
+                "outcome": report.outcome,
+                "index": index,
+                "check": check,
+            }
+            self._file.write(json.dumps(line, ensure_ascii=False, default=str) + "\n")
+            index += 1
+        if report.when == "teardown":
+            self._counts.pop(key, None)
+        else:
+            self._counts[key] = index
+
+    def pytest_unconfigure(self) -> None:
+        self._file.close()
 
 
 def pytest_report_header(config: pytest.Config) -> List[str]:

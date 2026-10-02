@@ -164,7 +164,10 @@ class CheckDescriptor(TypedDict, total=False):
      else the test module), of the check the first line names; `-r` and `--tb=line` lines go
      through `for_terminal` while TerminalReporter prints them
    - The judged checks go to the `pytest_verify_results` hook and to that phase's report as
-     `report.verify_checks`
+     `report.verify_checks`; with `verify_junit_properties` (`none`/`failed`/`all`) also to
+     `item.user_properties` (`verify[k] label`, `passed: detail`), dropped at the next
+     attempt's setup. `--verify-json PATH` registers `_JsonLines` on the controller only,
+     which writes a line per check from `report.verify_checks` (index counted per attempt)
 
 3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 

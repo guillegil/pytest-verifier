@@ -518,6 +518,67 @@ def test_rails(verify):
 
 Calling `checks.record()` raises `RuntimeError`, because only the fixture records checks.
 
+## Exporting Results
+
+Two options write the checks to files, also under pytest-xdist.
+
+`--verify-json PATH` writes every check as one line of JSON (JSON Lines), with the test it
+belongs to:
+
+```bash
+pytest --verify-json results/checks.jsonl
+```
+
+Each line is one object; this is the failed `Ripple` check of the [`section`
+example](https://github.com/guillegil/pytest-verifier#section--group-checks-under-a-title),
+formatted:
+
+```json
+{
+    "nodeid": "tests/test_rails.py::test_rails",
+    "when": "call",
+    "outcome": "failed",
+    "index": 3,
+    "check": {
+        "check_type": "less",
+        "name": "Ripple",
+        "description": "Verify 'Ripple' < 20mV",
+        "actual": 27.0,
+        "threshold": 20,
+        "units": "mV",
+        "passed": false,
+        "detail": "expected < 20mV, got 27.0mV",
+        "phase": "call",
+        "location": "tests/test_rails.py:7",
+        "section": ["5V0"]
+    }
+}
+```
+
+`when` is the test phase that judged the check, `outcome` that phase's outcome (`"rerun"` for
+an attempt that pytest-rerunfailures repeats), `index` the check's `[k]` in the summary, and
+`check` the recorded check (see
+[Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
+The path works like `--junitxml`'s: relative to where pytest runs, folders created, and the
+file replaced on each run.
+
+`verify_junit_properties` adds checks to the junit XML report (`--junitxml`) as properties of
+their test case: `none` (the default), `failed` or `all`.
+
+```toml
+[tool.pytest.ini_options]
+verify_junit_properties = "failed"
+junit_family = "xunit1"
+```
+
+```xml
+<property name="verify[3] 5V0 › Ripple" value="failed: expected &lt; 20mV, got 27.0mV"/>
+```
+
+pytest's default junit family, `xunit2`, does not allow properties in its schema, so
+pytest-verifier warns when it is used; tools that validate the report need `xunit1`, as with
+pytest's own `record_property`.
+
 ## Reading Results from Another Plugin
 
 Reporters and other plugins read a test's checks with `get_check_results(item)`:

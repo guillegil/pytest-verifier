@@ -23,6 +23,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and each record has their titles in a new `section` field (`["5V0"]`, outermost first).
   Sections nest and follow `contextvars`: an asyncio task created in a section is in it, a
   thread started in it is not. `checks.section()` raises `RuntimeError`.
+- `--verify-json PATH` writes every check to a JSON Lines file, one object per check with the
+  test's node ID, the phase that judged it, the report's outcome, its index in the summary and
+  the recorded check. It is written from the reports, so it works under pytest-xdist.
+- The `verify_junit_properties` setting (`none`, `failed` or `all`; default `none`) adds checks
+  to the junit XML report as `<property name="verify[3] 5V0 › Ripple" value="failed: …"/>`. A
+  rerun keeps only the last attempt's. With a junit family that does not allow properties
+  (pytest's default `xunit2`), a warning says to use `xunit1`.
 
 ### Fixed
 
