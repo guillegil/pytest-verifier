@@ -29,9 +29,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/guillegil/pytest_verify"
-Changelog = "https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md"
-Issues = "https://github.com/guillegil/pytest_verify/issues"
+Homepage = "https://github.com/guillegil/pytest-verifier"
+Changelog = "https://github.com/guillegil/pytest-verifier/blob/main/CHANGELOG.md"
+Issues = "https://github.com/guillegil/pytest-verifier/issues"
 
 # The entry point names an importable module, so `-p pytest_verifier` and
 # `-p no:pytest_verifier` work. The package loads `pytest_verifier.plugin`.

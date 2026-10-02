@@ -59,6 +59,8 @@ failed.
 - `-r` summaries and `--tb=line` print the first line in the terminal's encoding, like the
   rest of the summary. Other plugins' terminal summaries still read the summary as it is.
 - The README renders on PyPI: its links, section links included, point at GitHub.
+- The repository moved to https://github.com/guillegil/pytest-verifier, the name the plugin
+  is installed by. The old address redirects.
 
 ## [0.7.0] - 2026-10-01
 
@@ -258,14 +260,14 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/guillegil/pytest_verify/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/guillegil/pytest_verify/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/guillegil/pytest_verify/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/guillegil/pytest_verify/compare/v0.3.1...v0.4.0
-[0.3.1]: https://github.com/guillegil/pytest_verify/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/guillegil/pytest_verify/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/guillegil/pytest_verify/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/guillegil/pytest_verify/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/guillegil/pytest_verify/releases/tag/v0.1.0
+[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/guillegil/pytest-verifier/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/guillegil/pytest-verifier/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/guillegil/pytest-verifier/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/guillegil/pytest-verifier/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/guillegil/pytest-verifier/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/guillegil/pytest-verifier/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/guillegil/pytest-verifier/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/guillegil/pytest-verifier/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/guillegil/pytest-verifier/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/guillegil/pytest-verifier/releases/tag/v0.1.0

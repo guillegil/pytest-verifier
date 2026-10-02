@@ -1,16 +1,16 @@
 # pytest-verifier
 
 [![PyPI](https://img.shields.io/pypi/v/pytest-verifier)](https://pypi.org/project/pytest-verifier/)
-[![CI](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest_verify/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest_verify)
+[![CI](https://github.com/guillegil/pytest-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest-verifier/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest-verifier)
 [![pytest](https://img.shields.io/badge/pytest-7%2B-0a9edc)](https://docs.pytest.org/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/guillegil/pytest_verify/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/guillegil/pytest-verifier/blob/main/LICENSE)
 
 A pytest plugin providing **soft assertions** for test verification. Failed checks don't stop
 the test unless you ask them to: all checks run to completion, and failures are reported
 together at test end.
 
-Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](https://github.com/guillegil/pytest_verify#upgrading-from-pytest-verify).
+Until 0.5 it was called pytest-verify. See [Upgrading from pytest-verify](https://github.com/guillegil/pytest-verifier#upgrading-from-pytest-verify).
 
 ## Installation
 
@@ -26,8 +26,8 @@ Requires Python 3.9+, pytest 7+ and pluggy 1.2+. Releases up to 0.7.0 were not o
 install one of them, or the development version, use Git:
 
 ```bash
-pip install "git+https://github.com/guillegil/pytest_verify.git@v0.7.0"
-pip install "git+https://github.com/guillegil/pytest_verify.git"
+pip install "git+https://github.com/guillegil/pytest-verifier.git@v0.7.0"
+pip install "git+https://github.com/guillegil/pytest-verifier.git"
 ```
 
 ## Quick Start
@@ -43,7 +43,7 @@ def test_power_supply(verify):
 
 If any check fails, the test continues running. When the test body ends, all failures are
 reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
-the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check).
+the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check).
 
 ## Failure Output
 
@@ -85,7 +85,7 @@ How values read in the summary:
   are escaped (`\n`).
 - At most 10 passed checks are listed, followed by `✓ … N more passed checks`. Run pytest with
   `-vv` to list them all. Every check is still recorded (see
-  [Reading Results from Another Plugin](https://github.com/guillegil/pytest_verify#reading-results-from-another-plugin)).
+  [Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
 - On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
   `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
   terminal output changes: reports such as junitxml keep the summary as it is.
@@ -161,7 +161,7 @@ Every check is judged when it is made. With fail-fast, a check passed directly a
 `conditional` case or default, or a `guard` branch or default, is judged before the composite
 chooses, so a failed one stops the test even when it would not be selected. That includes
 `default=verify.fail(...)`, which always fails, and the checks an `all_satisfy` factory makes.
-Pass cases, branches and defaults as functions (see [Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch))
+Pass cases, branches and defaults as functions (see [Lazy children](https://github.com/guillegil/pytest-verifier#lazy-children--build-only-the-selected-branch))
 so that only the selected one is judged.
 
 ### Checks that cannot be evaluated
@@ -217,7 +217,7 @@ With `units="%"`, the tolerance says whether it is absolute or relative: `50% ±
 
 These compare numbers, or other values that order themselves such as version tuples and dates.
 Text compared with text fails (see
-[Checks that cannot be evaluated](https://github.com/guillegil/pytest_verify#checks-that-cannot-be-evaluated)).
+[Checks that cannot be evaluated](https://github.com/guillegil/pytest-verifier#checks-that-cannot-be-evaluated)).
 
 ### Boolean & Identity
 
@@ -248,9 +248,9 @@ Text compared with text fails (see
 | `verify.fail(msg, *, name=None)` | Unconditional failure |
 
 The fixture also has `verify.record(check)`, which records a check built elsewhere (see
-[Recording checks built by helpers](https://github.com/guillegil/pytest_verify#recording-checks-built-by-helpers)), and `verify.require`,
+[Recording checks built by helpers](https://github.com/guillegil/pytest-verifier#recording-checks-built-by-helpers)), and `verify.require`,
 whose checks stop the test when they fail (see
-[Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check)).
+[Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check)).
 
 ## Usage Examples
 
@@ -281,7 +281,7 @@ def test_output_by_mode(verify):
 ```
 
 The default is a function, so it fails only when it is selected (see
-[Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch)).
+[Lazy children](https://github.com/guillegil/pytest-verifier#lazy-children--build-only-the-selected-branch)).
 With `--verify-fail-fast`, make the cases functions too.
 
 ### `guard` — if / elif / else with arbitrary conditions
@@ -305,7 +305,7 @@ def test_sensor_output(verify):
 ```
 
 Conditions can be any truthy or falsy value, and a condition that is a function is called
-(see [Lazy children](https://github.com/guillegil/pytest_verify#lazy-children--build-only-the-selected-branch)).
+(see [Lazy children](https://github.com/guillegil/pytest-verifier#lazy-children--build-only-the-selected-branch)).
 A failed guard reports the branch it took, e.g.
 `✗ [0] Sensor output (tests/test_sensor.py:2) [→ below floor] — expected 0, got 7`, or the
 labels it tried when none matched: `[→ no branch matched: shutter closed, below floor]`. When a
@@ -354,10 +354,10 @@ so it should not depend on values that only its own branch can use. A child that
 just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy: `verify.guard([(cond, "label", dict(check))], ...)`.
-A check that stopped the test (see [Stopping a test at a failed check](https://github.com/guillegil/pytest_verify#stopping-a-test-at-a-failed-check))
+A check that stopped the test (see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check))
 always stays on its own as well, so the summary can name it and a test that catches the error
 still fails; a composite made afterwards that selects it counts it once more.
-A composite built with `checks` (see [Building checks without the fixture](https://github.com/guillegil/pytest_verify#building-checks-without-the-fixture))
+A composite built with `checks` (see [Building checks without the fixture](https://github.com/guillegil/pytest-verifier#building-checks-without-the-fixture))
 is never recorded, so fixture checks passed to it stay separate checks.
 
 ### Lazy children — build only the selected branch
@@ -526,11 +526,11 @@ Most of 0.7 changes how failures read. A few changes can affect existing tests:
   `lambda` is checked against the type of the items.
 - The summary text has new formats (quoted strings, type hints, at most 10 passed checks
   unless `-vv`). Code that needs the results should read them with
-  [`get_check_results()` or `report.verify_checks`](https://github.com/guillegil/pytest_verify#reading-results-from-another-plugin)
+  [`get_check_results()` or `report.verify_checks`](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)
   rather than parse the text.
 
 Every change is listed in the
-[CHANGELOG](https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md).
+[CHANGELOG](https://github.com/guillegil/pytest-verifier/blob/main/CHANGELOG.md).
 
 ## Upgrading from pytest-verify
 
@@ -564,22 +564,22 @@ It will be removed in a future release.
 The project uses [uv](https://docs.astral.sh/uv/). Clone and run the test suite:
 
 ```bash
-git clone https://github.com/guillegil/pytest_verify.git
-cd pytest_verify
+git clone https://github.com/guillegil/pytest-verifier.git
+cd pytest-verifier
 uv run pytest
 ```
 
 Type-check with `uv run --with mypy mypy` (strict mode, configured in `pyproject.toml`).
 
 CI runs on every push to `main` and every pull request targeting `main`
-(see [`.github/workflows/ci.yml`](https://github.com/guillegil/pytest_verify/blob/main/.github/workflows/ci.yml)). It runs the test suite on
+(see [`.github/workflows/ci.yml`](https://github.com/guillegil/pytest-verifier/blob/main/.github/workflows/ci.yml)). It runs the test suite on
 Python 3.9–3.13 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
 `mypy --strict` and the tests of the built sdist.
 
 To release, bump `version` in `pyproject.toml`, move the `[Unreleased]` CHANGELOG entries under
 a dated heading for the new version, merge, then push a `vX.Y.Z` tag or run the **Release**
 workflow
-([`.github/workflows/release.yml`](https://github.com/guillegil/pytest_verify/blob/main/.github/workflows/release.yml)).
+([`.github/workflows/release.yml`](https://github.com/guillegil/pytest-verifier/blob/main/.github/workflows/release.yml)).
 It builds the sdist and wheel once, runs the tests against the wheel with the oldest and the
 newest pytest, tags the commit, uploads to PyPI with Trusted Publishing, and publishes a GitHub
 release with the CHANGELOG notes. It only releases commits that are on `main`. Run it with the
@@ -594,14 +594,14 @@ repository's Settings > Environments, limit `pypi` to the `main` branch and `v*`
 ## Known Issues and Roadmap
 
 Version 0.4.0 fixed every bug found by the review of 0.3.1. The report is in
-[`bugs-0.3.1.md`](https://github.com/guillegil/pytest_verify/blob/main/bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
+[`bugs-0.3.1.md`](https://github.com/guillegil/pytest-verifier/blob/main/bugs-0.3.1.md), and `tests/test_regressions_*.py` keeps a regression test
 for each bug.
 
 Planned improvements and feature ideas are collected in
-[`improvements-and-ideas.md`](https://github.com/guillegil/pytest_verify/blob/main/improvements-and-ideas.md).
-[`CHECKLIST.md`](https://github.com/guillegil/pytest_verify/blob/main/CHECKLIST.md) tracks every
+[`improvements-and-ideas.md`](https://github.com/guillegil/pytest-verifier/blob/main/improvements-and-ideas.md).
+[`CHECKLIST.md`](https://github.com/guillegil/pytest-verifier/blob/main/CHECKLIST.md) tracks every
 item and the release that handles it. See
-[`CHANGELOG.md`](https://github.com/guillegil/pytest_verify/blob/main/CHANGELOG.md) for what
+[`CHANGELOG.md`](https://github.com/guillegil/pytest-verifier/blob/main/CHANGELOG.md) for what
 each release changed.
 
 ## License
