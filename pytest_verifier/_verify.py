@@ -453,7 +453,8 @@ class Verify:
 
         Args:
             actual: The value under test.
-            expected_type: A class, a tuple of classes, or a union such as ``int | None``.
+            expected_type: A class, a tuple of classes, or a union such as ``Optional[int]``
+                (``int | None`` from Python 3.10).
             name: Human-readable label for the check.
 
         Returns:
@@ -626,18 +627,20 @@ class Verify:
         A check gets the section in which it is recorded: ``verify.record(check)`` gives a
         check built elsewhere the section of that call. Sections are kept in a context
         variable: an asyncio task created in the block is in the section, and a thread is only
-        when it runs in a copy of the context (``contextvars.copy_context().run``, or any
-        thread on free-threaded Python 3.14+).
+        when it runs in a copy of the context (``asyncio.to_thread``,
+        ``contextvars.copy_context().run``, or any thread on free-threaded Python 3.14+). A
+        section opened around a fixture's ``yield`` covers the test body when the fixture and
+        the test run in one context, as a sync fixture does.
 
         Args:
-            title: The title of the section: a non-empty string.
+            title: The title of the section: a string with more than whitespace in it.
 
         Returns:
             A context manager for a ``with`` statement.
 
         Raises:
             TypeError: If *title* is not a string.
-            ValueError: If *title* is empty.
+            ValueError: If *title* is empty or only whitespace.
             RuntimeError: When called on ``pytest_verifier.checks``.
         """
         if not isinstance(title, str):

@@ -60,11 +60,13 @@ pytest-verifier skill install --global   # in your home folder instead
 ```
 
 The skill goes into a `pytest-verifier` folder there; commit it to share it with your team. It
-describes the installed version of pytest-verifier, so run the command again after upgrading:
-it replaces the old skill and says what it updated. When the skill in a project's
-`.claude/skills` or `.agents/skills` is for another version, pytest's header says so. A
-`pytest-verifier` folder that holds anything else is left alone unless you add `--force`.
-`python -m pytest_verifier skill install` does the same as the command.
+describes the installed version of pytest-verifier, so run the command again after upgrading
+(from the project's root folder, and with `--global` for the skill in your home folder): it
+replaces the skill it installed before and says what it updated. When the skill in a project's
+`.claude/skills` or `.agents/skills` is for another version, pytest's header says so, and
+whether to update the skill or to upgrade pytest-verifier. A `pytest-verifier` folder that the
+command did not install, such as a skill you wrote under that name, is left alone unless you
+add `--force`. `python -m pytest_verifier skill install` does the same as the command.
 
 ## Failure Output
 
@@ -159,8 +161,9 @@ test that pytest-rerunfailures runs again counts once, with its last attempt.
   returned result, e.g. `if not check["passed"]: breakpoint()`, or make the check required
   (`verify.require`, or `--verify-fail-fast` for every check): then `--pdb` opens in the test,
   at the line of the failed check.
-- Rerun filters match exceptions by name, so use `--only-rerun ChecksFailedError` with
-  pytest-rerunfailures.
+- With pytest-rerunfailures, rerun failed checks with `--only-rerun "checks failed"`.
+  `--only-rerun ChecksFailedError` needs pytest-rerunfailures 15.1: older versions match the
+  failure's message, which for failed checks does not name the exception.
 
 ### Stopping a test at a failed check
 
@@ -336,8 +339,11 @@ def test_rails(verify, dut):
 Sections nest, and each recorded check keeps their titles, outermost first, in its `section`
 field (`["5V0"]`). A check is in the sections of the code that records it:
 `verify.record(check)` gives a check built elsewhere the section of that call. Sections follow
-`contextvars`, so an asyncio task created in a section is in it, while a thread started in it
-is not. A section opened around a fixture's `yield` also covers the test body.
+`contextvars`: an asyncio task created in a section is in it, and so is a thread that runs in
+a copy of the context (`asyncio.to_thread`), but not a plain `threading.Thread` (except on
+free-threaded Python 3.14, where threads inherit the context). A section opened around a
+fixture's `yield` also covers the test body, except for an async fixture whose plugin runs its
+setup and the test in different tasks (pytest-asyncio before 0.25).
 
 ### `conditional` — pick one branch by a switch value
 
@@ -621,7 +627,8 @@ def pytest_runtest_makereport(item, call):
         print(check["name"], check["passed"], check["detail"])
 ```
 
-It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
+It returns a new list of the checks the test recorded, in order. The checks are the recorded
+ones, not copies, so treat them as read-only. Each one is a plain dict with
 `passed`, `detail`, `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
 it) and `location` (`"tests/test_psu.py:3"`, where it was made, relative to the rootdir). When
 a helper made the check, `called_from` holds the line of the test function that led to it, and
@@ -646,7 +653,9 @@ def pytest_verify_results(item, when, checks, passed):
 ```
 
 The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
-so they also reach the main process under pytest-xdist.
+so they also reach the main process under pytest-xdist. Unlike `get_check_results`, the hook
+and `report.verify_checks` also deliver the checks of attempts that pytest-rerunfailures
+repeats (their report's outcome is `"rerun"`).
 
 ## Upgrading from 0.7
 

@@ -14,15 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pytest-verifier skill install` writes it to `.claude/skills/pytest-verifier/` and
   `.agents/skills/pytest-verifier/` in the current folder: `--claude` or `--agents` (also
   `--generic`) picks one of them, `--global` uses the home folder, and `--force` replaces a
-  folder there that is not this skill. Running it again updates the skill and says from which
-  version. `python -m pytest_verifier` runs the same command.
+  folder there that the command did not install. Running it again updates the skill and says
+  from which version. `python -m pytest_verifier` runs the same command.
 - pytest's header says when the skill in the project's `.claude/skills` or `.agents/skills` is
-  for another version of pytest-verifier, and how to update it.
+  for another version of pytest-verifier, and whether to update the skill or to upgrade
+  pytest-verifier.
 - `verify.section(title)`, a context manager that groups the checks recorded in its block.
   Summaries name them after their sections (`✗ [3] 5V0 › Ripple …`), also in the first line,
   and each record has their titles in a new `section` field (`["5V0"]`, outermost first).
   Sections nest and follow `contextvars`: an asyncio task created in a section is in it, a
-  thread started in it is not. `checks.section()` raises `RuntimeError`.
+  plain `threading.Thread` started in it is not. `checks.section()` raises `RuntimeError`.
 - `--verify-json PATH` writes every check to a JSON Lines file, one object per check with the
   test's node ID, the phase that judged it, the report's outcome, its index in the summary and
   the recorded check. It is written from the reports, so it works under pytest-xdist.

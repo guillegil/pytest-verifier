@@ -9,9 +9,9 @@ metadata:
 
 Soft assertions for pytest. A test requests the `verify` fixture (no import) and calls
 `verify.<check>(..., name=...)`. Each call judges its check at once, records it and returns
-it; a failed check does not stop the test. When the test body ends, every failed check is
+it; a failed check does not stop the test. When the test body ends, its failed checks are
 raised together as one `ChecksFailedError` (an `AssertionError`), so the test fails and its
-report lists all the checks.
+report lists every failed check (checks made in fixture teardown are judged after teardown).
 
 ```python
 def test_3v3_rail(verify, psu):
@@ -48,10 +48,12 @@ def test_3v3_rail(verify, psu):
   accepts ±200%. When `expected` can be 0 use `abs_tol`. Leave headroom:
   `approx(3.35, 3.3, abs_tol=0.05)` fails by float rounding.
 - **Call mistakes raise; bad values fail.** A missing or positional `name`, `approx` without a
-  tolerance, a negative tolerance, `between` with `low > high` or a type `isinstance` rejects
-  raises at the call and stops the test. A value that cannot be compared (`None > 3`, an
-  ambiguous numpy truth value, a regex on an `int`) never raises: the check fails and its
-  detail ends with the error, e.g. `(TypeError: ...)`.
+  tolerance, a negative or NaN tolerance, `between` with `low > high`, or an `is_instance` type
+  that is not a class, tuple or union (`list[int]`, `None`) raises at the call and stops the
+  test; inside an `all_satisfy` factory or a lazy child it fails the composite instead, with
+  the error in its detail. A check whose comparison raises (`None > 3`, an ambiguous numpy
+  truth value, a regex on an `int`, `isinstance` with a plain `Protocol`) does not raise: it
+  fails, and its detail ends with the error, e.g. `(TypeError: ...)`.
 - **Use the most specific check.** Its failure says what was expected and what was got:
   `between` beats `is_true(lo <= x <= hi)`, `length` beats `equal(len(x), n)`.
 - **`units` is only a label**, appended to numbers as written (`"V"` gives `3.3V`, `" ms"`
@@ -65,23 +67,24 @@ The same methods exist on `verify`, on `verify.require` and on the `checks` buil
 |---|---|---|
 | `equal(actual, expected, *, name, units=None)` | `actual == expected` | Python equality: `1 == 1.0 == True`. Not for floats |
 | `not_equal(actual, expected, *, name, units=None)` | `actual != expected` | Passes for NaN |
-| `approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | equal, or `abs(a - e) <= abs_tol`, or `<= rel_tol * abs(e)` | Needs a tolerance. Numbers only, no lists. Exact for `int`/`Decimal`/`Fraction` unless any operand is a `float` |
+| `approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | equal, or `abs(a - e) <= abs_tol`, or `<= rel_tol * abs(e)` | Needs a tolerance. Numbers only, no lists. Exact only when the values and the tolerances are all `int`/`Decimal`/`Fraction` (not `Decimal` with `Fraction`): a `float` anywhere, `abs_tol=0.05` included, compares in floats |
 | `greater(actual, threshold, *, name, units=None)` | `actual > threshold` | Also `greater_equal` (`>=`), `less` (`<`), `less_equal` (`<=`) |
 | `between(actual, low, high, *, inclusive=True, name, units=None)` | `low <= actual <= high` | `inclusive=False` excludes both bounds |
 | `is_true(actual, *, name)`, `is_false(...)` | `bool(actual)` is `True` / `False` | Truthiness: `is_true("0")`, `is_true("False")` and an uncalled method pass |
 | `is_none(actual, *, name)`, `is_not_none(...)` | `actual is None` / `is not None` | `0`, `""` and `False` are not `None` |
 | `contains(haystack, needle, *, name)`, `not_contains(...)` | `needle in haystack` | Haystack first. Text: substring; dict: keys only; list: whole items, so `not_contains(lines, "error")` misses `"error: x"` (join the lines). A generator is consumed |
-| `matches(actual, pattern, *, name)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or `(?i)`. `actual` must be text |
-| `is_instance(actual, expected_type, *, name)` | `isinstance(actual, expected_type)` | Class, tuple or union (`int \| None`). `list[int]`, `Literal[...]` and `None` raise `TypeError`: use `list`, `type(None)` |
+| `matches(actual, pattern, *, name)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or start the pattern with `(?i)`. `actual` must be text |
+| `is_instance(actual, expected_type, *, name)` | `isinstance(actual, expected_type)` | Class, tuple or union (`Optional[int]`, or `int \| None` from Python 3.10). `list[int]`, `Literal[...]` and `None` raise `TypeError`: use `list`, `type(None)` |
 | `length(actual, expected, *, name)` | `len(actual) == expected` | Pass a sized value (`list(gen)`) and an `int` |
 | `fail(msg, *, name=None)` | never | `name` defaults to `msg` |
 
 ## Composite checks
 
-`all_satisfy`, `conditional` and `guard` give one verdict from child checks. Every check passed
-to a composite belongs to it: it is reported inside the composite and not on its own, and only
-the selected children count (an unselected child that failed does not fail the test). Pass
-`dict(check)` to keep a copy on its own as well.
+`all_satisfy`, `conditional` and `guard` give one verdict from child checks. Every check a
+composite takes as a child (a case, a branch's check, a default, or what an `all_satisfy`
+factory returns) belongs to it: it is reported inside the composite and not on its own, and
+only the selected children count (an unselected child that failed does not fail the test).
+Pass `dict(check)` to keep a copy on its own as well.
 
 **`all_satisfy(items, descriptor_factory, *, name)`** applies a check to every item. The
 factory is called once per item, at the call, and must return one check (not a bool). An
@@ -104,24 +107,26 @@ verify.all_satisfy(
 **`conditional(switch_value, *, cases, default=None, name)`** checks the case whose key equals
 `switch_value`, else `default`; with no match and no default it fails, listing the keys it
 tried. Enum members match their value, and an `int` matches its decimal string (`1` and
-`"1"`); nothing else is converted (`"1\n"`, `"01"`, `1.0` do not match), so turn a text reply
-into the key type first. An unmatched value silently takes `default`, so make the default a
-failure (`lambda: verify.fail(...)`) unless other values are valid. Keys that would collide
-(`1` and `"1"`) raise `ValueError`.
+`"1"`); otherwise it is plain `==`: `1.0` and `True` select `1` but not `"1"`, and `"1\n"` and
+`"01"` match neither, so turn a text reply into the key type first. An unmatched value
+silently takes `default`, so make the default a failure (`lambda: verify.fail(...)`) unless
+other values are valid. Keys that would collide (`1` and `"1"`) raise `ValueError`.
 
 **`guard(branches, *, default=None, name)`** is if/elif/else: branches are
 `(condition, label, check)` tuples in that order, and the first branch whose condition is
 truthy is checked, else `default`. A swapped tuple is not detected (a label is always truthy).
 The label names the chosen branch in the report (`[→ boost]`). A condition must not be a check
-(`TypeError`, a check is always truthy): use `check["passed"]`. A condition that raises fails
-the guard, and `default` is not used.
+(`TypeError`, a check is always truthy): use `check["passed"]`. A callable condition that
+raises (or whose truth test raises) fails the guard, and `default` is not used; a condition
+written inline runs before `guard` does, so it raises in the test: make it a lambda.
 
 **Lazy children.** A case, a branch's check or a default can be a zero-argument callable that
 returns the check; only the selected one is called. An eager child is an ordinary argument:
 it is built and judged before the composite chooses, so a reading only valid in its own
-branch raises there, and `default=verify.fail(...)` is recorded as failed at once. Use lambdas
-for those, and for every child under `--verify-fail-fast`. Guard conditions can be callables
-too, called in order until one is true. In a loop, bind the variable: `lambda m=m: ...`.
+branch raises there, and `default=verify.fail(...)` is judged failed at once (with fail-fast it
+stops the test even when a case matches). Use lambdas for those, and for every child under
+`--verify-fail-fast`. Guard conditions can be callables too, called in order until one is
+true. In a loop, bind the variable: `lambda m=m: ...`.
 
 ```python
 mode = dut.mode()
@@ -147,8 +152,9 @@ check several things in one case, return a group:
 `with verify.section(title):` puts every check recorded in the block under `title`: the
 report names them `3V3 › Vout`, and each record gets `section` (`["3V3"]`). Sections nest
 (`["3V3", "Load"]`). A check gets the section of the code that records it, so
-`verify.record(check)` gives the section of that call, and a thread started in the block is
-outside it. A section opened around a fixture's `yield` also covers the test body.
+`verify.record(check)` gives the section of that call. Sections follow `contextvars`: an
+asyncio task or `asyncio.to_thread` call made in the block is in it, a `threading.Thread` is
+not (except on free-threaded Python 3.14). A section opened around a sync fixture's `yield` also covers the test body.
 `checks.section` raises `RuntimeError`.
 
 ```python
@@ -173,9 +179,11 @@ verify.require(verify.matches(idn, r"^ACME,", name="PSU model"))
 ```
 
 `--verify-fail-fast`, or `verify_fail_fast = true` in the pytest configuration, makes every
-check stop the test at its first failure (`-o verify_fail_fast=false` turns the setting off
-for one run). Checks made while fixtures are torn down stay soft, and so do a unittest
-`TestCase`'s `tearDown` and cleanups.
+check stop the test at its first failure. `-o verify_fail_fast=false` turns the ini setting off
+for one run; nothing turns the command-line option off, so set fail-fast with the ini setting,
+not in `addopts`. Fail-fast leaves checks soft while fixtures are torn down and in a unittest
+`TestCase`'s `tearDown` and cleanups; `verify.require` still stops there, cutting the rest of
+that teardown short.
 
 ## Fixtures, helpers and checks built elsewhere
 
@@ -183,12 +191,15 @@ for one run). Checks made while fixtures are torn down stay soft, and so do a un
   fails with `ScopeMismatch`, and a `verify` kept for a later test raises `RuntimeError`.
 - In a function-scoped fixture, a failed check before `yield` does not stop setup: it is
   reported with the test body's checks. A failed check after `yield` is a teardown error, so
-  the test shows as passed plus one error. A required check that fails before `yield` is a
-  setup error, and that fixture's teardown does not run: put cleanup in `try`/`finally`.
+  the test shows as passed plus one error. A required check (or, with fail-fast, any check)
+  that fails before `yield` is a setup error, and that fixture's teardown does not run: put
+  cleanup in `try`/`finally`.
 - A unittest `TestCase` reaches the fixture through an autouse fixture that stores it:
   `@pytest.fixture(autouse=True)` on `def _verify(self, verify): self.verify = verify`.
 - Threads may make checks; join them before the test returns, or their checks are lost. A
-  child process cannot make checks: return its values and check them in the test.
+  required (or fail-fast) check that fails in a thread stops only that thread: the test goes
+  on and fails at its end. A child process cannot make checks: return its values and check
+  them in the test.
 - Soft failures belong to the whole test, not to a pytest subtest: group each iteration's
   checks with `verify.section(f"ch{i}")`, or parametrize the test.
 - `fixture 'verify' not found` means the plugin is not loaded (for example with
@@ -200,10 +211,11 @@ for one run). Checks made while fixtures are torn down stay soft, and so do a un
   them. Record one with `verify.record(check)` (or `verify.require(check)`) right after
   building it, or pass it to a composite. `checks.evaluate(*descs)` (also `verify.evaluate`)
   only returns a bool (`True` when all pass) and records nothing: a bare call throws the
-  verdict away without any warning, so assert it or, better, record the checks. `assert checks.equal(...)` is a silent pass: a `checks`
-  check built in a test and never used only triggers `UnusedCheckWarning`.
-  `checks.record()` and `checks.require` raise `RuntimeError`.
-  `pytest_verifier.verify` is a deprecated alias of `checks`.
+  verdict away without any warning, so assert it or, better, record the checks.
+  `assert checks.equal(...)` always passes (a dict is truthy); a `checks` check built in a
+  test body and never used gives `UnusedCheckWarning`, but not in a unittest `TestCase`.
+  `checks.record()`, `checks.require(...)` and `checks.require.<check>(...)` raise
+  `RuntimeError`. `pytest_verifier.verify` is a deprecated alias of `checks`.
 
 ```python
 from pytest_verifier import checks
@@ -226,14 +238,17 @@ def test_rails(verify, psu):
   ✓ [0] 1V8 Vout — 1.803V == 1.8V ± 2%
 ```
 
-- The first line counts the failures and repeats the first one. After a required check it
-  reads `N of M checks failed, stopped at [k]: ...`.
+- The first line counts the failures and repeats the first one. When a required check (or
+  fail-fast) stopped the test, it reads `N of M checks failed, stopped at [k]: <that check>`
+  instead, even if an earlier check failed.
 - Failed checks (`✗`) come before passed ones (`✓`); `[k]` numbers the test's checks in the
-  order they were made (a check passed to a composite is listed inside it, not on its own).
+  order they were made. A composite's children get no `[k]`: its line names up to three
+  failed children, numbered by their position in the composite.
   A failed check shows where it was made (`path:line`, plus `called from` the test line when a
   helper made it), then `expected ... got ...`. Strings are quoted, so `expected 1, got '1'`
   means a conversion is missing; types are added when two values print alike.
-- A note in parentheses, `(TypeError: ...)`, means the check could not be evaluated.
+- A note that names an exception, `(TypeError: ...)`, means the check could not be evaluated
+  (its record has `error`); `(truthy)`, `(NaN ...)` or type names only explain the verdict.
 - At most 10 passed checks are listed (`--verify-show-passed=N`, `all` or `none` changes
   that); `-vv` lists all. A terminal that cannot print `✗`/`✓` shows `x`/`ok`, and
   `--verify-ascii` forces that form.
@@ -241,17 +256,18 @@ def test_rails(verify, psu):
   to a limit) adds a section after the failures that counts each check name across every
   test: `✗ 3V3 › Vout: 3 of 12 failed (first: <nodeid>)`. These three options are also ini
   settings (`verify_show_passed`, `verify_ascii`, `verify_summary`); the option wins.
-- Read the FAILURES and ERRORS sections, not the short `FAILED nodeid - ...` lines: without a
-  terminal those are cut at 80 columns (`-vv` prints them whole). `ChecksFailedError` itself
-  is not printed: search for `checks failed`.
+- Read the FAILURES and ERRORS sections, not the short `FAILED nodeid - ...` lines: those are
+  cut to the terminal width (80 columns without a terminal; whole when `CI` is set, or with
+  `-vv` from pytest 8.2). Search for `checks failed`: the name `ChecksFailedError` shows only
+  in a traceback chain.
 - When the test raised another exception, its traceback comes first and the failed checks
   follow under "Soft assertion failures" (not shown with `--tb=no`). Checks that failed after
   a fixture's `yield` appear under `ERROR at teardown of <test>`. A skip after a failed check
-  does not hide it: the test fails.
+  does not hide it: the test fails (an error, when a fixture skipped in setup).
 - A passing test prints none of its checks. To see them, print what the `verify` calls return
   (run with `-s`), or use the results hook below.
 - `xfail(raises=AssertionError)` catches `ChecksFailedError`; with pytest-rerunfailures use
-  `--only-rerun ChecksFailedError`.
+  `--only-rerun "checks failed"` (`--only-rerun ChecksFailedError` needs version 15.1).
 
 ## Results for reports and plugins
 
@@ -267,6 +283,8 @@ conftest, a reporter), read [references/results.md](references/results.md):
 
 ## This skill's version
 
-This skill describes pytest-verifier 0.9.0. If the project uses another version
-(`pip show pytest-verifier`), run `pytest-verifier skill install` to install the matching
-skill.
+This skill describes pytest-verifier 0.9.0; the `plugins:` line of pytest's header shows the
+project's version (`verifier-X.Y.Z`). For another version from 0.9.0 on, run
+`pytest-verifier skill install` in the project root (with `--global` when this skill is in
+`~/.claude/skills` or `~/.agents/skills`). Versions before 0.9.0 have no skill and no
+`pytest-verifier` command.

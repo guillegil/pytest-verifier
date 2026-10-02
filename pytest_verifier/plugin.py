@@ -840,15 +840,26 @@ class _JsonLines:
 
 def pytest_report_header(config: pytest.Config) -> List[str]:
     """Say when the project's agent skill was installed by another pytest-verifier version."""
-    from ._installer import AGENTS_SKILLS, stale_skills
+    from ._installer import AGENTS_SKILLS, compare_versions, stale_skills
 
+    root = config.rootpath
+    # The command installs in the current folder: name the rootdir when pytest ran elsewhere.
+    where = "" if config.invocation_params.dir == root else f" (run it in {root})"
     lines = []
-    for label, found, version in stale_skills(config.rootpath):
+    for label, found, version in stale_skills(root):
         flag = "--agents" if label.startswith(AGENTS_SKILLS[0]) else "--claude"
-        lines.append(
-            f"pytest-verifier {version}: the agent skill in {label} is for "
-            f"{found or 'another version'}; update it with: pytest-verifier skill install {flag}"
-        )
+        command = f"pytest-verifier skill install {flag}"
+        if found and version and compare_versions(found, version) == 1:
+            lines.append(
+                f"pytest-verifier {version}: the agent skill in {label} is for {found}, a newer "
+                f"pytest-verifier; upgrade pytest-verifier, or match the skill to {version} "
+                f"with: {command}{where}"
+            )
+        else:
+            lines.append(
+                f"pytest-verifier {version}: the agent skill in {label} is for "
+                f"{found or 'another version'}; update it with: {command}{where}"
+            )
     return lines
 
 

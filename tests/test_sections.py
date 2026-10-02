@@ -150,7 +150,7 @@ def test_a_finished_test_cannot_open_a_section():
     run, verify = _recording()
     section = verify.section("late")
     run.closed = True
-    with pytest.raises(RuntimeError, match="already finished"):
+    with pytest.raises(RuntimeError, match="already finished, so a section opened with it"):
         with section:
             pass
 
@@ -180,6 +180,61 @@ def test_concurrent_tasks_keep_their_own_sections():
     asyncio.run(main())
     assert records["3V3"]["section"] == ["3V3"]
     assert records["5V0"]["section"] == ["5V0"]
+
+
+def test_tasks_sharing_one_section_object_each_leave_it():
+    _, verify = _recording()
+    rail = verify.section("3V3")
+    after = {}
+
+    async def first(entered_a: asyncio.Event, entered_b: asyncio.Event, left_a: asyncio.Event):
+        with rail:
+            entered_a.set()
+            await entered_b.wait()
+        left_a.set()  # a leaves while b is still in
+        after["a"] = verify.equal(1, 1, name="a")
+
+    async def second(entered_a: asyncio.Event, entered_b: asyncio.Event, left_a: asyncio.Event):
+        await entered_a.wait()
+        with rail:
+            entered_b.set()
+            after["b in"] = verify.equal(1, 1, name="b in")
+            await left_a.wait()
+        after["b"] = verify.equal(1, 1, name="b")
+
+    async def main() -> None:
+        events = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        await asyncio.gather(first(*events), second(*events))
+
+    asyncio.run(main())
+    assert {name: record.get("section") for name, record in after.items()} == {
+        "b in": ["3V3"],
+        "a": None,
+        "b": None,
+    }
+
+
+def test_a_str_subclass_title_is_stored_as_plain_text():
+    import enum
+    import pickle
+
+    class Rail(str, enum.Enum):
+        V3 = "3V3"
+
+    _, verify = _recording()
+    with verify.section(Rail.V3):
+        record = verify.equal(1, 2, name="Vout")
+    assert record["section"] == ["3V3"]
+    assert type(record["section"][0]) is str
+    assert "3V3 › Vout" in str(pickle.loads(pickle.dumps(ChecksFailedError([record]))))
+
+
+def test_a_section_in_a_child_process_names_the_section():
+    run, verify = _recording()
+    run.pid = -1  # as after os.fork()
+    with pytest.raises(RuntimeError, match="this section was opened in a child process"):
+        with verify.section("Worker"):
+            pass
 
 
 def test_a_task_created_in_a_section_is_in_it():

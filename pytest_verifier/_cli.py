@@ -29,7 +29,7 @@ _INSTALL_HELP = (
     "Copy the agent skill of this pytest-verifier version into .claude/skills/pytest-verifier "
     "(Claude Code) and .agents/skills/pytest-verifier (agents that read .agents/skills, such as "
     "Codex), under the current folder. Run it again after upgrading pytest-verifier to update "
-    "the skill: a pytest-verifier skill already there is replaced. Anything else there is left "
+    "the skill: a skill this command installed there is replaced. Anything else there is left "
     "alone unless --force is given."
 )
 
@@ -69,7 +69,7 @@ def _parser() -> argparse.ArgumentParser:
     install.add_argument(
         "--force",
         action="store_true",
-        help="replace a pytest-verifier folder there that is not a pytest-verifier skill",
+        help="replace a pytest-verifier folder there that this command did not install",
     )
     parser.set_defaults(usage=parser)
     skill.set_defaults(usage=skill)
@@ -98,38 +98,59 @@ def _install(*, claude: bool, agents: bool, home: bool, force: bool) -> int:
     version = _installer.skill_version(files) or "unknown"
     try:
         targets = _installer.skills_folders(claude=claude, agents=agents, home=home)
+    except RuntimeError as exc:  # Path.home(): no home folder
+        _error(f"could not find your home folder ({exc}); set HOME, or install without --global")
+        return 1
+    try:
         steps = _installer.plan(targets, files, force=force)
     except OSError as exc:
         _error(f"could not look for the skill folders: {exc}")
         return 1
-    refused = [step for step in steps if step.action == "refuse"]
+    refused = [step for step in steps if step.action in ("refuse", "blocked")]
     if refused:
         for step in refused:
-            _error(
-                f"{step.target.label} is {step.note} that is not a pytest-verifier skill. "
-                "Move it away, or run again with --force to replace it."
-            )
+            if step.action == "blocked":
+                _error(
+                    f"cannot create {step.target.label}: {step.note} is a file, not a folder. "
+                    "Move it away."
+                )
+            else:
+                _error(
+                    f"{step.target.label} is {step.note} that this command did not install. "
+                    "Move it away, or run again with --force to replace it."
+                )
         _error("nothing was installed.")
         return 1
     done: List[str] = []
+    status = 0
     for step in steps:
         label = step.target.label
         if step.action == "same":
             print(f"{label} is the same folder as {step.note}")
             continue
+        for stuck in _installer.remove_leftovers(step.target.path):
+            _error(f"could not remove {step.target.name(stuck)}, left by an earlier install; "
+                   "delete it")
+            status = 1
         if step.action == "current":
             print(f"{label} is up to date (pytest-verifier {version})")
             continue
         try:
             _installer.write(step.folder, files)
+        except _installer.LeftoverError as exc:
+            print(_written(step, label, version))
+            _error(f"could not remove the old skill, moved aside to "
+                   f"{step.target.name(exc.path)}; delete it")
+            status = 1
         except OSError as exc:
             _error(f"could not write {label}: {exc}")
             if done:
                 _error(f"already written: {', '.join(done)}")
             return 1
+        else:
+            print(_written(step, label, version))
         done.append(label)
-        print(_written(step, label, version))
-    return 0
+    return status
 
 
 def _written(step: _installer.Step, label: str, version: str) -> str:
@@ -139,6 +160,8 @@ def _written(step: _installer.Step, label: str, version: str) -> str:
         return f"Replaced {label} with the pytest-verifier {version} skill"
     found = step.found_version
     if found is not None and found != version:
+        if _installer.compare_versions(found, version) == 1:
+            return f"Downgraded {label} from {found} to {version}, the installed pytest-verifier"
         return f"Updated {label} from {found} to {version}"
     return f"Updated {label} to the pytest-verifier {version} skill (its files had changed)"
 

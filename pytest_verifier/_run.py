@@ -62,13 +62,26 @@ _FORKED = (
     "process, for example on a value the worker returns."
 )
 
+_SECTION_CLOSED = (
+    "pytest-verifier: this 'verify' fixture belongs to a test that has already finished, so a "
+    "section opened with it could hold no check. Request the 'verify' fixture in the test that "
+    "opens the section."
+)
+
+_SECTION_FORKED = (
+    "pytest-verifier: this section was opened in a child process (for example a multiprocessing "
+    "worker), where no check can reach the test's results. Make the checks in the test's own "
+    "process, for example on values the worker returns."
+)
+
 
 _NO_TEST = FunctionCode()
 
-#: The ``verify.section`` blocks the code running now is in: the key of their run and their
-#: titles, outermost first. Keyed by run, so sections never carry over to another test.
-_SECTIONS: contextvars.ContextVar[Tuple[object, Tuple[str, ...]]] = contextvars.ContextVar(
-    "pytest_verifier_sections", default=(None, ())
+#: The ``verify.section`` blocks the code running now is in: the key of their run, and an
+#: ``(owner, title)`` entry per block, outermost first. Keyed by run, so sections never carry
+#: over to another test. Each block leaves by removing its own entry (see :class:`_Section`).
+_SECTIONS: contextvars.ContextVar[Tuple[object, Tuple[Tuple[object, str], ...]]] = (
+    contextvars.ContextVar("pytest_verifier_sections", default=(None, ()))
 )
 
 
@@ -125,8 +138,8 @@ class Run:
 
     def section_path(self) -> Tuple[str, ...]:
         """The titles of this run's sections the code running now is in, outermost first."""
-        key, path = _SECTIONS.get()
-        return path if key is self.key else ()
+        key, entries = _SECTIONS.get()
+        return tuple(title for _, title in entries) if key is self.key else ()
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
         entry = self._entries.get(id(descriptor))
@@ -134,11 +147,11 @@ class Run:
             return None
         return entry.passed, entry.record
 
-    def ensure_open(self) -> None:
+    def ensure_open(self, closed: str = _CLOSED, forked: str = _FORKED) -> None:
         if self.closed:
-            raise RuntimeError(_CLOSED)
+            raise RuntimeError(closed)
         if os.getpid() != self.pid:
-            raise RuntimeError(_FORKED)
+            raise RuntimeError(forked)
 
     def locate(self) -> Site:
         """Where the check being recorded now was made."""
@@ -291,30 +304,39 @@ class Run:
 
 
 class _Section:
-    """A ``verify.section`` block: see :meth:`Verify.section`. Reusable, also nested."""
+    """A ``verify.section`` block: see :meth:`Verify.section`.
 
-    __slots__ = ("_run", "_title", "_tokens")
+    Reusable, also nested and by several tasks at once: entering adds an entry owned by this
+    object to the current context's sections, and leaving removes the innermost one, so each
+    context leaves only what it entered. The entry holds a bare owner object, not the run.
+    """
+
+    __slots__ = ("_run", "_title", "_owner")
 
     def __init__(self, run: Run, title: str) -> None:
         self._run = run
-        self._title = title
-        self._tokens: List[contextvars.Token[Tuple[object, Tuple[str, ...]]]] = []
+        # A plain str: a str subclass (a str Enum member) could not be pickled or sent by xdist.
+        self._title = str.__str__(title)
+        self._owner = object()
 
     def __enter__(self) -> None:
         run = self._run
-        run.ensure_open()
-        self._tokens.append(_SECTIONS.set((run.key, run.section_path() + (self._title,))))
+        run.ensure_open(_SECTION_CLOSED, _SECTION_FORKED)
+        key, entries = _SECTIONS.get()
+        if key is not run.key:
+            entries = ()
+        _SECTIONS.set((run.key, entries + ((self._owner, self._title),)))
 
     def __exit__(self, *exc_info: Any) -> None:
-        if not self._tokens:
+        key, entries = _SECTIONS.get()
+        if key is not self._run.key:
             return
-        token = self._tokens.pop()
-        try:
-            _SECTIONS.reset(token)
-        except ValueError:
-            # Exited in another context than it was entered in (an async fixture resumed in
-            # another task): that context never entered the section.
-            pass
+        for index in range(len(entries) - 1, -1, -1):
+            if entries[index][0] is self._owner:
+                _SECTIONS.set((key, entries[:index] + entries[index + 1:]))
+                return
+        # Not entered in this context (an async fixture resumed in another task): nothing to
+        # leave here.
 
 
 def cause_of(exc: BaseException) -> Optional[BaseException]:
