@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.0] - 2026-10-01
+## [0.8.0] - 2026-10-02
 
 The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were
 made, a check can stop the test when it fails, and the first line of a failure says what
