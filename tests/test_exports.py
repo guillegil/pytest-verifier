@@ -125,7 +125,8 @@ class TestJunitProperties:
     def test_a_family_without_properties_warns(self, pytester: pytest.Pytester, args, warned):
         pytester.makepyfile("def test_a(verify):\n    verify.is_true(True, name='a')\n")
         result = pytester.runpytest("-o", "verify_junit_properties=all", *args)
-        result.assert_outcomes(passed=1, warnings=1 if warned else 0)
+        result.assert_outcomes(passed=1)
+        assert _junit_warnings(result) == (1 if warned else 0)
         if warned:
             result.stdout.fnmatch_lines(["*junit_family 'xunit2' does not allow*xunit1*"])
 
@@ -205,8 +206,15 @@ class TestJunitProperties:
         """)
         pytester.makepyfile("def test_a(verify):\n    verify.is_true(True, name='a')\n")
         result = pytester.runpytest("-o", "verify_junit_properties=all")
-        result.assert_outcomes(passed=1, warnings=1)
+        result.assert_outcomes(passed=1)
+        assert _junit_warnings(result) == 1
         result.stdout.fnmatch_lines(["*junit_family 'xunit2' does not allow*xunit1*"])
+
+
+def _junit_warnings(result: pytest.RunResult) -> int:
+    # Not the total warning count: run from an unpacked sdist, pytest also warns that the
+    # tests package, listed in the sdist's egg-info, was imported before it could rewrite it.
+    return result.stdout.str().count("PytestConfigWarning: verify_junit_properties")
 
 
 def _lines(path) -> list:
