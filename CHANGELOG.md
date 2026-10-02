@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - pytest's header says when the skill in the project's `.claude/skills` or `.agents/skills` is
   for another version of pytest-verifier, and how to update it.
 
+### Fixed
+
+- `verify.require(value)` with something that is not a check named `record()` in its error; it
+  now names `require()`.
+
 ## [0.8.0] - 2026-10-02
 
 The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were

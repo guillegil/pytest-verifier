@@ -865,8 +865,10 @@ class TestRequire:
 
     def test_a_non_descriptor_is_a_type_error(self) -> None:
         verify = recording_verify(Run())
-        with pytest.raises(TypeError, match="record\\(\\) argument must be a check descriptor"):
+        with pytest.raises(TypeError, match="^require\\(\\) argument must be a check descriptor"):
             verify.require(42)  # type: ignore[arg-type]
+        with pytest.raises(TypeError, match="^record\\(\\) argument must be a check descriptor"):
+            verify.require.record(42)  # type: ignore[arg-type]
 
 
 class TestFailFast:

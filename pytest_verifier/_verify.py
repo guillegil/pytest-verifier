@@ -95,8 +95,8 @@ class Sink:
         _unused.built(descriptor)
         return descriptor
 
-    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
-        """Take a check built elsewhere."""
+    def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
+        """Take a check built elsewhere; *call* names the method, for usage errors."""
         _unused.used(descriptor)  # the error below already says what went wrong
         raise RuntimeError(_RECORD_NEEDS_FIXTURE)
 
@@ -117,7 +117,7 @@ class _NoRequire(Sink):
         _unused.used(*loose_children(*arguments))
         raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
 
-    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+    def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
         _unused.used(descriptor)
         raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
 
@@ -673,7 +673,7 @@ class Require(Verify):
             RuntimeError: When used on ``pytest_verifier.checks``.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.record(check)
+        return self._sink.record(check, "require()")
 
     @property
     def require(self) -> Require:

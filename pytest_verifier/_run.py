@@ -328,9 +328,9 @@ class Recorder(Sink):
         self._enforce(record, passed)
         return record
 
-    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+    def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        require_descriptor(descriptor, "record() argument")
+        require_descriptor(descriptor, f"{call} argument")
         run = self._run
         run.ensure_open()
         hit = run.known(descriptor)
