@@ -77,7 +77,9 @@ pytest_verifier/
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
-├── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal
+├── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal,
+│                            #   label() (section › name), junit_property()
+├── _summary.py              # SessionSummary: --verify-summary lines, checks grouped by label
 ├── _skill/                  # The agent skill (SKILL.md, package data) that the CLI installs
 ├── _installer.py            # Shipped skill files, frontmatter, target folders, plan and
 │                            #   swap-in write; stale_skills() for the pytest header line
@@ -330,6 +332,13 @@ the same (`value_pair`); a failed `equal` whose values still render the same add
 first differ; NaN operands get a note. Truth labels (`is_true`/`is_false`) come from the
 verdict: a value is never tested twice. `render_detail` passes a judging error to the detail
 as `d["error"]`.
+
+Options read at configure (each also an ini setting of the same name; the option wins):
+`--verify-show-passed` (stash, default 10; `-vv` lists all), `--verify-ascii` (`_ASCII_TERMINAL`
+ContextVar, reset by a config cleanup, read when a report prints), `--verify-summary`
+(`_Summary` plugin on the controller, from `report.verify_checks`, rerun reports skipped; margins
+from `CheckType.margin`, which ordering checks, `between` and `approx` implement), `--verify-json`
+and `verify_junit_properties` (see Fixture Behavior).
 
 The summary text (`ChecksFailedError`'s message, the "Soft assertion failures" section) is
 always Unicode. Only the terminal gets another form: `plugin.pytest_runtest_logreport` makes a

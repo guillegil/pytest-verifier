@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the junit XML report as `<property name="verify[3] 5V0 › Ripple" value="failed: …"/>`. A
   rerun keeps only the last attempt's. With a junit family that does not allow properties
   (pytest's default `xunit2`), a warning says to use `xunit1`.
+- `--verify-show-passed=N|all|none` (ini `verify_show_passed`, default 10) sets how many passed
+  checks a failure summary lists. `-vv` still lists them all.
+- `--verify-ascii` (ini `verify_ascii`) prints summaries in the terminal with ASCII markers and
+  escapes, as pytest-verifier already does on a terminal that cannot show Unicode. Reports
+  such as junitxml keep the Unicode text.
+- `--verify-summary=off|failed|all|stats` (ini `verify_summary`, default `off`) adds a terminal
+  section that counts each check name across the run, failed names first, with the first test
+  that failed it: `✗ 3V3 › Vout: 3 of 12 failed (first: tests/test_rails.py::test_rail[hot])`.
+  `stats` adds the range of numeric values and the smallest margin to a limit. It is built from
+  the reports, so it works under pytest-xdist, and a rerun test counts once.
 
 ### Fixed
 

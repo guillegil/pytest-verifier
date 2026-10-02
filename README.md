@@ -105,11 +105,41 @@ How values read in the summary:
 - Each check stays on one line. Line breaks and other control characters in names and values
   are escaped (`\n`).
 - At most 10 passed checks are listed, followed by `✓ … N more passed checks`. Run pytest with
-  `-vv` to list them all. Every check is still recorded (see
+  `-vv` to list them all, or set how many with `--verify-show-passed=N` (`all`, or `none`).
+  Every check is still recorded (see
   [Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
 - On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
   `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
-  terminal output changes: reports such as junitxml keep the summary as it is.
+  terminal output changes: reports such as junitxml keep the summary as it is. For a log that
+  shows Unicode wrongly although the terminal claims to support it, `--verify-ascii` forces
+  this form.
+
+### Output options
+
+| Option | ini setting | Default | What it does |
+|---|---|---|---|
+| `--verify-show-passed=N\|all\|none` | `verify_show_passed` | `10` | How many passed checks a failure summary lists; `-vv` lists them all |
+| `--verify-ascii` | `verify_ascii` | `false` | ASCII markers and escapes in the terminal, as on a terminal that cannot show Unicode |
+| `--verify-summary=off\|failed\|all\|stats` | `verify_summary` | `off` | A section that counts each check name across the whole run |
+| `--verify-json=PATH` | | | Every check to a JSON Lines file (see [Exporting Results](https://github.com/guillegil/pytest-verifier#exporting-results)) |
+| | `verify_junit_properties` | `none` | Checks as junit `<property>` elements: `none`, `failed` or `all` |
+| `--verify-fail-fast` | `verify_fail_fast` | `false` | Stop each test at its first failed check (see below) |
+
+An option on the command line wins over its ini setting. `--verify-summary` adds a section
+after the failures that groups the checks of every test by name, with their section titles,
+including the checks inside composites. Names with a failed check come first; `failed` lists
+only those, and `stats` adds the range of numeric values and the smallest margin, how close the
+nearest value came to its limit (negative when it was past it):
+
+```text
+======================= pytest-verifier: checks by name ========================
+  ✗ 3V3 › Vout: 1 of 2 failed (first: tests/test_rails.py::test_rail[hot]); 3.31V to 3.36V, margin -0.01V
+  ✓ Current: 2 passed; 0.2A to 0.45A, margin 0.05A
+```
+
+Margins come from `approx` (the tolerance left), `between` (the distance to the nearer bound)
+and the ordering checks (the distance to the threshold), for values that are plain numbers. A
+test that pytest-rerunfailures runs again counts once, with its last attempt.
 
 ### When failures are raised
 

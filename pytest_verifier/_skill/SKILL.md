@@ -234,8 +234,13 @@ def test_rails(verify, psu):
   helper made it), then `expected ... got ...`. Strings are quoted, so `expected 1, got '1'`
   means a conversion is missing; types are added when two values print alike.
 - A note in parentheses, `(TypeError: ...)`, means the check could not be evaluated.
-- At most 10 passed checks are listed; `-vv` lists all. A terminal that cannot print `✗`/`✓`
-  shows `x`/`ok`.
+- At most 10 passed checks are listed (`--verify-show-passed=N`, `all` or `none` changes
+  that); `-vv` lists all. A terminal that cannot print `✗`/`✓` shows `x`/`ok`, and
+  `--verify-ascii` forces that form.
+- `--verify-summary=failed` (or `all`, or `stats` with value ranges and the smallest margin
+  to a limit) adds a section after the failures that counts each check name across every
+  test: `✗ 3V3 › Vout: 3 of 12 failed (first: <nodeid>)`. These three options are also ini
+  settings (`verify_show_passed`, `verify_ascii`, `verify_summary`); the option wins.
 - Read the FAILURES and ERRORS sections, not the short `FAILED nodeid - ...` lines: without a
   terminal those are cut at 80 columns (`-vv` prints them whole). `ChecksFailedError` itself
   is not printed: search for `checks failed`.

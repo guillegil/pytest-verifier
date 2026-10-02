@@ -84,7 +84,7 @@ FEAT-4, FEAT-12) are the proposed rest of 0.9.0, waiting for the user's confirma
 - [x] ~~pytest's header says when a project's installed skill was made for another version (DX-11)~~
 - [x] ~~`verify.section()` to group checks: a `section` path on records, `3V3 › Vout` in summaries (FEAT-8)~~
 - [x] ~~Export checks to junit properties and a JSON Lines file (FEAT-4)~~
-- [ ] `--verify-show-passed`, `--verify-ascii` and a session summary (FEAT-12)
+- [x] ~~`--verify-show-passed`, `--verify-ascii` and a session summary (FEAT-12)~~
 - [ ] The skill covers every new API and option
 - [ ] README, CHANGELOG, CLAUDE.md, roadmap page
 - [ ] Full test matrix, mypy, build (skill files in the wheel and the sdist), sdist tests against the wheel

@@ -36,6 +36,7 @@ teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import functools
 import inspect
 import json
@@ -71,6 +72,7 @@ from ._exceptions import (
 from ._location import FunctionCode, display_path, split
 from ._run import Run, cause_of, recording_verify
 from ._stash import check_results_key
+from ._summary import MODES, SessionSummary
 from ._verify import Verify
 
 _NOT_ACTIVE = (
@@ -87,6 +89,14 @@ _paused_key = pytest.StashKey[bool]()
 _junit_key = pytest.StashKey[str]()
 #: The ``user_properties`` entries the checks of the current attempt added.
 _properties_key = pytest.StashKey[List[Tuple[str, object]]]()
+#: How many passed checks a summary lists below ``-vv`` (all when ``None``).
+_show_passed_key = pytest.StashKey[Optional[int]]()
+
+#: Whether the terminal gets the ASCII form of summaries (``--verify-ascii``). Read when a
+#: report is printed, which may be outside any hook that has the config (``--pdb``).
+_ASCII_TERMINAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pytest_verifier_ascii_terminal", default=False
+)
 
 
 _OLD_INSTALL = (
@@ -134,6 +144,23 @@ _JSON_HELP = (
     "the phase that judged it, the report's outcome, its index in the test and the check."
 )
 
+_SHOW_PASSED_HELP = (
+    "How many passed checks a failure summary lists: a number, all or none (default 10). "
+    "With -vv every passed check is listed."
+)
+
+_ASCII_HELP = (
+    "Print failure summaries in the terminal with ASCII markers (x, ok) and escapes for other "
+    "characters, as on a terminal that cannot show them. Reports such as junitxml keep the "
+    "Unicode text."
+)
+
+_SUMMARY_HELP = (
+    "Add a terminal section that groups the checks of every test by name: off (default), "
+    "failed (names with a failed check), all, or stats (all, with the range of numeric values "
+    "and the smallest margin to a limit)."
+)
+
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("pytest-verifier", "soft assertions (pytest-verifier)")
@@ -145,6 +172,29 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=_FAIL_FAST_HELP + " Default: the verify_fail_fast ini setting (false).",
     )
     group.addoption(
+        "--verify-show-passed",
+        action="store",
+        dest="verify_show_passed",
+        metavar="N|all|none",
+        default=None,
+        help=_SHOW_PASSED_HELP + " Overrides the verify_show_passed ini setting.",
+    )
+    group.addoption(
+        "--verify-ascii",
+        action="store_true",
+        default=None,
+        dest="verify_ascii",
+        help=_ASCII_HELP + " Default: the verify_ascii ini setting (false).",
+    )
+    group.addoption(
+        "--verify-summary",
+        action="store",
+        dest="verify_summary",
+        metavar="off|failed|all|stats",
+        default=None,
+        help=_SUMMARY_HELP + " Overrides the verify_summary ini setting.",
+    )
+    group.addoption(
         "--verify-json",
         action="store",
         dest="verify_json",
@@ -153,14 +203,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         help=_JSON_HELP,
     )
     parser.addini("verify_fail_fast", _FAIL_FAST_HELP, type="bool", default=False)
+    parser.addini("verify_show_passed", _SHOW_PASSED_HELP, default="10")
+    parser.addini("verify_ascii", _ASCII_HELP, type="bool", default=False)
+    parser.addini("verify_summary", _SUMMARY_HELP, default="off")
     parser.addini("verify_junit_properties", _JUNIT_HELP, default="none")
 
 
 def _fail_fast(config: pytest.Config) -> bool:
-    option = config.getoption("verify_fail_fast", None)
-    if option is not None:
-        return bool(option)
-    return bool(config.getini("verify_fail_fast"))
+    return bool(_setting(config, "verify_fail_fast"))
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -279,8 +329,37 @@ _PASSED_SHOWN = 10
 def _summary_options(config: pytest.Config) -> Dict[str, Any]:
     """``max_passed`` for the summaries of this session."""
     verbosity = config.getoption("verbose", 0)
-    max_passed = None if isinstance(verbosity, int) and verbosity >= 2 else _PASSED_SHOWN
-    return {"max_passed": max_passed}
+    if isinstance(verbosity, int) and verbosity >= 2:
+        return {"max_passed": None}
+    return {"max_passed": config.stash.get(_show_passed_key, _PASSED_SHOWN)}
+
+
+def _setting(config: pytest.Config, name: str) -> Any:
+    """The command-line option *name*, else the ini setting of the same name."""
+    option = config.getoption(name, None)
+    return config.getini(name) if option is None else option
+
+
+def _show_passed(config: pytest.Config) -> Optional[int]:
+    value = str(_setting(config, "verify_show_passed")).strip()
+    if value == "all":
+        return None
+    if value == "none":
+        return 0
+    if value.isdigit():
+        return int(value)
+    raise pytest.UsageError(
+        f"verify_show_passed (--verify-show-passed) must be a number, all or none, not {value!r}"
+    )
+
+
+def _summary_mode(config: pytest.Config) -> str:
+    value = str(_setting(config, "verify_summary")).strip()
+    if value not in MODES:
+        raise pytest.UsageError(
+            f"verify_summary (--verify-summary) must be off, failed, all or stats, not {value!r}"
+        )
+    return value
 
 
 def _is_skip(exc: BaseException) -> bool:
@@ -634,9 +713,21 @@ def pytest_configure(config: pytest.Config) -> None:
     if manager.is_blocked("pytest_verifier") and manager.get_plugin("pytest_verifier") is None:
         config.issue_config_time_warning(pytest.PytestConfigWarning(_NOT_BLOCKED), stacklevel=2)
     config.stash[_junit_key] = _junit_setting(config)
+    config.stash[_show_passed_key] = _show_passed(config)
+    mode = _summary_mode(config)
+    worker = hasattr(config, "workerinput")  # an xdist controller writes and prints
     path = config.getoption("verify_json", None)
-    if path and not hasattr(config, "workerinput"):  # an xdist controller writes it
+    if path and not worker:
         manager.register(_JsonLines(_open_json(path)), _JSON_PLUGIN)
+    if mode != "off" and not worker:
+        manager.register(_Summary(SessionSummary(mode)), _SUMMARY_PLUGIN)
+    token = _ASCII_TERMINAL.set(bool(_setting(config, "verify_ascii")))
+    config.add_cleanup(functools.partial(_reset, _ASCII_TERMINAL, token))
+
+
+def _reset(variable: contextvars.ContextVar[Any], token: contextvars.Token[Any]) -> None:
+    with contextlib.suppress(ValueError):  # cleaned up in another context
+        variable.reset(token)
 
 
 def _junit_setting(config: pytest.Config) -> str:
@@ -675,6 +766,40 @@ def _open_json(path: str) -> IO[str]:
         return open(path, "w", encoding="utf-8", buffering=1)
     except OSError as exc:
         raise pytest.UsageError(f"--verify-json: cannot write {path}: {exc}") from exc
+
+
+_SUMMARY_PLUGIN = "pytest_verifier_summary"
+
+
+class _Summary:
+    """``--verify-summary``: collects the checks of every report, then prints the section."""
+
+    def __init__(self, summary: SessionSummary) -> None:
+        self._summary = summary
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        checks = getattr(report, "verify_checks", None)
+        outcome: str = report.outcome
+        if checks and outcome != "rerun":  # pytest-rerunfailures runs the test again
+            self._summary.add(report.nodeid, checks)
+
+    def pytest_terminal_summary(self, terminalreporter: Any) -> None:
+        lines = self._summary.lines()
+        if not lines:
+            return
+        encoding = _terminal_encoding(terminalreporter._tw)
+        terminalreporter.write_sep("=", "pytest-verifier: checks by name")
+        for line in lines:
+            terminalreporter.write_line(for_terminal(line, encoding))
+
+
+def _terminal_encoding(tw: Any) -> Optional[str]:
+    """The encoding summaries are adapted to when *tw* prints them: ``"ascii"`` with
+    ``--verify-ascii``, else its stream's (``None`` when unknown)."""
+    if _ASCII_TERMINAL.get():
+        return "ascii"
+    encoding = getattr(getattr(tw, "_file", None), "encoding", None)
+    return encoding if isinstance(encoding, str) else None
 
 
 class _JsonLines:
@@ -793,8 +918,8 @@ def _print_for_terminal(longrepr: Any) -> None:
         return
 
     def toterminal(tw: Any) -> None:
-        encoding = getattr(getattr(tw, "_file", None), "encoding", None)
-        if not isinstance(encoding, str):
+        encoding = _terminal_encoding(tw)
+        if encoding is None:
             original(tw)
             return
         with _summaries_for(longrepr, encoding):
@@ -885,8 +1010,8 @@ def _printing_crash_lines(terminalreporter: Any, method: Any) -> Any:
 
 def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
     """Adapt the crash messages of soft failures; returns ``(crash, original message)`` pairs."""
-    encoding = getattr(getattr(terminalreporter._tw, "_file", None), "encoding", None)
-    if not isinstance(encoding, str):
+    encoding = _terminal_encoding(terminalreporter._tw)
+    if encoding is None:
         return []
     saved = []
     for key in ("failed", "error"):
