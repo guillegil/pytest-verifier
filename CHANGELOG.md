@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- An agent skill that teaches coding agents (Claude Code, Codex and others) to write tests with
+  pytest-verifier, shipped in the package, and the `pytest-verifier` command that installs it.
+  `pytest-verifier skill install` writes it to `.claude/skills/pytest-verifier/` and
+  `.agents/skills/pytest-verifier/` in the current folder: `--claude` or `--agents` (also
+  `--generic`) picks one of them, `--global` uses the home folder, and `--force` replaces a
+  folder there that is not this skill. Running it again updates the skill and says from which
+  version. `python -m pytest_verifier` runs the same command.
+- pytest's header says when the skill in the project's `.claude/skills` or `.agents/skills` is
+  for another version of pytest-verifier, and how to update it.
+
 ## [0.8.0] - 2026-10-02
 
 The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were

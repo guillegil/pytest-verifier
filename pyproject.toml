@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pytest-verifier"
-version = "0.8.0"
+version = "0.9.0"
 description = "A pytest plugin providing soft assertions for test verification"
 readme = "README.md"
 license = "MIT"
@@ -33,6 +33,10 @@ Homepage = "https://github.com/guillegil/pytest-verifier"
 Changelog = "https://github.com/guillegil/pytest-verifier/blob/main/CHANGELOG.md"
 Issues = "https://github.com/guillegil/pytest-verifier/issues"
 
+# `pytest-verifier skill install` (also `python -m pytest_verifier`).
+[project.scripts]
+pytest-verifier = "pytest_verifier._cli:main"
+
 # The entry point names an importable module, so `-p pytest_verifier` and
 # `-p no:pytest_verifier` work. The package loads `pytest_verifier.plugin`.
 [project.entry-points.pytest11]
@@ -43,7 +47,8 @@ pytest_verifier = "pytest_verifier"
 include = ["pytest_verifier*"]
 
 [tool.setuptools.package-data]
-pytest_verifier = ["py.typed"]
+# The agent skill that `pytest-verifier skill install` copies.
+pytest_verifier = ["py.typed", "_skill/*.md", "_skill/**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

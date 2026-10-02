@@ -45,6 +45,27 @@ If any check fails, the test continues running. When the test body ends, all fai
 reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
 the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check).
 
+## Agent Skill
+
+pytest-verifier ships an [Agent Skill](https://agentskills.io) that teaches coding agents, such
+as Claude Code and Codex, to write tests with it: every `verify` method and when it passes,
+composite checks, `verify.require`, helpers, and how to read a failure. Install it into your
+project:
+
+```bash
+pytest-verifier skill install            # .claude/skills/ and .agents/skills/
+pytest-verifier skill install --claude   # only .claude/skills/ (Claude Code)
+pytest-verifier skill install --agents   # only .agents/skills/ (Codex and others; --generic works too)
+pytest-verifier skill install --global   # in your home folder instead
+```
+
+The skill goes into a `pytest-verifier` folder there; commit it to share it with your team. It
+describes the installed version of pytest-verifier, so run the command again after upgrading:
+it replaces the old skill and says what it updated. When the skill in a project's
+`.claude/skills` or `.agents/skills` is for another version, pytest's header says so. A
+`pytest-verifier` folder that holds anything else is left alone unless you add `--force`.
+`python -m pytest_verifier skill install` does the same as the command.
+
 ## Failure Output
 
 When one or more checks fail, the test is reported as **failed** with a summary. Its first line

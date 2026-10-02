@@ -77,7 +77,12 @@ pytest_verifier/
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
-└── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal
+├── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal
+├── _skill/                  # The agent skill (SKILL.md, package data) that the CLI installs
+├── _installer.py            # Shipped skill files, frontmatter, target folders, plan and
+│                            #   swap-in write; stale_skills() for the pytest header line
+├── _cli.py                  # `pytest-verifier` command (console script): skill install
+└── __main__.py              # `python -m pytest_verifier`
 ```
 
 The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
@@ -178,6 +183,20 @@ CHANGELOG needs a dated `## [X.Y.Z] - YYYY-MM-DD` heading; the release and githu
 commit on main. No `skip-existing`: after a partial failure use "Re-run failed jobs" (same built
 files); an existing tag on the same commit and an existing release with the same files are
 accepted. Actions are pinned to commit SHAs. CI's package job runs the same build and tests.
+Before a release, bump `version` in pyproject.toml and `metadata.version` in the skill together.
+
+## Agent skill — keep it current
+
+`pytest_verifier/_skill/SKILL.md` teaches coding agents the public API; `pytest-verifier skill
+install` copies it into `.claude/skills/pytest-verifier/` and `.agents/skills/pytest-verifier/`
+(`--claude`, `--agents`/`--generic`, `--global` for the home folder, `--force`). Reinstalling
+replaces a pytest-verifier skill of any version (found by `name: pytest-verifier` in its
+frontmatter) and refuses anything else. Every change to user-visible behaviour updates the
+skill in the same PR, and every release sets its `metadata.version` to the new version.
+`tests/test_skill.py` fails when a public `Verify` method, a name in `__all__` or a
+`--verify-*` option or `verify_*` ini setting is missing from the skill, when its version is
+not the package's, or when an example does not parse. Keep it precise and lean: only what an
+agent needs to use the API correctly, each claim checked against the code.
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
 

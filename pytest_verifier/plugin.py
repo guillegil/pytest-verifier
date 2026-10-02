@@ -554,6 +554,20 @@ def pytest_configure(config: pytest.Config) -> None:
         config.issue_config_time_warning(pytest.PytestConfigWarning(_NOT_BLOCKED), stacklevel=2)
 
 
+def pytest_report_header(config: pytest.Config) -> List[str]:
+    """Say when the project's agent skill was installed by another pytest-verifier version."""
+    from ._installer import AGENTS_SKILLS, stale_skills
+
+    lines = []
+    for label, found, version in stale_skills(config.rootpath):
+        flag = "--agents" if label.startswith(AGENTS_SKILLS[0]) else "--claude"
+        lines.append(
+            f"pytest-verifier {version}: the agent skill in {label} is for "
+            f"{found or 'another version'}; update it with: pytest-verifier skill install {flag}"
+        )
+    return lines
+
+
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_makereport(
     item: pytest.Item, call: pytest.CallInfo[None]
