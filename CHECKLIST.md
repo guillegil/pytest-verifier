@@ -74,10 +74,10 @@ Every release follows the same steps, written down before any code changes:
 
 ### 0.9.0 Agent skill and reporting
 
-Scope: the agent skill and its installer, asked for by the user. The reporting items (FEAT-8,
-FEAT-4, FEAT-12) are the proposed rest of 0.9.0, waiting for the user's confirmation.
+Scope: the agent skill and its installer, asked for by the user, plus the reporting items
+(FEAT-8, FEAT-4, FEAT-12), included by default while the scope question waits for the user.
 
-- [ ] Agent skill `pytest-verifier` in the package (`pytest_verifier/_skill/`), written with skill-creator, every claim checked against the code (DX-11)
+- [x] ~~Agent skill `pytest-verifier` in the package (`pytest_verifier/_skill/`), written with skill-creator, every claim checked against the code (DX-11)~~ (33 fact-check findings fixed)
 - [x] ~~Test prompts run with and without the skill, graded, reviewed, skill revised (DX-11)~~ (2 rounds, 7 tasks)
 - [x] ~~`pytest-verifier skill install` with `--claude`, `--agents` (`--generic`), `--global` and `--force`; `python -m pytest_verifier` too (DX-11)~~
 - [x] ~~Tests that keep the skill current: every public method, export and option named in it, its version equal to the package's, its examples compile (DX-11)~~
@@ -85,11 +85,11 @@ FEAT-4, FEAT-12) are the proposed rest of 0.9.0, waiting for the user's confirma
 - [x] ~~`verify.section()` to group checks: a `section` path on records, `3V3 › Vout` in summaries (FEAT-8)~~
 - [x] ~~Export checks to junit properties and a JSON Lines file (FEAT-4)~~
 - [x] ~~`--verify-show-passed`, `--verify-ascii` and a session summary (FEAT-12)~~
-- [ ] The skill covers every new API and option
-- [ ] README, CHANGELOG, CLAUDE.md, roadmap page
-- [ ] Full test matrix, mypy, build (skill files in the wheel and the sdist), sdist tests against the wheel
-- [ ] Independent review and fixes
-- [ ] PR, CI green, merge, release v0.9.0
+- [x] ~~The skill covers every new API and option~~
+- [x] ~~README, CHANGELOG, CLAUDE.md, roadmap page~~
+- [x] ~~Full test matrix, mypy, build (skill files in the wheel and the sdist), sdist tests against the wheel~~
+- [x] ~~Independent review and fixes~~ (installer, sections, outputs and exports; each fix with a test)
+- [ ] PR, CI green, merge, release v0.9.0 (PR #7; merge and release wait for the user)
 
 ## Bugs
 
@@ -208,15 +208,15 @@ Not implemented until we discuss them.
 - [x] ~~**FEAT-1** Record where each check was called~~ · done in 0.8.0
 - [ ] **FEAT-2** `verify.raises` and error-tolerant checks · idea, discuss
 - [ ] **FEAT-3** Strictness controls · partly done in 0.8.0 (fail-fast, `require`, first line); the warning level waits
-- [ ] **FEAT-4** Export results · idea, discuss
+- [ ] **FEAT-4** Export results · built for 0.9.0 (PR #7), not released yet
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
 - [ ] **FEAT-6** `pytest.approx` interop · idea, discuss
 - [ ] **FEAT-7** Lab-grade number formatting · idea, discuss
-- [ ] **FEAT-8** `verify.section()` for grouping · idea, discuss
+- [ ] **FEAT-8** `verify.section()` for grouping · built for 0.9.0 (PR #7), not released yet
 - [ ] **FEAT-9** Custom check types · idea, discuss
 - [ ] **FEAT-10** Limits tables · idea, discuss
 - [ ] **FEAT-11** `verify.eventually` and `verify.stable` · idea, discuss
-- [ ] **FEAT-12** Verbosity-aware CLI options and a session summary · idea, discuss
+- [ ] **FEAT-12** Verbosity-aware CLI options and a session summary · built for 0.9.0 (PR #7), not released yet
 
 ## Ideas: developer experience, CI and releases
 
@@ -232,4 +232,4 @@ Not implemented until we discuss them.
 - [ ] **DX-8** A docs site, the spec in the repo, and a JSON Schema · idea, discuss
 - [ ] **DX-9** SemVer and changelog gates on pull requests · idea, discuss
 - [ ] **DX-10** A contributor on-ramp · idea, discuss
-- [ ] **DX-11** An agent skill and a command that installs it · planned for 0.9.0
+- [ ] **DX-11** An agent skill and a command that installs it · built for 0.9.0 (PR #7), not released yet
