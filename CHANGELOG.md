@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-02
+
+The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were
+made, a check can stop the test when it fails, and the first line of a failure says what
+failed.
+
+### Added
+
+- Published on PyPI as `pytest-verifier`. Releases up to 0.7.0 stay installable from Git tags.
+- Every check the `verify` fixture records has a `location`, the file and line that made it,
+  relative to the rootdir (`"tests/test_psu.py:17"`). When a helper or a lazy child made it,
+  `called_from` holds the line of the test function that led to it. Failed checks show both in
+  the summary: `✗ [1] Rail (lib/rails.py:8, called from tests/test_psu.py:22) — …`, or
+  `called from line 22` in the same file. Passed checks stay as they were. The test function is
+  found behind decorators, also ones without `functools.wraps` such as Hypothesis's `@given`,
+  and a comprehension in the test body counts as the test on every Python version. Installed
+  code that runs the test, such as pytest-bdd's generated test, is never shown as the caller.
+- `verify.require`, with the same methods as `verify`: a check made with it that fails stops
+  the test at once with `ChecksFailedError`, listing every check made so far, also from inside
+  a lazy child or an `all_satisfy` factory. The first line names the check that stopped the
+  test: `2 of 2 checks failed, stopped at [1]: Link — …`. `verify.require(check)` does the same
+  for a check made earlier or built with `checks`; a check that a composite took or an earlier
+  phase judged is recorded again, so the error names it, and a composite never takes the check
+  that stopped the test. The checks stay recorded, so a test that catches the error still fails
+  at the end of the phase. `--pdb` opens in the test, at the failed check, also when checks are
+  made after it. A skip in a `finally` after a stop does not hide it, and the summary keeps
+  "stopped at"; so does the "Soft assertion failures" section of another error raised there.
+  The methods of `checks.require`, and calling it, raise `RuntimeError`.
+- `pytest_verifier.Require`, the type of `verify.require`, for annotating helpers.
+- `--verify-fail-fast` and the `verify_fail_fast` ini setting stop each test at its first
+  failed check. Checks made while fixtures are torn down, or in a unittest `TestCase`'s
+  `tearDown` and cleanups, stay soft, so their cleanup runs.
+- `pytest_verifier.__version__`.
+- The release workflow builds once, checks the metadata with `twine check`, runs the sdist's
+  tests against the wheel with pytest 7.0.1 and with the newest pytest, and uploads to PyPI with
+  Trusted Publishing before publishing the GitHub release. A `testpypi` target uploads to
+  TestPyPI only. Only commits on `main` are released, the actions are pinned to commits, and
+  after a partial failure "Re-run failed jobs" finishes the release with the same files. CI
+  runs the same build and tests on every pull request.
+
+### Changed
+
+- The first line of a failure names the first failed check, so `-r` summaries and junit
+  messages say what failed: `2 of 5 checks failed: Vout — expected 3.3V ± 0.05V, got 3.8V
+  (+1 more)`. It was `2 of 5 checks failed`. The first failure is cut at about 300 characters.
+- With `--tb=line`, the line shown for a soft failure is the line of the test that made the
+  check the first line names (or called the helper that made it), instead of the test's `def`
+  line. It is paired with the file of the test function, also for a test inherited from a class
+  in another file or hidden by a decorator from another module.
+- `-r` summaries and `--tb=line` print the first line in the terminal's encoding, like the
+  rest of the summary. Other plugins' terminal summaries still read the summary as it is.
+- The README renders on PyPI: its links, section links included, point at GitHub.
+- The repository moved to https://github.com/guillegil/pytest-verifier, the name the plugin
+  is installed by. The old address redirects.
+
 ## [0.7.0] - 2026-10-01
 
 Makes failures easier to read: values show their type when it matters, long values say where
@@ -205,13 +260,14 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest_verify/compare/v0.7.0...HEAD
-[0.7.0]: https://github.com/guillegil/pytest_verify/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/guillegil/pytest_verify/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/guillegil/pytest_verify/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/guillegil/pytest_verify/compare/v0.3.1...v0.4.0
-[0.3.1]: https://github.com/guillegil/pytest_verify/compare/v0.3.0...v0.3.1
-[0.3.0]: https://github.com/guillegil/pytest_verify/compare/v0.2.1...v0.3.0
-[0.2.1]: https://github.com/guillegil/pytest_verify/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/guillegil/pytest_verify/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/guillegil/pytest_verify/releases/tag/v0.1.0
+[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/guillegil/pytest-verifier/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/guillegil/pytest-verifier/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/guillegil/pytest-verifier/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/guillegil/pytest-verifier/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/guillegil/pytest-verifier/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/guillegil/pytest-verifier/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/guillegil/pytest-verifier/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/guillegil/pytest-verifier/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/guillegil/pytest-verifier/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/guillegil/pytest-verifier/releases/tag/v0.1.0

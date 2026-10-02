@@ -89,7 +89,7 @@ def test_recorded_helper_checks_fail_the_test(pytester):
     result = pytester.runpytest()
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines(
-        ["*1 of 2 checks failed*", "*rail — expected [[]3.2V, 3.4V[]], got 3.6V"]
+        ["*1 of 2 checks failed*", "*rail (*.py:5) — expected [[]3.2V, 3.4V[]], got 3.6V"]
     )
 
 

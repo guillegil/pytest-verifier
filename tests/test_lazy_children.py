@@ -292,7 +292,9 @@ class TestInterruptedComposites:
         """)
         result = pytester.runpytest()
         result.assert_outcomes(failed=1)
-        result.stdout.fnmatch_lines(["*1 of 1 checks failed*", "*ch0 — expected 99, got 0*"])
+        result.stdout.fnmatch_lines(
+            ["*1 of 1 checks failed*", "*ch0 (*.py:7, called from line 9) — expected 99, got 0*"]
+        )
 
     def test_lazy_default_that_skips_drops_the_unselected_cases(self, pytester):
         pytester.makepyfile("""

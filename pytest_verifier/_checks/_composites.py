@@ -29,6 +29,12 @@ def _is_lazy(child: object) -> bool:
     return callable(child) and not is_descriptor(child)
 
 
+def _stops_test(exc: BaseException) -> bool:
+    """Whether *exc* stops the test (``verify.require``, fail-fast) rather than being an error
+    of the child, condition or factory it went through."""
+    return getattr(exc, "stops_test", False) is True
+
+
 def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
     """Build a selected lazy child. Returns ``(child, error)``; a descriptor is returned as is.
 
@@ -40,6 +46,8 @@ def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
     try:
         built = child()
     except Exception as exc:
+        if _stops_test(exc):
+            raise
         return None, f"{where} raised {describe_error(exc)}"
     if not is_descriptor(built):
         return None, (
@@ -91,6 +99,8 @@ class AllSatisfy(CompositeType):
         try:
             iterator = iter(items)
         except Exception as exc:
+            if _stops_test(exc):
+                raise
             iterator, error = iter(()), f"items are not iterable: {describe_error(exc)}"
         index = 0
         while error is None:
@@ -99,11 +109,15 @@ class AllSatisfy(CompositeType):
             except StopIteration:
                 break
             except Exception as exc:
+                if _stops_test(exc):
+                    raise
                 error = f"iterating items raised {describe_error(exc)}"
                 break
             try:
                 child = descriptor_factory(item)
             except Exception as exc:
+                if _stops_test(exc):
+                    raise
                 error = f"descriptor_factory raised {describe_error(exc)} for item {index}"
                 break
             if not is_descriptor(child):
@@ -335,6 +349,8 @@ class Guard(_Selecting):
                     else:
                         truth = bool(value)
                 except Exception as exc:
+                    if _stops_test(exc):
+                        raise
                     truth, problem = False, f"raised {describe_error(exc)}"
                 if problem is not None and deciding:
                     error = f"condition of branch {index} ({safe_str(label)}) {problem}"

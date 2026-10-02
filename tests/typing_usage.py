@@ -18,6 +18,7 @@ from pytest_verifier import (
     CheckDescriptor,
     ChecksFailedError,
     GuardBranch,
+    Require,
     Verify,
     checks,
     get_check_results,
@@ -110,6 +111,21 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     assert [r["name"] for r in recorded][-2:] == ["Status", "Helper"]
     phase: str | None = recorded[-1].get("phase")
     assert phase == "call"
+    location: str | None = recorded[-1].get("location")
+    assert location is not None and location.startswith("tests/typing_usage.py:")
+    # Required checks stop the test when they fail; both forms return the recorded check.
+    link: CheckDescriptor = fixture.require.is_not_none(object(), name="Link")
+    built: CheckDescriptor = fixture.require(checks.equal(1, 1, name="Built"))
+    assert link.get("passed") is True and built.get("passed") is True
+    assert _connect(fixture.require).get("passed") is True
+    version: str = pytest_verifier.__version__
+    assert version
+
+
+def _connect(require: Require) -> CheckDescriptor:
+    """A helper that receives ``verify.require``."""
+    require.is_true(True, name="Powered")
+    return require(checks.is_true(True, name="Link up"))
 
 
 def error_api(error: ChecksFailedError) -> AssertionError:
@@ -133,6 +149,8 @@ def misuse() -> None:
     checks.length(5, 1, name="Len")  # type: ignore[arg-type]
     checks.contains(5, 1, name="In")  # type: ignore[arg-type]
     checks.all_satisfy([1, 2], _by_name, name="Names")  # type: ignore[arg-type]
+    checks.require("not a check")  # type: ignore[arg-type]
+    checks.require.equal(1, 1)  # type: ignore[call-arg]
     from pytest_verifier import chekcs  # type: ignore[attr-defined]  # noqa: F401
     pytest_verifier.get_check_result  # type: ignore[attr-defined]  # noqa: B018
 

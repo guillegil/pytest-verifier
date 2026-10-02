@@ -1,8 +1,22 @@
 name: Release
 
-# Publishes a GitHub release (notes from CHANGELOG.md, sdist and wheel attached) for a version
-# tag. Either push a tag `vX.Y.Z`, or run this workflow by hand: it then creates the tag on
-# `ref` first. With `release` off it only creates the tag (used for old versions).
+# Builds a version once, tests the built wheel, then tags it, uploads it to PyPI and publishes a
+# GitHub release with notes from CHANGELOG.md. Either push a tag `vX.Y.Z` (a full release), or
+# run this workflow by hand and pick a target:
+#   release   tag, PyPI and GitHub release (the default)
+#   github    tag and GitHub release, without PyPI
+#   testpypi  upload to TestPyPI only, without a tag (a trial before the real release)
+#   tag       only create the tag (used for old versions)
+# The release and github targets (and tag pushes) only take commits on main, so a release has
+# been through review and CI first.
+# PyPI and TestPyPI uploads use Trusted Publishing: no token is stored. Each index must list
+# this repository, this workflow file and the environment (pypi or testpypi) as a publisher.
+# In Settings > Environments, limit the pypi environment to the main branch and v* tags.
+# If a run fails half way, use "Re-run failed jobs": it reuses the files the run built, and an
+# existing tag on the same commit, the same files on PyPI and an existing GitHub release with
+# those files are accepted. A new run of a version already on PyPI or TestPyPI fails: an
+# index never takes other files under a version it has.
+# Third-party actions are pinned to commits; the comments name their versions.
 
 on:
   push:
@@ -13,26 +27,33 @@ on:
         description: "Version without the leading v; must match pyproject.toml at ref"
         required: true
       ref:
-        description: "Branch or commit to tag"
+        description: "Branch or commit to release"
         required: false
         default: main
-      release:
-        description: "Publish a GitHub release (off: only create the tag)"
-        type: boolean
-        default: true
+      target:
+        description: "What to publish"
+        type: choice
+        options: [release, github, testpypi, tag]
+        default: release
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
+    name: build and test the wheel
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      target: ${{ steps.version.outputs.target }}
+      sha: ${{ steps.version.outputs.sha }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && inputs.ref || github.ref }}
           fetch-depth: 0
@@ -42,57 +63,196 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           INPUT_VERSION: ${{ inputs.version }}
-          INPUT_RELEASE: ${{ inputs.release }}
+          INPUT_TARGET: ${{ inputs.target }}
         run: |
           if [ "$EVENT" = "workflow_dispatch" ]; then
             version="${INPUT_VERSION#v}"
-            release="$INPUT_RELEASE"
+            target="$INPUT_TARGET"
           else
             version="${GITHUB_REF_NAME#v}"
-            release=true
+            target=release
           fi
           if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::'$version' is not a MAJOR.MINOR.PATCH version"; exit 1
           fi
+          case "$target" in
+            release|github|testpypi|tag) ;;
+            *) echo "::error::unknown target '$target'"; exit 1 ;;
+          esac
           declared="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
           if [ "$declared" != "$version" ]; then
             echo "::error::pyproject.toml declares $declared, not $version"; exit 1
           fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "tag=v$version" >> "$GITHUB_OUTPUT"
-          echo "release=$release" >> "$GITHUB_OUTPUT"
+          if [ "$target" != tag ] && ! grep -Eq "^## \[$version\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated '## [$version] - YYYY-MM-DD' heading"; exit 1
+          fi
+          if [ "$target" = release ] || [ "$target" = github ]; then
+            git fetch --quiet --no-tags origin main
+            if ! git merge-base --is-ancestor HEAD FETCH_HEAD; then
+              echo "::error::$(git rev-parse HEAD) is not on main: merge it before releasing"; exit 1
+            fi
+          fi
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "target=$target"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Create the tag
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+      - name: Install uv
+        if: steps.version.outputs.target != 'tag'
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5.4.2
+        with:
+          python-version: "3.12"
+          # The published files are built from nothing that another workflow cached.
+          enable-cache: false
+
+      - name: Build sdist and wheel
+        if: steps.version.outputs.target != 'tag'
+        run: uv build --out-dir dist
+
+      - name: Check the metadata PyPI will show
+        if: steps.version.outputs.target != 'tag'
+        run: uvx twine check --strict dist/*
+
+      - name: Run the sdist's tests against the wheel, oldest and newest pytest
+        if: steps.version.outputs.target != 'tag'
         run: |
-          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-            echo "::error::tag $TAG already exists"; exit 1
+          mkdir sdist
+          tar xzf dist/*.tar.gz -C sdist --strip-components=1
+          for setup in "3.10 pytest==7.0.1 pluggy==1.2.0" "3.12 pytest"; do
+            set -- $setup
+            python="$1"; shift
+            rm -rf sdist/.venv
+            uv venv --python "$python" sdist/.venv
+            # Name the interpreter: setup-uv exports UV_PYTHON=3.12, which beats VIRTUAL_ENV.
+            uv pip install --python sdist/.venv/bin/python dist/*.whl "$@"
+            (cd sdist && .venv/bin/pytest -q -p no:cacheprovider)
+          done
+
+      - name: Keep the built files
+        if: steps.version.outputs.target != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  testpypi:
+    name: upload to TestPyPI
+    needs: build
+    if: needs.build.outputs.target == 'testpypi'
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/pytest-verifier/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  tag:
+    name: create the tag
+    needs: build
+    if: github.event_name == 'workflow_dispatch' && needs.build.outputs.target != 'testpypi'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+
+      - name: Create the tag on the built commit
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          SHA: ${{ needs.build.outputs.sha }}
+        run: |
+          git fetch --tags --quiet origin
+          if existing="$(git rev-parse --verify --quiet "refs/tags/$TAG^{commit}")"; then
+            if [ "$existing" != "$SHA" ]; then
+              echo "::error::tag $TAG already exists on $existing, not on $SHA"; exit 1
+            fi
+            echo "Tag $TAG already exists on $SHA"
+            exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "pytest-verifier $VERSION"
+          git tag -a "$TAG" -m "pytest-verifier $VERSION" "$SHA"
           git push origin "refs/tags/$TAG"
 
-      - name: Install uv
-        if: steps.version.outputs.release == 'true'
-        uses: astral-sh/setup-uv@v5
+  pypi:
+    name: upload to PyPI
+    needs: [build, tag]
+    if: >-
+      always() && needs.build.result == 'success' && needs.build.outputs.target == 'release'
+      && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pytest-verifier/${{ needs.build.outputs.version }}/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
-          python-version: "3.12"
+          name: dist
+          path: dist/
 
-      - name: Build sdist and wheel
-        if: steps.version.outputs.release == 'true'
-        run: uv build --out-dir dist
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+
+  github-release:
+    name: publish the GitHub release
+    needs: [build, tag, pypi]
+    if: >-
+      always() && needs.build.result == 'success'
+      && (needs.build.outputs.target == 'release' || needs.build.outputs.target == 'github')
+      && (needs.tag.result == 'success' || needs.tag.result == 'skipped')
+      && (needs.pypi.result == 'success' || needs.pypi.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          ref: ${{ needs.build.outputs.sha }}
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish the GitHub release
-        if: steps.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.version.outputs.tag }}
-          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ needs.build.outputs.tag }}
+          VERSION: ${{ needs.build.outputs.version }}
+          TARGET: ${{ needs.build.outputs.target }}
         run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [ "$TARGET" = release ]; then
+              # PyPI took exactly these files (or already had them): attach the same ones.
+              gh release upload "$TAG" dist/* --clobber
+              echo "The release $TAG already exists; its files now match PyPI"
+            else
+              mkdir released
+              gh release download "$TAG" --dir released
+              (cd dist && sha256sum -- *) > dist.sha256
+              if ! (cd released && sha256sum --check --quiet ../dist.sha256); then
+                echo "::error::the release $TAG already has other files than this build"; exit 1
+              fi
+              echo "The release $TAG already exists with these files"
+            fi
+            exit 0
+          fi
           awk -v v="$VERSION" '
             index($0, "## [" v "]") == 1 { found = 1; next }
             found && /^## \[/ { exit }

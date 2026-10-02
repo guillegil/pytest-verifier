@@ -623,7 +623,9 @@ def test_l8_short_summary_gives_reason_for_soft_failure(pytester):
     result = pytester.runpytest("-rf")
     result.assert_outcomes(failed=2)
     result.stdout.fnmatch_lines(["FAILED test_summary.py::test_hard - *"])  # control
-    result.stdout.fnmatch_lines(["FAILED test_summary.py::test_soft - 1 of 1 checks failed"])
+    result.stdout.fnmatch_lines(
+        ["FAILED test_summary.py::test_soft - 1 of 1 checks failed: value*"]
+    )
 
 
 # ======================================================================

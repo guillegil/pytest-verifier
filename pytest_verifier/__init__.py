@@ -28,7 +28,7 @@ from ._descriptors import CheckDescriptor, GuardBranch
 from ._exceptions import ChecksFailedError
 from ._stash import check_results_key
 from ._unused import UnusedCheckWarning
-from ._verify import Verify
+from ._verify import Require, Verify
 
 #: The pytest plugin. The ``pytest_verifier`` entry point names this package, which loads it.
 pytest_plugins = ["pytest_verifier.plugin"]
@@ -37,11 +37,26 @@ __all__ = [
     "CheckDescriptor",
     "ChecksFailedError",
     "GuardBranch",
+    "Require",
     "UnusedCheckWarning",
     "Verify",
+    "__version__",
     "checks",
     "get_check_results",
 ]
+
+
+def _installed_version() -> str:
+    try:
+        from importlib import metadata
+
+        return metadata.version("pytest-verifier")
+    except Exception:  # running from a source tree that is not installed
+        return "0+unknown"
+
+
+#: The installed version of pytest-verifier, e.g. ``"0.8.0"``.
+__version__: str = _installed_version()
 
 #: Builds checks without recording them: every method returns an unevaluated descriptor.
 #: In a test, use the ``verify`` fixture instead; it records the checks that decide the outcome.

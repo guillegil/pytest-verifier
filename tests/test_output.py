@@ -28,10 +28,14 @@ from pytest_verifier._run import Run, recording_verify
 
 
 def _record(build: Any) -> Any:
-    """Record the check *build* makes with a fixture-like ``verify``."""
+    """Record the check *build* makes with a fixture-like ``verify``, without its location
+    (tests of locations are in tests/test_locations.py)."""
     run = Run()
     run.phase = "call"
-    return build(recording_verify(run))
+    record = build(recording_verify(run))
+    record.pop("location", None)
+    record.pop("called_from", None)
+    return record
 
 
 def _detail(check: Any) -> str:
@@ -458,7 +462,7 @@ class TestEscapingAndBounds:
         record = _record(lambda v: v.equal("ok\n  ✗ [99] fake — forged", "ok", name="reply"))
         summary = format_summary([record])
         assert summary.splitlines() == [
-            "1 of 1 checks failed",
+            "1 of 1 checks failed: reply — expected 'ok', got 'ok\\n  ✗ [99] fake — forged'",
             "",
             "  ✗ [0] reply — expected 'ok', got 'ok\\n  ✗ [99] fake — forged'",
         ]
@@ -639,7 +643,7 @@ class TestEncodings:
         result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-n", "2")
         result.assert_outcomes(failed=1)
         result.stdout.fnmatch_lines(
-            ["  x ?0? rail \\u2014 expected ?1\\xb5A, 3\\xb5A?, got 5\\xb5A"]
+            ["  x ?0? rail (*.py:2) \\u2014 expected ?1\\xb5A, 3\\xb5A?, got 5\\xb5A"]
         )
 
     def test_a_terminal_that_cannot_show_the_symbols(
@@ -661,9 +665,9 @@ class TestEncodings:
         result.assert_outcomes(failed=2)
         result.stdout.fnmatch_lines(
             [
-                "1 of 2 checks failed",
+                "1 of 2 checks failed: rail \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
                 "",
-                "  x ?0? rail \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
+                "  x ?0? rail (*.py:2) \\u2014 expected ?1\\xb5V, 3\\xb5V?, got 5\\xb5V",
                 "",
                 "  ok ?1? alive \\u2014 1 (truthy)",
             ]
@@ -672,15 +676,82 @@ class TestEncodings:
         result.stdout.fnmatch_lines(
             [
                 "*Soft assertion failures*",
-                "1 of 1 checks failed",
+                "1 of 1 checks failed: n \\u2014 expected 2, got 1",
                 "",
-                "  x ?0? n \\u2014 expected 2, got 1",
+                "  x ?0? n (*.py:6) \\u2014 expected 2, got 1",
             ]
         )
         # Only the terminal gets the ASCII form: reports keep the summary as it is.
         xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
-        assert "  ✗ [0] rail — expected [1µV, 3µV], got 5µV" in xml
-        assert "  ✗ [0] n — expected 2, got 1" in xml
+        assert "  ✗ [0] rail (test_a_terminal_that_cannot_show_the_symbols.py:2) — " in xml
+        assert "  ✗ [0] n (test_a_terminal_that_cannot_show_the_symbols.py:6) — " in xml
+
+    def test_short_summary_and_crash_lines(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # pytest would escape the whole line, backslashes included: 'D:\\\\tmp'.
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+        pytester.makepyfile(
+            test_paths=r"""
+            def test_path(verify):
+                verify.equal("C:\\tmp", "D:\\tmp", name="path")
+            """
+        )
+        result = pytester.runpytest_subprocess(
+            "-p", "no:cacheprovider", "-rf", "--tb=line", "--junitxml=out.xml"
+        )
+        result.assert_outcomes(failed=1)
+        line = r"1 of 1 checks failed: path \u2014 expected 'D:\\tmp', got 'C:\\tmp'"
+        result.stdout.fnmatch_lines([f"*test_paths.py:2: {line}", f"FAILED *::test_path - {line}"])
+        result.stdout.no_fnmatch_line(r"*\\\\tmp*")
+        xml = (pytester.path / "out.xml").read_text(encoding="utf-8")
+        assert "message=\"1 of 1 checks failed: path — expected" in xml
+
+    def test_other_terminal_summaries_read_the_summary_as_it_is(
+        self, pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+        pytester.makeconftest(
+            """
+            import pytest
+
+            def read(terminalreporter, label):
+                message = terminalreporter.stats["failed"][0].longrepr.reprcrash.message
+                with open("messages.txt", "a", encoding="utf-8") as out:
+                    out.write(f"{label}: {message.splitlines()[0]}\\n")
+
+            class Plain:
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "plain")
+
+            class Last:
+                @pytest.hookimpl(trylast=True)
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "trylast")
+
+            class Wrapper:
+                @pytest.hookimpl(wrapper=True)
+                def pytest_terminal_summary(self, terminalreporter):
+                    read(terminalreporter, "wrapper")
+                    try:
+                        return (yield)
+                    finally:
+                        read(terminalreporter, "wrapper after")
+
+            def pytest_configure(config):
+                for plugin in (Plain(), Last(), Wrapper()):
+                    config.pluginmanager.register(plugin)
+            """
+        )
+        pytester.makepyfile("def test_it(verify):\n    verify.equal(1, 2, name='x')\n")
+        result = pytester.runpytest_subprocess("-p", "no:cacheprovider", "-rf", "--tb=line")
+        result.assert_outcomes(failed=1)
+        line = r"1 of 1 checks failed: x \u2014 expected 2, got 1"
+        result.stdout.fnmatch_lines([f"*.py:2: {line}", f"FAILED *::test_it - {line}"])
+        messages = (pytester.path / "messages.txt").read_text(encoding="utf-8").splitlines()
+        text = "1 of 1 checks failed: x — expected 2, got 1"
+        labels = ["wrapper", "plain", "trylast", "wrapper after"]
+        assert sorted(messages) == sorted(f"{label}: {text}" for label in labels)
 
     def test_reports_keep_the_summary_as_it_is(self, pytester: pytest.Pytester) -> None:
         pytester.makeconftest(
@@ -715,8 +786,9 @@ class TestEncodings:
         before, terminal, after = (
             (pytester.path / "texts.txt").read_text(encoding="utf-8").split("\n=====\n")
         )
-        assert "  ✗ [0] rail — expected [1µV, 3µV], got 5µV" in before
-        assert "  x [0] rail \\u2014 expected [1\\xb5V, 3\\xb5V], got 5\\xb5V" in terminal
+        site = "(test_reports_keep_the_summary_as_it_is.py:2)"
+        assert f"  ✗ [0] rail {site} — expected [1µV, 3µV], got 5µV" in before
+        assert f"  x [0] rail {site} \\u2014 expected [1\\xb5V, 3\\xb5V], got 5\\xb5V" in terminal
         assert after == before
 
 

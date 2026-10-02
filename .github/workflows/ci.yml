@@ -77,10 +77,20 @@ jobs:
       - name: Build sdist and wheel
         run: uv build --out-dir dist
 
-      - name: Run the sdist's tests against the wheel
+      - name: Check the metadata PyPI will show
+        run: uvx twine check --strict dist/*
+
+      # The same steps as the release build, so a pull request finds what would break it.
+      - name: Run the sdist's tests against the wheel, oldest and newest pytest
         run: |
           mkdir sdist
           tar xzf dist/*.tar.gz -C sdist --strip-components=1
-          uv venv --python 3.12 sdist/.venv
-          VIRTUAL_ENV=sdist/.venv uv pip install dist/*.whl
-          cd sdist && .venv/bin/pytest -q -p no:cacheprovider
+          for setup in "3.10 pytest==7.0.1 pluggy==1.2.0" "3.12 pytest"; do
+            set -- $setup
+            python="$1"; shift
+            rm -rf sdist/.venv
+            uv venv --python "$python" sdist/.venv
+            # Name the interpreter: setup-uv exports UV_PYTHON=3.12, which beats VIRTUAL_ENV.
+            uv pip install --python sdist/.venv/bin/python dist/*.whl "$@"
+            (cd sdist && .venv/bin/pytest -q -p no:cacheprovider)
+          done

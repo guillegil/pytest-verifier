@@ -26,9 +26,8 @@ import pytest
 
 from ._checks import CompositeType, lookup
 from ._descriptors import is_descriptor, loose_children
+from ._location import ours
 from ._render import render_text
-
-_PACKAGE_DIR = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 #: How many unused checks the warning names.
 _NAMED = 3
@@ -207,7 +206,7 @@ def _nested_ids(checks: Iterable[Any]) -> List[int]:
 def _call_site() -> Site:
     """The first caller outside this package."""
     frame: Optional[FrameType] = sys._getframe(2)
-    while frame is not None and frame.f_code.co_filename.startswith(_PACKAGE_DIR):
+    while frame is not None and ours(frame):
         frame = frame.f_back
     if frame is None:
         return Site("<unknown>", 0, None)
