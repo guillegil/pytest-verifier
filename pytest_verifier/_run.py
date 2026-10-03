@@ -53,7 +53,7 @@ from ._checks._sampling import Sampler, Try
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
 from ._location import NOWHERE, FunctionCode, Site, locate, raised_at
-from ._render import utf8_safe
+from ._render import safe_str, utf8_safe
 from ._settle import settle
 from ._verify import Raises, Sink, Verify
 
@@ -97,12 +97,14 @@ class _TryScope:
     (and its ``verify.raises`` blocks) with it; the stops of the try that is kept are made once
     the sampling check is recorded."""
 
-    __slots__ = ("key", "parent", "records", "deferred", "blocks")
+    __slots__ = ("key", "parent", "records", "deferred", "blocks", "opened")
 
-    def __init__(self, key: object, parent: Optional[_TryScope]) -> None:
+    def __init__(self, key: object, parent: Optional[_TryScope], opened: int) -> None:
         self.key = key
         #: The try this one runs in, when a sampling check is made inside a sample.
         self.parent = parent
+        #: :attr:`Run.made` when the try started: later records were made while it ran.
+        self.opened = opened
         self.records: List[CheckDescriptor] = []
         #: ``(record, hard)`` of each failed check that would have stopped the test.
         self.deferred: List[Tuple[CheckDescriptor, bool]] = []
@@ -221,7 +223,7 @@ class Run:
         self._entries: Dict[int, _Entry] = {}
         #: The ``verify.raises`` blocks made and not entered yet (see :meth:`take_unjudged`).
         self.blocks: List[_Block] = []
-        #: How many records and blocks were made: the order of the next one.
+        #: How many records and blocks were made, dropped ones included: the order of the next.
         self.made = 0
         #: Identifies this run's sections in :data:`_SECTIONS` without keeping the run alive.
         self.key = object()
@@ -307,6 +309,37 @@ class Run:
         """The try of this run's sampling check the code running now is in, if any."""
         scope = _TRYING.get()
         return scope if scope is not None and scope.key is self.key else None
+
+    def adopt(self, record: CheckDescriptor, scope: _TryScope) -> None:
+        """Add *record* to the try *scope* (and the tries it runs in) when it was recorded
+        while that try ran, but outside it: on another thread, which starts outside every try.
+        A sample that returns such a check makes it in the try all the same."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is None or entry.record is not record or entry.order < scope.opened:
+                return  # recorded before the try: not the try's to drop
+            if any(known is record for known in scope.records):
+                return
+            parent: Optional[_TryScope] = scope
+            while parent is not None:
+                parent.records.append(record)
+                parent = parent.parent
+
+    def failed(self, records: Iterable[Any]) -> List[CheckDescriptor]:
+        """Those of *records* that are failed checks at the top level: the ones that count on
+        their own (no composite took them in, and they were not dropped)."""
+        with self.lock:
+            found = []
+            for record in records:
+                entry = self._entries.get(id(record))
+                if (
+                    entry is not None
+                    and entry.record is record
+                    and entry.top_level
+                    and not entry.passed
+                ):
+                    found.append(record)
+            return found
 
     def absorb(
         self, children: Iterable[Any], chosen: Iterable[Any] = (), parent: Optional[_Entry] = None
@@ -769,7 +802,7 @@ class Recorder(Sink):
         except BaseException:
             # Interrupted (pytest.skip in a sample, Ctrl-C) or invalid arguments: the tries were
             # only tries, so they go, and a skip stays a skip.
-            for attempt in sampler.tries:
+            for attempt in list(sampler.tries):
                 sampler.drop(attempt)
             loose = loose_children(*arguments)
             _unused.used(*loose)
@@ -832,19 +865,20 @@ class Recorder(Sink):
 
 class _RecordingSampler(Sampler):
     """The tries of the fixture's ``eventually``/``stable``: each runs in its own try scope, so
-    that dropping it takes every check it recorded."""
+    that dropping it takes every check it recorded, and the check it returned if another thread
+    recorded that one while it ran. Other checks recorded on plain threads are not in it."""
 
     def __init__(self, recorder: Recorder) -> None:
         super().__init__()
         self._recorder = recorder
         self._run = recorder._run
-        #: Every try taken so far; a dropped one has no scope.
+        #: The tries taken so far and not dropped: a dropped one is forgotten at once.
         self.tries: List[Try] = []
 
     def call(self, sample: Any, attempt: Try) -> Any:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
-        scope = _TryScope(run.key, run.trying())
+        scope = _TryScope(run.key, run.trying(), run.made)
         attempt.scope = scope
         self.tries.append(attempt)
         call = _Call(run.key, run.calling())
@@ -870,6 +904,8 @@ class _RecordingSampler(Sampler):
     def keep(self, check: Any, attempt: Try) -> Any:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         if self._run.known(check) is not None:
+            # Made on another thread (a worker that reads the instrument): the try's still.
+            self._run.adopt(check, attempt.scope)
             return check
         # Built with ``checks``: recorded in the try, like a check the sample recorded.
         token = _TRYING.set(attempt.scope)
@@ -881,13 +917,33 @@ class _RecordingSampler(Sampler):
     def origin(self, traceback: Optional[TracebackType]) -> Optional[str]:
         return raised_at(traceback, self._run.rootdir)
 
+    def failed_beside(self, check: Any, attempt: Try) -> List[str]:
+        names = []
+        for record in self._run.failed(attempt.scope.records):
+            if record is not check:
+                # Text, as summaries name it: a hand-built check may have another name, or none.
+                name = record.get("name", "")
+                names.append(name if isinstance(name, str) else safe_str(name))
+        return names
+
     def drop(self, attempt: Try) -> None:
         scope = attempt.scope
         if scope is None:
             return
         attempt.scope = None
-        self._run.discard(scope.records)
-        self._run.drop_blocks(scope.blocks)
+        self.tries.remove(attempt)
+        run = self._run
+        with run.lock:
+            run.discard(scope.records)
+            # The tries this one runs in (a sampling check in a sample) list its checks too:
+            # forget them there as well, so that a long inner sampling keeps no dropped try.
+            parent = scope.parent
+            while parent is not None:
+                parent.records = [
+                    record for record in parent.records if run.known(record) is not None
+                ]
+                parent = parent.parent
+        run.drop_blocks(scope.blocks)
 
 
 def recording_verify(run: Run) -> Verify:

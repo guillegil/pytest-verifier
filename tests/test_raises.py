@@ -1643,9 +1643,12 @@ def test_a_required_block_whose_exception_the_user_code_catches_stops_nothing(
 
     if where == "eventually":
         record = verify.eventually(ready, timeout=0.3, name="Rejects")
+        # A try passes only when every check it recorded passed, and each recorded the
+        # failed block: the sampling fails, and the kept try's block stays on its own.
+        assert record["passed"] is False
     else:
         record = _build_composite(verify, where, ready)
-    assert record["passed"] is True
+        assert record["passed"] is True
     after = verify.equal(1, 1, name="after")
     assert [check["name"] for check in run.records] == ["Reject 7 V", "Rejects", "after"]
     assert run.records[2] is after

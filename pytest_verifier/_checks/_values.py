@@ -789,6 +789,11 @@ class Length(CheckType):
             length = len(d["actual"])
         return length == d["expected"]
 
+    def reading(self, d: Mapping[str, Any]) -> Any:
+        """The preview of ``actual`` and its length: text that grows past the preview still
+        reads differently."""
+        return d.get("actual"), d.get("actual_length")
+
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         expected = d["expected"]
         if passed:

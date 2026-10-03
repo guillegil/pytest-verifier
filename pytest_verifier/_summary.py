@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
-from ._checks import child_checks, margin
+from ._checks import child_checks, margin, units
 from ._exceptions import label
 from ._render import escape, render_value, units_text
 
@@ -45,9 +45,8 @@ class _Group:
         found = margin(check)
         if found is not None:
             self.margin = found if self.margin is None else min(self.margin, found)
-        units = check.get("units")
-        if self.units is None and isinstance(units, str):
-            self.units = units
+        if self.units is None:
+            self.units = units(check)  # a sampling check: the units of the try it kept
 
     def stats(self) -> str:
         """``; 3.21V to 3.41V, margin -0.11V``, or ``""`` without numbers."""

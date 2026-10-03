@@ -120,7 +120,7 @@ def _settle_composite(
         record.update(check.map_children(descriptor, place))
     except Exception as exc:  # a malformed hand-built descriptor
         error = error or describe_error(exc)
-    passed = error is None and check.combine(verdicts)
+    passed = error is None and check.combine(verdicts) and not check.vetoed(descriptor)
     return _with_verdict(record, passed, error), passed
 
 

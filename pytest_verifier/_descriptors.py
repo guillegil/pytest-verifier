@@ -6,6 +6,7 @@ build and judge descriptors live in :mod:`pytest_verifier._checks`.
 from __future__ import annotations
 
 import enum
+import inspect
 import numbers
 import sys
 import typing
@@ -94,8 +95,9 @@ class CheckDescriptor(_CheckIdentity, total=False):
     type_check: bool
     match_check: Optional[bool]
     #: ``eventually``/``stable``: the time limits (seconds), how many tries were taken, the
-    #: start of the try that passed (``eventually``), the seconds it took, and a bounded
-    #: ``[seconds, value, passed]`` per try.
+    #: start of the try that passed (``eventually``), the seconds it took, a bounded
+    #: ``[seconds, value, passed]`` per try, and the names of the other checks that failed
+    #: the kept try.
     timeout: float
     duration: float
     interval: float
@@ -105,6 +107,7 @@ class CheckDescriptor(_CheckIdentity, total=False):
     trace: List[List[Any]]
     value_changed: bool
     sample_error: str
+    also_failed: List[str]
     #: ``verify.limits``: the row's ``source``, such as ``"limits.csv:12"``.
     limit_source: str
 
@@ -215,6 +218,11 @@ def not_a_check(value: object) -> str:
         return (
             "a verify.raises() block, not a check: it must be used in a with statement; use a "
             "function that runs `with verify.raises(...) as raised:` and returns raised.check"
+        )
+    if inspect.iscoroutine(value):
+        return (
+            f"{kind}, not a check: use a plain function (def, not async def), since nothing "
+            "awaits it"
         )
     return f"{kind}, not a check"
 
