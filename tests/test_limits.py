@@ -1498,6 +1498,21 @@ def test_str_enum_units_of_a_hand_built_check_are_shown_as_text():
     assert verify.record(check)["detail"] == "3V > 2V"
 
 
+def test_str_enum_units_of_a_hand_built_check_are_stored_as_text():
+    run, verify = _recording()
+
+    def hand_built() -> Dict[str, Any]:
+        return {"check_type": "greater", "name": "V", "description": "V > 2V", "actual": 3,
+                "threshold": 2, "units": Unit.VOLT}
+
+    record = verify.record(hand_built())
+    guard = verify.guard([(False, "off", hand_built()), (True, "on", hand_built())], name="G")
+    unselected, selected = (branch["check"] for branch in guard["branches"])
+    for stored in (record, unselected, selected):
+        assert stored is not None and stored["units"] == "V" and type(stored["units"]) is str
+    assert json.loads(json.dumps(run.records))[0]["units"] == "V"
+
+
 def test_big_ints_fractions_and_finite_decimals_are_valid_limits(tmp_path):
     _, verify = _recording()
     table = {
@@ -1520,15 +1535,31 @@ def test_decimals_that_are_not_finite_are_still_refused(limit):
 
 
 @pytest.mark.parametrize("first", ["name,low,high,units", "low,name,high,units"])
-def test_a_bom_is_skipped_whatever_the_encoding(tmp_path, monkeypatch, first):
+def test_a_bom_is_skipped_with_utf_8_too(tmp_path, monkeypatch, first):
     monkeypatch.chdir(tmp_path)
     cells = {"name": "Vout", "low": "3.2", "high": "3.4", "units": "V"}
     line = ",".join(cells[column] for column in first.split(","))
-    _csv(tmp_path, f"﻿{first}\r\n{line}\r\n")
+    _csv(tmp_path, f"\ufeff{first}\r\n{line}\r\n")
     for encoding in ("utf-8", "utf-8-sig"):
         assert load_limits("limits.csv", encoding=encoding) == {
             "Vout": {"low": 3.2, "high": 3.4, "units": "V", "source": "limits.csv:2"}
         }
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "latin-1", "cp1250"])
+def test_a_utf_8_bom_read_with_an_8_bit_encoding_says_so(tmp_path, monkeypatch, encoding):
+    monkeypatch.chdir(tmp_path)
+    _csv(tmp_path, "\ufeffname,low,units\r\nI,3.2,\u00b5A\r\n")  # Excel's "CSV UTF-8"
+    with pytest.raises(ValueError) as info:
+        load_limits("limits.csv", encoding=encoding)
+    assert str(info.value) == (
+        "load_limits(): limits.csv starts with a UTF-8 byte-order mark, so it is 'CSV UTF-8' "
+        f"text, not {encoding}: leave out encoding="
+    )
+    _csv(tmp_path, "name,low,units\r\nI,3.2,\u00b5A\r\n", encoding=encoding)  # no mark
+    assert load_limits("limits.csv", encoding=encoding)["I"]["units"] == "\u00b5A"
+    _csv(tmp_path, "name,low\r\nI,3.2\r\n", encoding="utf-16")  # its own mark
+    assert load_limits("limits.csv", encoding="utf-16")["I"]["low"] == 3.2
 
 
 def test_a_thousands_separator_gets_its_own_hint(tmp_path, monkeypatch):
@@ -1540,9 +1571,14 @@ def test_a_thousands_separator_gets_its_own_hint(tmp_path, monkeypatch):
         "load_limits(): limits.csv:2, column 'low': must be a number, got '1.000,5' "
         "(remove the thousands separator: 1000,5)"
     )
-    _csv(tmp_path, "name;low\nPower;1,5.3\n")
-    with pytest.raises(ValueError, match=r"got '1,5.3'$"):
+    _csv(tmp_path, "name;high\nPower;1.000.000\n")
+    with pytest.raises(ValueError, match=r"got '1.000.000' \(remove the thousands separator: "
+                       r"1000000\)$"):
         load_limits("limits.csv")
+    for cell in ("1,5.3", "12.5,3", ".000,5", "1.00,5"):  # not groups of three digits
+        _csv(tmp_path, f"name;low\nPower;{cell}\n")
+        with pytest.raises(ValueError, match=rf"got '{re.escape(cell)}'$"):
+            load_limits("limits.csv")
 
 
 def test_a_misspelt_columns_target_names_the_mapping(tmp_path, monkeypatch):

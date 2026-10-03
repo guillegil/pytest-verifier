@@ -14,6 +14,7 @@ every row is in the summary.
 """
 from __future__ import annotations
 
+import codecs
 import csv
 import difflib
 import io
@@ -529,6 +530,8 @@ _TRUE = frozenset({"true", "yes", "1", "y"})
 _FALSE = frozenset({"false", "no", "0", "n"})
 _INTEGER = re.compile(r"[+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)")
 _FLOAT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+#: A number with a dot between groups of three digits (``1.000,5``, ``1.000.000``).
+_THOUSANDS = re.compile(r"[+-]?[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]*)?")
 #: The columns a file may have besides the arguments and the selectors.
 _COLUMNS = frozenset({"name", "check"})
 _DELIMITERS = (",", ";", "\t")
@@ -620,11 +623,12 @@ def load_limits(
 ) -> Dict[str, LimitRow]:
     """Read a limits table for :meth:`Verify.limits` from a CSV file.
 
-    The file starts with a header line (after a byte-order mark, if any, whatever the
-    *encoding*); blank lines and lines whose first cell starts with ``#`` are skipped. Columns
-    are separated by commas, semicolons or tabs, whichever gives a ``name`` column; with
-    semicolons, a decimal comma (``3,3``) is a number too. Column names match in any case,
-    and cells are stripped; an empty cell is not given.
+    The file starts with a header line (after a byte-order mark, if any, also with
+    ``encoding="utf-8"``; a UTF-8 one read as ``cp1252`` is an error); blank lines and lines
+    whose first cell starts with ``#`` are skipped. Columns are separated by commas,
+    semicolons or tabs, whichever gives a ``name`` column; with semicolons, a decimal comma
+    (``3,3``) is a number too. Column names match in any case, and cells are stripped; an
+    empty cell is not given.
 
     Columns:
 
@@ -694,6 +698,11 @@ def load_limits(
         ) from None
     if text.startswith("\ufeff"):  # a byte-order mark, read with encoding="utf-8"
         text = text[1:]
+    elif _starts_with_utf8_mark(text, encoding):
+        raise ValueError(
+            f"load_limits(): {shown} starts with a UTF-8 byte-order mark, so it is 'CSV UTF-8' "
+            f"text, not {encoding}: leave out encoding="
+        )
     delimiter, found = _choose_delimiter(text, mapped, shown)
     comma = delimiter == ";"
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
@@ -793,6 +802,16 @@ def load_limits(
             f"(lines {', '.join(map(str, numbers))}); choose one with select="
         )
     return {name: row for name, (_, _, row) in chosen.items()}
+
+
+def _starts_with_utf8_mark(text: str, encoding: str) -> bool:
+    """Whether *text*, read with another *encoding* (such as cp1252), starts with the bytes
+    of a UTF-8 byte-order mark (``ï»¿``)."""
+    try:
+        mark = codecs.BOM_UTF8.decode(encoding)
+    except (UnicodeDecodeError, LookupError):  # utf-16: not a whole character
+        return False
+    return bool(mark) and mark != "\ufeff" and text.startswith(mark)
 
 
 class _Found:
@@ -910,6 +929,6 @@ def _number_hint(text: str, comma: bool) -> str:
     """Why a cell that is not a number may be one written another way."""
     if not comma:
         return " (a decimal comma needs ';' between columns)" if "," in text else ""
-    if "," in text and "." in text and text.rfind(".") < text.find(","):
+    if _THOUSANDS.fullmatch(text):
         return f" (remove the thousands separator: {text.replace('.', '')})"
     return ""
