@@ -47,6 +47,7 @@ from types import CodeType
 from typing import (
     IO,
     Any,
+    Callable,
     Dict,
     FrozenSet,
     Generator,
@@ -64,6 +65,7 @@ from . import _unused
 from ._descriptors import CheckDescriptor
 from ._exceptions import (
     ChecksFailedError,
+    failure_header,
     for_terminal,
     format_summary,
     headline,
@@ -96,6 +98,11 @@ _show_passed_key = pytest.StashKey[Optional[int]]()
 #: report is printed, which may be outside any hook that has the config (``--pdb``).
 _ASCII_TERMINAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "pytest_verifier_ascii_terminal", default=False
+)
+
+#: The session's config, for the terminal reporter in hooks that get only a report.
+_CONFIG: contextvars.ContextVar[Optional[pytest.Config]] = contextvars.ContextVar(
+    "pytest_verifier_config", default=None
 )
 
 
@@ -239,9 +246,10 @@ def _close_phase(
     Returns the error to raise, or ``None``. If the phase already raised *exc*, the soft
     summary is kept for that phase's report instead, except after a skip: a skip must not
     hide a failed check, so the failure is raised in its place. *later* holds stop errors a
-    ``TestCase`` recorded after *exc*.
+    ``TestCase`` recorded after *exc*. A ``verify.raises`` block never entered fails only when
+    there is no *exc* (see :meth:`Run.take_unjudged`).
     """
-    start, pending = run.take_unjudged()
+    start, pending = run.take_unjudged(exc)
     if not pending:
         return None
     passed = all(record.get("passed") is True for record in pending)
@@ -726,6 +734,7 @@ def pytest_configure(config: pytest.Config) -> None:
         manager.register(_JunitAttempts(), _JUNIT_PLUGIN)
     token = _ASCII_TERMINAL.set(ascii_only)
     config.add_cleanup(functools.partial(_reset, _ASCII_TERMINAL, token))
+    config.add_cleanup(functools.partial(_reset, _CONFIG, _CONFIG.set(config)))
 
 
 def _ascii_setting(config: pytest.Config) -> bool:
@@ -997,6 +1006,7 @@ def _decorate_report(
     if checks:
         # JSON-safe, so it survives the serialization of reports (pytest-xdist).
         report.verify_checks = checks  # type: ignore[attr-defined]
+        _name_failures_in_xfail(report, checks)
     section = run.report_sections.pop(call.when, None)
     if section is not None and report.failed:
         longrepr = report.longrepr
@@ -1011,6 +1021,26 @@ def _decorate_report(
         del item.stash[_run_key]
 
 
+def _name_failures_in_xfail(report: pytest.TestReport, checks: List[Any]) -> None:
+    """Add the first line of the summary to the reason of an xfailed phase whose checks
+    failed: ``-rx`` and junitxml show only the reason, and the failures must not vanish."""
+    reason = getattr(report, "wasxfail", None)
+    if not report.skipped or not isinstance(reason, str):
+        return
+    failed = [(i, check) for i, check in enumerate(checks) if check.get("passed") is not True]
+    if failed:
+        header = failure_header(failed, len(checks))
+        # pytest < 8 stores an imperative xfail's reason as "reason: <msg>" (and junitxml strips
+        # that prefix), so an empty message leaves the prefix alone.
+        prefix = _XFAIL_PREFIX if reason.startswith(_XFAIL_PREFIX) else ""
+        reason = reason[len(prefix) :]
+        report.wasxfail = f"{prefix}{reason} [{header}]" if reason else f"{prefix}[{header}]"
+
+
+#: The prefix pytest < 8 puts before the message of ``pytest.xfail()`` in ``wasxfail``.
+_XFAIL_PREFIX = "reason: "
+
+
 #: The report section that holds the soft summary when the phase also raised.
 _SECTION = "Soft assertion failures"
 
@@ -1018,14 +1048,47 @@ _SECTION = "Soft assertion failures"
 _HEADER = re.compile(r"\d+ of \d+ checks failed(, stopped at \[\d+\])?(: .*)?$")
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_logreport(report: pytest.TestReport) -> Generator[None, None, None]:
     """Print soft summaries in the encoding of the terminal (also on an xdist controller)."""
-    if report.failed and getattr(report, "verify_checks", None):
-        try:
+    restore = None
+    try:
+        if report.failed and getattr(report, "verify_checks", None):
             _print_for_terminal(report.longrepr)
-        except Exception:  # pragma: no cover - reporting must never break the session
-            pass
+        restore = _verbose_reason_for_terminal(report)
+    except Exception:  # pragma: no cover - reporting must never break the session
+        pass
+    try:
+        return (yield)
+    finally:
+        if restore is not None:
+            restore()
+
+
+def _verbose_reason_for_terminal(report: pytest.TestReport) -> Optional[Callable[[], None]]:
+    """Give the verbose line of an xfailed report whose checks failed (``XFAIL (reason)``)
+    the reason in the terminal's encoding, as the ``-rx`` line gets it, while the terminal
+    reporter logs it; returns what undoes that. junitxml and other plugins read the report
+    as it is: only the terminal module's reason getter is replaced, for this report."""
+    reason = getattr(report, "wasxfail", None)
+    if not (report.skipped and isinstance(reason, str) and getattr(report, "verify_checks", None)):
+        return None
+    terminal = sys.modules.get("_pytest.terminal")
+    original = getattr(terminal, "_get_raw_skip_reason", None)
+    config = _CONFIG.get()
+    if original is None or config is None:
+        return None
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    encoding = _terminal_encoding(getattr(reporter, "_tw", None))
+    if encoding is None:
+        return None
+
+    def raw_reason(rep: pytest.TestReport) -> str:
+        text: str = original(rep)
+        return for_terminal(text, encoding) if rep is report else text
+
+    setattr(terminal, "_get_raw_skip_reason", raw_reason)
+    return functools.partial(setattr, terminal, "_get_raw_skip_reason", original)
 
 
 def _print_for_terminal(longrepr: Any) -> None:
@@ -1124,18 +1187,26 @@ def _printing_crash_lines(terminalreporter: Any, method: Any) -> Any:
         try:
             return method(*args, **kwargs)
         finally:
-            for crash, message in saved:
-                crash.message = message
+            for holder, attribute, message in saved:
+                setattr(holder, attribute, message)
 
     return printer
 
 
 def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
-    """Adapt the crash messages of soft failures; returns ``(crash, original message)`` pairs."""
+    """Adapt the crash messages of soft failures, and the reasons of xfailed tests that name
+    failed checks; returns ``(object, attribute, original text)`` triples."""
     encoding = _terminal_encoding(terminalreporter._tw)
     if encoding is None:
         return []
     saved = []
+    for report in terminalreporter.stats.get("xfailed", ()):
+        reason = getattr(report, "wasxfail", None)
+        if getattr(report, "verify_checks", None) and isinstance(reason, str):
+            adapted = for_terminal(reason, encoding)
+            if adapted != reason:
+                saved.append((report, "wasxfail", reason))
+                report.wasxfail = adapted
     for key in ("failed", "error"):
         for report in terminalreporter.stats.get(key, ()):
             crash = getattr(getattr(report, "longrepr", None), "reprcrash", None)
@@ -1149,7 +1220,7 @@ def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
             ):
                 adapted = for_terminal(message, encoding)
                 if adapted != message:
-                    saved.append((crash, message))
+                    saved.append((crash, "message", message))
                     crash.message = adapted
     return saved
 

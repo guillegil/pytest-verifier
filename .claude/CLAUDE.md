@@ -39,6 +39,7 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 - **`verify.require` is the one exception to soft.** A `Require` (a `Verify` subclass, also callable with a check) whose failed checks stop the test at once; `--verify-fail-fast`/`verify_fail_fast` makes every check behave so, except in teardown and while a unittest `TestCase`'s `_callTearDown`, `tearDown`, `asyncTearDown` or `doCleanups` run (`run.cleaning`, saved and restored, so nesting is harmless; frameworks with their own `run()` call `tearDown` directly; the instance wrappers are removed when the call phase ends). `Run.stop()` raises without judging, so the phase end still judges (a swallowed stop still fails the test) and keeps the stop error (if it lists the same records) instead of adding a duplicate section; an error that replaces it (or a skip chained to it, or a skip a `TestCase` reported before it) gets its traceback and takes its place in the chain; another error chained to a stop keeps its chain and gets the section, with "stopped at". A stop error is marked `stops_test`; composites re-raise it instead of treating it as an error of a lazy child, condition or factory. A check that stopped the test is never absorbed by a composite.
 - **`checks` is the secondary API.** `from pytest_verifier import checks` provides the same functions but returns unevaluated descriptors. Used standalone or for building descriptors to pass to `checks.evaluate()` or the fixture's `verify.record()`. A check built with `checks` in a test body and still unused when the test's teardown ends gives an `UnusedCheckWarning` (`_unused.py`; tracking pauses in fixtures, setup, teardown, unittest tests and nested sessions, and keeps only labels, never the checks). `pytest_verifier.verify` is a deprecated alias of `checks`.
 - **Soft assertions.** Failed checks never stop the test, and neither does a check whose comparison raises (it fails with an `error` note). All checks run to completion. Failures are collected and raised as a single `ChecksFailedError` (an `AssertionError`) when the test body ends.
+- **Some exceptions always go on.** Code that turns an exception into a failed check (lazy children, guard conditions, `all_satisfy` factories, sampling tries, `verify.raises`) lets `_checks._base.passes_through(exc)` exceptions through: stop errors (also inside exception groups), non-`Exception`s, and `pytest.exit`, `bdb.BdbQuit`, `unittest.SkipTest`; `verify.raises` takes them only when an expected class names them.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
 - **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verifier.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
 - **One class per check type.** Everything specific to a `check_type` (build, compare, detail, children) lives in its class in `_checks/`. No other module branches on `check_type`; they dispatch through `REGISTRY`.
@@ -47,17 +48,20 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 
 ```
 pytest_verifier/
-├── __init__.py              # Exports: checks, Verify, Require, CheckDescriptor, GuardBranch,
-│                            #   ChecksFailedError, UnusedCheckWarning, get_check_results,
-│                            #   __version__ (installed metadata);
+├── __init__.py              # Exports: checks, Verify, Require, Raises, CheckDescriptor,
+│                            #   GuardBranch, LimitRow, ChecksFailedError, UnusedCheckWarning,
+│                            #   get_check_results, load_limits, __version__ (installed metadata);
 │                            #   pytest_plugins = ["pytest_verifier.plugin"]
 ├── py.typed                 # PEP 561 marker — REQUIRED
 ├── _verify.py               # Verify class: typed public signatures and docstrings; each
 │                            #   method builds a descriptor and hands it to a Sink
 ├── _checks/                 # One CheckType class per check_type, registered in REGISTRY
 │   ├── _base.py             #   CheckType, CompositeType, REGISTRY, judge() (never raises),
-│   │                        #   render_detail()
+│   │                        #   render_detail(), call_user() (CALLER: how a sink watches the
+│   │                        #   user code a composite calls)
 │   ├── _values.py           #   The 18 leaf check types (build, compare, detail)
+│   ├── _raises.py           #   raises: the check of a verify.raises block, decided at exit
+│   ├── _sampling.py         #   eventually, stable: Sampler takes tries (Try), trace, schedule
 │   └── _composites.py       #   all_satisfy, conditional, guard (children, lazy children)
 ├── _descriptors.py          # CheckDescriptor/GuardBranch TypedDicts, argument validation,
 │                            #   conditional case matching, shared formatting
@@ -68,7 +72,9 @@ pytest_verifier/
 │                            #   snapshots, child verdicts)
 ├── _run.py                  # Run (per-attempt, thread-safe state, stop()) and Recorder (the
 │                            #   fixture's Sink: judges, records, absorbs children, stops
-│                            #   when hard or fail-fast)
+│                            #   when hard or fail-fast; try scopes for sampling; raises blocks
+│                            #   (`_Block`), calls of user code (`_Call`))
+├── _limits.py               # verify.limits (parse_row, Row, limit_checks) and load_limits (CSV)
 ├── _location.py             # Where a recorded check was made: location, called_from;
 │                            #   FunctionCode (test code by identity, or file and name),
 │                            #   ours() (this package's frames, by module name)
@@ -92,9 +98,12 @@ module, so `-p pytest_verifier` and `-p no:pytest_verifier` work, and the packag
 `pytest_verifier.plugin` through `pytest_plugins`.
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
-`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`),
-registered with `register()`; a `Verify` method that passes its descriptor to the sink; and
-examples in `tests/test_contracts.py`, which fails until every registered type has them.
+`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,
+optionally `vetoed`; a leaf type whose record keeps only a preview of `actual`
+(`snapshot_limits`) may implement `reading`, which sampling compares to tell whether the value
+changed: `Length` adds `actual_length`), registered with `register()`; a `Verify` method that
+passes its descriptor to the sink; and examples in `tests/test_contracts.py`, which fails until
+every registered type has them.
 
 ## Key Types
 
@@ -150,6 +159,25 @@ class CheckDescriptor(TypedDict, total=False):
      composite raises (a usage error, or `pytest.skip` in a lazy child), the checks passed
      to the call are absorbed; the ones a factory or lazy child made so far stay standalone
    - Return the recorded dict
+   - Sampling (`eventually`/`stable`): each try runs in a try scope (`_TRYING` ContextVar keyed
+     by the run); a try that is not kept is discarded with every check recorded in it, failures
+     in a try never stop the test, and after the composite is recorded require/fail-fast apply
+     to the kept try's other failed checks. A `BaseException` through sampling drops every try.
+     A try passes only when its check and every other check recorded in it that is still at the
+     top level pass (`Sampler.failed_beside`, `Run.failed`, `Try.others`). A kept try that
+     failed this way lists them in `also_failed` (text), and `CompositeType.vetoed` fails the
+     composite (in settle and evaluate); a vetoed sampling check whose kept check passed has no
+     margin (`_Sampling.margin`). A returned check that another thread recorded during the try
+     joins it (`Run.adopt`: made after `_TryScope.opened`, by `_Entry.order`); other thread checks
+     stay outside. Dropped tries leave `_RecordingSampler.tries` and outer try scopes at once.
+     "Never changed" compares `CheckType.reading` over every try, and ignores a reading whose
+     snapshot is a non-finite float, Decimal or numpy number (`_NOT_FINITE`)
+   - Composites call their lazy children, guard conditions and factories through `call_user`,
+     and samplers call samples, each as a `_Call` (`_CALLING`, a ContextVar keyed by run). A
+     `raises` block whose unexpected exception goes on does not stop at once: `Recorder._wait`
+     puts its stop in the innermost `_Call`. When that call raises, its blocks are dropped and
+     its stops go to the composite (enforced after it is recorded, while still pending) or to
+     the try's deferred stops. When it returns, they stop nothing
 
 2. **At the end of each phase (runtest hook wrappers):**
    - Checks recorded in setup and in the test body are judged after the test body; checks
@@ -224,7 +252,7 @@ Implementation requirements:
 - Docstrings on all public methods
 - Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (21 check functions, plus `record` and `section`)
+## Function Catalog (24 check functions, plus `limits`, `record` and `section`)
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -265,14 +293,30 @@ Implementation requirements:
 | `verify.all_satisfy(items: Iterable[T], descriptor_factory: Callable[[T], ...], *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored |
 | `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated; a case/default may be a callable, called only if selected |
 | `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated; checks, default and conditions may be callables |
-| `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
+| `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg (`fail` when blank) |
+
+### Errors and time
+| Function | check_type | Notes |
+|----------|-----------|-------|
+| `with verify.raises(expected_exception, *, match=None, name) as raised:` | `"raises"` | Returns `Raises[E]`; the check is built at `__exit__` (`RAISES.build(raised, ...)`), the site taken at the call. Soft only for nothing raised or a non-matching message; other exceptions record the check, then propagate. A stop at `__exit__` after the expected type takes that exception's context in place of it. Never entered: failed at `take_unjudged(exc)` only when the phase ended without an exception, with the phase/section/site/order kept in `_Block` (inserted in creation order, after judged records, without `ensure_open`). Blocks made in a dropped try (`_TryScope.blocks`), or by a sample, lazy child, guard condition or factory that raised (`_Call.blocks`), are dropped. A block returned in place of a check is forgotten. `checks.raises` raises `RuntimeError` |
+| `verify.eventually(sample, *, timeout, interval=0.1, name)` | `"eventually"` | Composite of one kept try; `Sink.sampling` runs it with a `Sampler` (settling for `checks`, try scopes for the fixture) |
+| `verify.stable(sample, *, duration, interval=0.1, name)` | `"stable"` | Same; stops at the first failed try, keeps the closest passing one by `margin` |
+
+`verify.limits(measurements, table, *, on_missing="fail")` builds one leaf check per row
+(`_limits.parse_row` validates, `Row.build` builds; CSV `CellText` cells take the measurement's
+type there, and `CellNumber` cells, floats that keep their digits, become a `Decimal` or
+`Fraction` against one) and records them with `Sink.batch`, which applies require/fail-fast
+after the whole table.
+`load_limits(path, *, select, columns, encoding)` validates every line with `parse_row`.
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-`checks`; `checks.record()` raises `RuntimeError`. `verify.section(title)` (fixture only) is a
-context manager whose recorded checks get its title in `section`; summaries show
-`3V3 › Vout`; `checks.section()` raises `RuntimeError`. `verify.require` has every check method and is
-callable like `record`; its failed checks stop the test. The methods of `checks.require`, and
-calling it, raise `RuntimeError`.
+`checks`; of a check a composite took without selecting it, it records a pinned copy (`Run.pin`;
+`Run.keep_copy` stores it and `Run.copy_of` gives the same copy again). `checks.record()`
+raises `RuntimeError`.
+`verify.section(title)` (fixture only) is a context manager whose recorded checks get its title
+in `section`; summaries show `3V3 › Vout`; `checks.section()` raises `RuntimeError`.
+`verify.require` has every check method and is callable like `record`; its failed checks stop
+the test. The methods of `checks.require`, and calling it, raise `RuntimeError`.
 
 ## Evaluation Logic
 
@@ -309,6 +353,8 @@ calling it, raise `RuntimeError`.
 - `conditional`: resolve matched case → evaluate child → parent passes if child passes
 - `guard`: first branch with a truthy condition (else `default`) → parent passes if that child passes
 - `fail`: always False
+- `raises`: `type_check` and `match_check`, decided when the block ended
+- `eventually`: any kept child passed; `stable`: the kept child passed; both fail when the kept try made another check that failed (`also_failed`)
 
 ## Description Formatting
 
@@ -331,7 +377,10 @@ Values go through `render_value` in descriptions and details: numbers (not `bool
 with `format()` plus units, enum members as `Class.NAME` (numeric ones add `(value units)`),
 everything else as a bounded `repr` without units. It never raises, even when a type check
 does. Every rendering is one line (control characters escaped) and about 240 characters at
-most; names, labels, messages and units go through `render_text`/`units_text`/`escape`.
+most; names, labels, messages and units go through `render_text`/`units_text`/`escape` (units
+that are a `str` subclass, such as a `str` enum member, are stored as their text by
+`plain_units`, also in a hand-built descriptor's record (`_settle._evidence`), and shown as it
+by `units_text`).
 `equal`, `not_equal`, the ordering checks and `between` add the types when two values render
 the same (`value_pair`); a failed `equal` whose values still render the same adds where they
 first differ; NaN operands get a note. Truth labels (`is_true`/`is_false`) come from the
@@ -344,7 +393,9 @@ ContextVar, reset by a config cleanup, read when a report prints), `--verify-sum
 (`_Summary` plugin on the controller, from `report.verify_checks`, counting an attempt at its
 teardown report unless one of its reports was a rerun; margins from `CheckType.margin`, which
 ordering checks, `between` and `approx` implement, computed as the verdict is: exact unless the
-check compares in floats), `--verify-json` and `verify_junit_properties` (see Fixture Behavior).
+check compares in floats; units from `CheckType.units` (a sampling check: its kept child's), and
+no margin when other checks failed a kept try whose check passed), `--verify-json` and
+`verify_junit_properties` (see Fixture Behavior).
 Text in records goes through `utf8_safe` (lone surrogates escaped), and `escape` also escapes
 surrogates and U+FFFE/U+FFFF, so records encode as UTF-8 and junit reports stay well-formed.
 
@@ -352,7 +403,11 @@ The summary text (`ChecksFailedError`'s message, the "Soft assertion failures" s
 always Unicode. Only the terminal gets another form: `plugin.pytest_runtest_logreport` makes a
 failed report's `longrepr.toterminal` pass the summary lines through `for_terminal` when the
 stream's encoding cannot show them (ASCII markers, escapes for the rest), so junitxml and
-`longreprtext` keep the Unicode text, and xdist controllers adapt it too.
+`longreprtext` keep the Unicode text, and xdist controllers adapt it too. The reason of an
+xfailed report with checks (`_name_failures_in_xfail` adds the summary's first line) goes the
+same way on the `-rx` line (`_crash_lines_for_terminal`) and the `-v` line
+(`_verbose_reason_for_terminal` swaps `_pytest.terminal._get_raw_skip_reason` for that report
+while it is logged).
 
 ## Coding Standards
 

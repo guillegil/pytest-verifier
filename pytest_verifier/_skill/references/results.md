@@ -82,7 +82,31 @@ def pytest_sessionfinish(session):
 | `phase` | `"setup"`, `"call"` or `"teardown"`: the test phase that made it |
 | `location`, `called_from` | `"tests/test_psu.py:9"`, relative to the rootdir; `called_from` only when a helper made it. A check that was never recorded (a `checks` or hand-built child of a composite) has neither; `verify.record` gives it a `location` |
 | `section` | Only for a check recorded in `verify.section` blocks: their titles, outermost first (`["3V3", "Load"]`) |
-| values | Per type: `actual`, `expected`, `units`, `abs_tol`, `rel_tol`, `threshold`, `low`, `high`, `inclusive`, `haystack`, `needle`, `pattern`, `flags`, `expected_type`, `actual_length`, `msg` ... as JSON-safe snapshots: tuples become lists; sets, bytes, enums, `Decimal`, NaN, dicts with non-text keys and other objects become their repr text (`"Decimal('0.1')"`, `"nan"`). A value of more than 10,000 items becomes shortened repr text, and `length` keeps only a preview of `actual` (repr text past 100 items, text cut at 240 characters): read `actual_length` |
+| values | Per type: `actual`, `expected`, `units`, `abs_tol`, `rel_tol`, `threshold`, `low`, `high`, `inclusive`, `haystack`, `needle`, `pattern`, `flags`, `expected_type`, `actual_length`, `msg` ... as JSON-safe snapshots: tuples become lists; sets, bytes, enums, `Decimal`, NaN, dicts with non-text keys and other objects become their repr text (`"Decimal('0.1')"`, `"nan"`). `units` given as a `str` enum member is stored as its text. A value of more than 10,000 items becomes shortened repr text, and `length` keeps only a preview of `actual` (repr text past 100 items, text cut at 240 characters): read `actual_length` |
+
+Keys of the 0.10.0 checks:
+
+- `raises`: `expected_type` (`"ValueError | KeyError"`), `expected_types`, `match`, `flags`,
+  `raised_type` and `raised_message` (`None` when nothing was raised), `raised_at` (the
+  `path:line` that raised), `type_check`, `match_check`. A block never used in a `with` is
+  recorded with `error` (`"verify.raises() was never used in a with statement: ..."`), and
+  keeps the `phase`, `section` and `location` where it was made, in the order it was made.
+- `eventually`/`stable`: `timeout` or `duration`, `interval`, `tries`, `elapsed` (seconds),
+  `settled_at` (`eventually`: the start of the passing try, else `None`), `trace` (a list of
+  `[seconds, value, passed]`. `value` is the try's recorded `actual` when that is a number, text,
+  a bool or `None`, else `None`; it is the snapshot, so a NaN reading is `"nan"` and a `Decimal`
+  its repr text, and text is cut to 240 characters. `passed` is the try's verdict: its check and
+  every other check it recorded passed), `value_changed` (whether that recorded value, before
+  cutting, differed between any two tries; for `length`, whose record keeps only a preview,
+  whether the preview or `actual_length` did), `child_checks` (the kept try), `also_failed` (only
+  when there are some: the names, as text, of the other checks of the kept try that failed, which
+  failed the try and the check), and `sample_error` when the kept try's sample raised. A failed
+  check whose kept try's check passed (it failed through `also_failed`) has no margin in
+  `--verify-summary=stats`.
+- A check made by `verify.limits` from a row with a `source` has `limit_source`. Against a
+  `Decimal` or `Fraction` measurement, its CSV limits written with a decimal point (or comma) or
+  an exponent are that type too (repr text in the record, such as `"Decimal('3.2')"`); whole
+  numbers stay `int`.
 
 Composites nest their children. Each child that was evaluated carries its own `passed`; one
 that was not selected carries no `passed` or `detail` (an eager child is still a dict, a lazy
@@ -103,7 +127,9 @@ with `.get()`: `check_type` is always there; `name` and `description` on every c
 
 `CheckDescriptor` is the `TypedDict` of a check, and `GuardBranch` the `TypedDict` of one entry
 of a guard record's `branches` (`guard()` itself takes `(condition, label, check)` tuples);
-both are exported by `pytest_verifier`, with `Verify`, `Require` and `ChecksFailedError`.
+both are exported by `pytest_verifier`, with `Verify`, `Require`, `ChecksFailedError`,
+`LimitRow` (a row of a `verify.limits` table) and `Raises` (the `verify.raises` block,
+generic in its exception type).
 `pytest_verifier.__version__` is the installed version.
 
 ## Evaluating built checks yourself

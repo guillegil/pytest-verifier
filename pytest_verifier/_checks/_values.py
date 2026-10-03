@@ -14,6 +14,8 @@ from .._descriptors import (
     approx_tolerance,
     flatten_classes,
     is_real,
+    plain_text,
+    plain_units,
     qualified_type_name,
     require_name,
     type_display,
@@ -21,7 +23,6 @@ from .._descriptors import (
 )
 from .._render import (
     describe_error,
-    escape,
     render_text,
     render_value,
     safe_repr,
@@ -36,9 +37,9 @@ _NAN_EQUALITY = " (NaN never compares equal)"
 _NAN_ORDERING = " (NaN fails every comparison)"
 
 
-def _subject(name: str) -> str:
+def subject(name: str) -> str:
     """``Verify 'name'``, the start of most descriptions."""
-    return f"Verify '{escape(name)}'"
+    return f"Verify '{render_text(name)}'"
 
 
 def _is_nan(number: Any) -> bool:
@@ -158,11 +159,11 @@ class Equal(CheckType):
     def build(
         actual: Any, expected: Any, *, name: str, units: Optional[str] = None
     ) -> CheckDescriptor:
-        require_name(name, "equal")
+        name, units = require_name(name, "equal"), plain_units(units)
         return {
             "check_type": "equal",
             "name": name,
-            "description": f"{_subject(name)} == {render_value(expected, units)}",
+            "description": f"{subject(name)} == {render_value(expected, units)}",
             "actual": actual,
             "expected": expected,
             "units": units,
@@ -190,11 +191,11 @@ class NotEqual(CheckType):
     def build(
         actual: Any, expected: Any, *, name: str, units: Optional[str] = None
     ) -> CheckDescriptor:
-        require_name(name, "not_equal")
+        name, units = require_name(name, "not_equal"), plain_units(units)
         return {
             "check_type": "not_equal",
             "name": name,
-            "description": f"{_subject(name)} != {render_value(expected, units)}",
+            "description": f"{subject(name)} != {render_value(expected, units)}",
             "actual": actual,
             "expected": expected,
             "units": units,
@@ -262,16 +263,16 @@ class Approx(CheckType):
         name: str,
         units: Optional[str] = None,
     ) -> CheckDescriptor:
-        require_name(name, "approx")
+        name, units = require_name(name, "approx"), plain_units(units)
         if abs_tol is None and rel_tol is None:
             raise ValueError("approx requires at least one of abs_tol or rel_tol")
-        validate_tolerance(abs_tol, "abs_tol")
-        validate_tolerance(rel_tol, "rel_tol")
+        abs_tol = validate_tolerance(abs_tol, "abs_tol")
+        rel_tol = validate_tolerance(rel_tol, "rel_tol")
         tolerance = approx_tolerance(abs_tol, rel_tol, units)
         return {
             "check_type": "approx",
             "name": name,
-            "description": f"{_subject(name)} == {render_value(expected, units)} {tolerance}",
+            "description": f"{subject(name)} == {render_value(expected, units)} {tolerance}",
             "actual": actual,
             "expected": expected,
             "abs_tol": abs_tol,
@@ -353,11 +354,11 @@ class _Ordering(CheckType):
     def _build(
         cls, actual: Any, threshold: Any, name: str, units: Optional[str]
     ) -> CheckDescriptor:
-        require_name(name, cls.check_type)
+        name, units = require_name(name, cls.check_type), plain_units(units)
         return {
             "check_type": cls.check_type,
             "name": name,
-            "description": f"{_subject(name)} {cls.symbol} {render_value(threshold, units)}",
+            "description": f"{subject(name)} {cls.symbol} {render_value(threshold, units)}",
             "actual": actual,
             "threshold": threshold,
             "units": units,
@@ -446,7 +447,7 @@ class Between(CheckType):
         name: str,
         units: Optional[str] = None,
     ) -> CheckDescriptor:
-        require_name(name, "between")
+        name, units = require_name(name, "between"), plain_units(units)
         if is_real(low) and is_real(high):
             try:
                 inverted = bool(low > high)
@@ -462,7 +463,7 @@ class Between(CheckType):
         return {
             "check_type": "between",
             "name": name,
-            "description": f"{_subject(name)} ∈ {bounds}",
+            "description": f"{subject(name)} ∈ {bounds}",
             "actual": actual,
             "low": low,
             "high": high,
@@ -507,11 +508,11 @@ class _Unary(CheckType):
 
     @classmethod
     def _build(cls, actual: Any, name: str) -> CheckDescriptor:
-        require_name(name, cls.method)
+        name = require_name(name, cls.method)
         return {
             "check_type": cls.check_type,
             "name": name,
-            "description": f"{_subject(name)} {cls.statement}",
+            "description": f"{subject(name)} {cls.statement}",
             "actual": actual,
         }
 
@@ -605,11 +606,11 @@ class Contains(CheckType):
 
     @staticmethod
     def build(haystack: Any, needle: Any, *, name: str) -> CheckDescriptor:
-        require_name(name, "contains")
+        name = require_name(name, "contains")
         return {
             "check_type": "contains",
             "name": name,
-            "description": f"{_subject(name)} contains {render_value(needle)}",
+            "description": f"{subject(name)} contains {render_value(needle)}",
             "haystack": haystack,
             "needle": needle,
         }
@@ -629,11 +630,11 @@ class NotContains(CheckType):
 
     @staticmethod
     def build(haystack: Any, needle: Any, *, name: str) -> CheckDescriptor:
-        require_name(name, "not_contains")
+        name = require_name(name, "not_contains")
         return {
             "check_type": "not_contains",
             "name": name,
-            "description": f"{_subject(name)} does not contain {render_value(needle)}",
+            "description": f"{subject(name)} does not contain {render_value(needle)}",
             "haystack": haystack,
             "needle": needle,
         }
@@ -659,7 +660,18 @@ _FLAG_LETTERS = (
 )
 
 
-def _regex(pattern: Any, flags: Any) -> str:
+def pattern_parts(pattern: Any) -> Tuple[Any, int]:
+    """``(source, flags)`` of a pattern: a compiled one is stored as its source and its flags
+    (``re.UNICODE`` dropped for a ``str`` pattern, where it is implied), a string with flags 0."""
+    if not isinstance(pattern, re.Pattern):
+        return (plain_text(pattern) if isinstance(pattern, str) else pattern), 0
+    source, flags = pattern.pattern, int(pattern.flags)
+    if isinstance(source, str):
+        flags &= ~int(re.UNICODE)
+    return source, flags
+
+
+def regex_text(pattern: Any, flags: Any) -> str:
     """A pattern as ``/source/flags``."""
     source = render_text(pattern) if isinstance(pattern, str) else render_value(pattern)
     letters = ""
@@ -673,17 +685,12 @@ class Matches(CheckType):
 
     @staticmethod
     def build(actual: Any, pattern: Union[str, "re.Pattern[str]"], *, name: str) -> CheckDescriptor:
-        require_name(name, "matches")
-        source: Any = pattern
-        flags = 0
-        if isinstance(pattern, re.Pattern):
-            source, flags = pattern.pattern, int(pattern.flags)
-            if isinstance(source, str):
-                flags &= ~int(re.UNICODE)  # implied for a str pattern
+        name = require_name(name, "matches")
+        source, flags = pattern_parts(pattern)
         return {
             "check_type": "matches",
             "name": name,
-            "description": f"{_subject(name)} matches {_regex(source, flags)}",
+            "description": f"{subject(name)} matches {regex_text(source, flags)}",
             "actual": actual,
             "pattern": source,
             "flags": flags,
@@ -696,7 +703,7 @@ class Matches(CheckType):
         return re.search(pattern, d["actual"], flags) is not None
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        pattern = _regex(d["pattern"], d.get("flags"))
+        pattern = regex_text(d["pattern"], d.get("flags"))
         if passed:
             return f"matches {pattern}"
         return f"expected to match {pattern}, got {render_value(d['actual'])}"
@@ -712,7 +719,7 @@ class IsInstance(CheckType):
 
     @staticmethod
     def build(actual: Any, expected_type: ClassInfo, *, name: str) -> CheckDescriptor:
-        require_name(name, "is_instance")
+        name = require_name(name, "is_instance")
         classes = flatten_classes(expected_type)
         if not classes:
             raise TypeError("is_instance() expected_type must name at least one class")
@@ -725,7 +732,7 @@ class IsInstance(CheckType):
         desc: CheckDescriptor = {
             "check_type": "is_instance",
             "name": name,
-            "description": f"{_subject(name)} is instance of {display}",
+            "description": f"{subject(name)} is instance of {display}",
             "actual": actual,
             "expected_type": display,
             "expected_types": [qualified_type_name(cls) for cls in classes],
@@ -762,7 +769,7 @@ class Length(CheckType):
 
     @staticmethod
     def build(actual: Any, expected: int, *, name: str) -> CheckDescriptor:
-        require_name(name, "length")
+        name = require_name(name, "length")
         try:
             actual_length: Optional[int] = len(actual)
         except Exception:
@@ -770,7 +777,7 @@ class Length(CheckType):
         return {
             "check_type": "length",
             "name": name,
-            "description": f"{_subject(name)} has length {render_value(expected)}",
+            "description": f"{subject(name)} has length {render_value(expected)}",
             "actual": actual,
             "expected": expected,
             "actual_length": actual_length,
@@ -781,6 +788,11 @@ class Length(CheckType):
         if length is None:
             length = len(d["actual"])
         return length == d["expected"]
+
+    def reading(self, d: Mapping[str, Any]) -> Any:
+        """The preview of ``actual`` and its length: text that grows past the preview still
+        reads differently."""
+        return d.get("actual"), d.get("actual_length")
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         expected = d["expected"]
@@ -797,12 +809,19 @@ class Fail(CheckType):
 
     @staticmethod
     def build(msg: str, *, name: Optional[str] = None) -> CheckDescriptor:
-        resolved_name = name if name is not None else safe_str(msg)
-        require_name(resolved_name, "fail")
+        if isinstance(msg, str):
+            msg = plain_text(msg)
+        if name is None:
+            # The message is often data (``str(exc)`` is "" for a bare TimeoutError): a blank
+            # one names the check "fail" instead of raising.
+            name = safe_str(msg)
+            if not name.strip():
+                name = "fail"
+        resolved_name = require_name(name, "fail")
         return {
             "check_type": "fail",
             "name": resolved_name,
-            "description": f"FAIL: {render_text(msg, _MESSAGE_LIMIT)}",
+            "description": f"FAIL: {_message(msg)}",
             "msg": msg,
         }
 
@@ -810,7 +829,16 @@ class Fail(CheckType):
         return False
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        return f"FAIL: {render_text(d.get('msg', ''), _MESSAGE_LIMIT)}"
+        return f"FAIL: {_message(d.get('msg', ''))}"
+
+
+def _message(msg: Any) -> str:
+    """A ``fail`` message as one bounded line; ``(no message)`` when it is blank (also when it
+    is only line breaks or tabs, which rendering would escape)."""
+    if isinstance(msg, str) and not msg.strip():
+        return "(no message)"
+    text = render_text(msg, _MESSAGE_LIMIT)
+    return text if text.strip() else "(no message)"
 
 
 EQUAL = register(Equal())

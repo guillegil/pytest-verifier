@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ._checks import REGISTRY, CompositeType, judge, lookup, render_detail
-from ._descriptors import CheckDescriptor, is_descriptor
+from ._descriptors import CheckDescriptor, is_descriptor, plain_units
 from ._render import VALUE_LIMIT, describe_error, safe_repr, snapshot, utf8_safe
 
 #: Looks up a descriptor the fixture already recorded: ``(passed, record)`` or ``None``.
@@ -32,12 +32,16 @@ def _unknown(descriptor: Any) -> None:
 
 
 def _evidence(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
-    """JSON-safe copies of every field except the verdict and the child checks."""
+    """JSON-safe copies of every field except the verdict and the child checks. Units given
+    as a ``str`` subclass (a hand-built descriptor's ``str`` enum member) are kept as their
+    text, as the check methods store them."""
     check = lookup(descriptor)
     limits = {} if check is None else check.snapshot_limits
     return {
         _field(key): (
-            snapshot(value, limits[key], VALUE_LIMIT) if key in limits else snapshot(value)
+            snapshot(value, limits[key], VALUE_LIMIT)
+            if key in limits
+            else snapshot(plain_units(value) if key == "units" else value)
         )
         for key, value in descriptor.items()
         if key not in _VERDICT_FIELDS and key not in _CHILD_FIELDS
@@ -116,7 +120,7 @@ def _settle_composite(
         record.update(check.map_children(descriptor, place))
     except Exception as exc:  # a malformed hand-built descriptor
         error = error or describe_error(exc)
-    passed = error is None and check.combine(verdicts)
+    passed = error is None and check.combine(verdicts) and not check.vetoed(descriptor)
     return _with_verdict(record, passed, error), passed
 
 

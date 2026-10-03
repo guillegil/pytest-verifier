@@ -7,14 +7,18 @@ from ._base import (
     CompositeType,
     Verdict,
     child_checks,
+    chosen_checks,
     judge,
     lookup,
     margin,
     render_detail,
     summary_separator,
     truth,
+    units,
 )
 from ._composites import ALL_SATISFY, CONDITIONAL, GUARD
+from ._raises import RAISES
+from ._sampling import EVENTUALLY, STABLE
 from ._values import (
     APPROX,
     BETWEEN,
@@ -43,6 +47,7 @@ __all__ = [
     "CONDITIONAL",
     "CONTAINS",
     "EQUAL",
+    "EVENTUALLY",
     "FAIL",
     "GREATER",
     "GREATER_EQUAL",
@@ -58,15 +63,19 @@ __all__ = [
     "MATCHES",
     "NOT_CONTAINS",
     "NOT_EQUAL",
+    "RAISES",
     "REGISTRY",
+    "STABLE",
     "CheckType",
     "CompositeType",
     "Verdict",
     "child_checks",
+    "chosen_checks",
     "judge",
     "lookup",
     "margin",
     "render_detail",
     "summary_separator",
     "truth",
+    "units",
 ]

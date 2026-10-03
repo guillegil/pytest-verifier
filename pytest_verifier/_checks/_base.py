@@ -8,7 +8,10 @@ descriptor (``build``), comparing the user's values (``compare``), rendering the
 """
 from __future__ import annotations
 
+import bdb
+import contextvars
 import math
+import unittest
 from fractions import Fraction
 from typing import (
     Any,
@@ -23,11 +26,75 @@ from typing import (
     Union,
 )
 
+import pytest
+
 from .._descriptors import is_descriptor
 from .._render import describe_error, escape, render_value, safe_repr, safe_str
 
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
 Verdict = Tuple[bool, Optional[str]]
+
+#: ``Exception`` subclasses that end the test or the session, not a check: ``pytest.exit``
+#: (also quitting the debugger), ``bdb.BdbQuit`` and ``unittest.SkipTest``.
+_ALWAYS_ON: Tuple[type, ...] = (pytest.exit.Exception, bdb.BdbQuit, unittest.SkipTest)
+
+
+def stops_test(exc: BaseException) -> bool:
+    """Whether *exc* is, or groups, the error of a check that stopped the test
+    (``verify.require``, fail-fast)."""
+    queue: List[BaseException] = [exc]
+    seen = set()
+    while queue:
+        link = queue.pop()
+        if id(link) in seen:
+            continue
+        seen.add(id(link))
+        if getattr(link, "stops_test", False) is True:
+            return True
+        members = getattr(link, "exceptions", None)
+        if isinstance(members, tuple):  # an exception group
+            queue.extend(member for member in members if isinstance(member, BaseException))
+    return False
+
+
+def passes_through(exc: BaseException, expected: Tuple[type, ...] = ()) -> bool:
+    """Whether *exc* goes on through code that takes errors as a failed check (a lazy child, a
+    condition, a factory, a sample, a ``raises`` block): a stop error, an exception that is not
+    an ``Exception`` (``pytest.skip``, ``KeyboardInterrupt``), or one of :data:`_ALWAYS_ON`.
+
+    The last two are taken when an *expected* class names them: their own class or a base of
+    it other than ``Exception`` and ``BaseException``.
+    """
+    if stops_test(exc):
+        return True
+    if isinstance(exc, Exception) and not isinstance(exc, _ALWAYS_ON):
+        return False
+    try:
+        return not any(
+            isinstance(exc, cls) and cls not in (Exception, BaseException) for cls in expected
+        )
+    except Exception:  # pragma: no cover - a misbehaving __instancecheck__
+        return True
+
+
+#: How the user code a composite calls is called, when the sink building the composite
+#: watches it (see :func:`call_user`): ``caller(function, args, check)``.
+CALLER: contextvars.ContextVar[Optional[Callable[..., Any]]] = contextvars.ContextVar(
+    "pytest_verifier_caller", default=None
+)
+
+
+def call_user(function: Callable[..., Any], *args: Any, check: bool = True) -> Any:
+    """Call *function* with *args*: user code a composite calls, a lazy child or an
+    ``all_satisfy`` factory (*check*: it must return a check) or a guard condition.
+
+    The sink building the composite may watch the call (:data:`CALLER`): the fixture's forgets
+    the ``verify.raises`` blocks the code made when it raises (it never reached their
+    ``with``), and a block it returns in place of a check (the composite's error says so).
+    """
+    caller = CALLER.get()
+    return function(*args) if caller is None else caller(function, args, check)
+
 
 class CheckType:
     """One kind of check. Subclasses set ``check_type`` and implement ``compare`` and ``detail``.
@@ -66,6 +133,15 @@ class CheckType:
         is: exactly, unless the check compares in floats. May raise."""
         return None
 
+    def units(self, d: Mapping[str, Any]) -> Any:
+        """The units of the check's values and of its :meth:`margin`. May raise."""
+        return d.get("units")
+
+    def reading(self, d: Mapping[str, Any]) -> Any:
+        """What the check read, as a record keeps it: the tries of a sampling check compare
+        it to tell whether the value changed. May raise."""
+        return d.get("actual")
+
 
 class CompositeType(CheckType):
     """A check whose verdict comes from child checks."""
@@ -85,6 +161,10 @@ class CompositeType(CheckType):
         """The composite's verdict from the verdicts of :meth:`chosen`."""
         raise NotImplementedError
 
+    def vetoed(self, d: Mapping[str, Any]) -> bool:
+        """Whether *d* fails whatever the verdicts of its children. Never raises."""
+        return False
+
     def map_children(self, d: Mapping[str, Any], fn: Callable[[Any], Any]) -> Dict[str, Any]:
         """The descriptor's child fields, rebuilt with *fn* applied to every child check."""
         raise NotImplementedError
@@ -94,7 +174,7 @@ class CompositeType(CheckType):
             chosen = self.chosen(d)
         except Exception as exc:  # a malformed hand-built descriptor
             return False, describe_error(exc)
-        return self.combine([judge(child)[0] for child in chosen]), None
+        return self.combine([judge(child)[0] for child in chosen]) and not self.vetoed(d), None
 
 
 #: Every check type, by ``check_type``.
@@ -133,6 +213,17 @@ def margin(descriptor: Mapping[str, Any]) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
+def units(descriptor: Mapping[str, Any]) -> Optional[str]:
+    """The units of a check's values and of its margin (see :meth:`CheckType.units`), or
+    ``None`` when they are not text. Never raises."""
+    check = lookup(descriptor)
+    try:
+        found = descriptor.get("units") if check is None else check.units(descriptor)
+    except Exception:
+        return None
+    return found if isinstance(found, str) else None
+
+
 def plain_number(value: Any) -> Union[int, float]:
     """*value*, an ``int`` (not a ``bool``) or a finite ``float``; else raises ``TypeError``,
     so a margin is only computed from numbers that read as such."""
@@ -155,6 +246,18 @@ def child_checks(descriptor: Mapping[str, Any]) -> List[Any]:
     if not isinstance(check, CompositeType):
         return []
     return [child for child in check.children(descriptor) if child is not None]
+
+
+def chosen_checks(descriptor: Mapping[str, Any]) -> List[Any]:
+    """The children a composite selected, which count toward its verdict (``[]`` for any other
+    check, or a malformed one). Never raises."""
+    check = lookup(descriptor)
+    if not isinstance(check, CompositeType):
+        return []
+    try:
+        return [child for child in check.chosen(descriptor) if child is not None]
+    except Exception:
+        return []
 
 
 # ---------------------------------------------------------------------------

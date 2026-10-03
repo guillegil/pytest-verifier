@@ -16,23 +16,19 @@ from .._descriptors import (
     GuardBranch,
     case_key,
     is_descriptor,
+    not_a_check,
+    plain_text,
     require_child,
     require_name,
     select_case,
     unwrap,
 )
-from .._render import describe_error, escape, render_text, safe_repr, safe_str, snapshot
-from ._base import CompositeType, child_detail, judge, register
+from .._render import describe_error, render_text, safe_repr, safe_str, snapshot
+from ._base import CompositeType, call_user, child_detail, judge, passes_through, register
 
 
 def _is_lazy(child: object) -> bool:
     return callable(child) and not is_descriptor(child)
-
-
-def _stops_test(exc: BaseException) -> bool:
-    """Whether *exc* stops the test (``verify.require``, fail-fast) rather than being an error
-    of the child, condition or factory it went through."""
-    return getattr(exc, "stops_test", False) is True
 
 
 def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
@@ -44,15 +40,13 @@ def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
     if not _is_lazy(child):
         return child, None
     try:
-        built = child()
+        built = call_user(child)
     except Exception as exc:
-        if _stops_test(exc):
+        if passes_through(exc):
             raise
         return None, f"{where} raised {describe_error(exc)}"
     if not is_descriptor(built):
-        return None, (
-            f"{where} returned {type(built).__name__}, not a check (did you forget `return`?)"
-        )
+        return None, f"{where} returned {not_a_check(built)}"
     return built, None
 
 
@@ -93,13 +87,13 @@ class AllSatisfy(CompositeType):
         something that is not a check) do not raise: the descriptor records them in ``error``
         and fails.
         """
-        require_name(name, "all_satisfy")
+        name = require_name(name, "all_satisfy")
         child_checks: List[CheckDescriptor] = []
         error: Optional[str] = None
         try:
             iterator = iter(items)
         except Exception as exc:
-            if _stops_test(exc):
+            if passes_through(exc):
                 raise
             iterator, error = iter(()), f"items are not iterable: {describe_error(exc)}"
         index = 0
@@ -109,22 +103,19 @@ class AllSatisfy(CompositeType):
             except StopIteration:
                 break
             except Exception as exc:
-                if _stops_test(exc):
+                if passes_through(exc):
                     raise
                 error = f"iterating items raised {describe_error(exc)}"
                 break
             try:
-                child = descriptor_factory(item)
+                child = call_user(descriptor_factory, item)
             except Exception as exc:
-                if _stops_test(exc):
+                if passes_through(exc):
                     raise
                 error = f"descriptor_factory raised {describe_error(exc)} for item {index}"
                 break
             if not is_descriptor(child):
-                error = (
-                    f"descriptor_factory returned {type(child).__name__} for item {index}, "
-                    "not a check (did you forget `return`?)"
-                )
+                error = f"for item {index}, descriptor_factory returned {not_a_check(child)}"
                 break
             child_checks.append(child)
             index += 1
@@ -132,7 +123,7 @@ class AllSatisfy(CompositeType):
             "check_type": "all_satisfy",
             "name": name,
             "description": (
-                f"Verify all items in '{escape(name)}' satisfy condition "
+                f"Verify all items in '{render_text(name)}' satisfy condition "
                 f"({len(child_checks)} items)"
             ),
             "child_checks": child_checks,
@@ -159,7 +150,14 @@ class AllSatisfy(CompositeType):
         if passed:
             return f"all {total} items pass"
         failing = [(i, child) for i, child in enumerate(children) if judge(child)[0] is not True]
-        summary = f"expected all {total} to pass, got {len(failing)} failed"
+        if d.get("error") is not None:
+            # The items could not all be checked; the error, appended to the detail, says why.
+            if not total:
+                return "no item checked"
+            counted = f"{total} item{'' if total == 1 else 's'} checked"
+            summary = f"{counted}, {len(failing)} failed" if failing else f"{counted}, all passed"
+        else:
+            summary = f"expected all {total} to pass, got {len(failing)} failed"
         if not failing:
             return summary
         # Children made by one factory usually share a name; then the index says enough.
@@ -207,7 +205,7 @@ class Conditional(_Selecting):
         default: Optional[Child] = None,
         name: str,
     ) -> CheckDescriptor:
-        require_name(name, "conditional")
+        name = require_name(name, "conditional")
         if not isinstance(cases, Mapping):
             raise TypeError(f"conditional() cases must be a mapping, got {type(cases).__name__}")
         normalized: Dict[str, Any] = {}
@@ -238,7 +236,7 @@ class Conditional(_Selecting):
         desc: CheckDescriptor = {
             "check_type": "conditional",
             "name": name,
-            "description": f"Verify '{escape(name)}' [mode={label}]",
+            "description": f"Verify '{render_text(name)}' [mode={label}]",
             "switch_value": snapshot(unwrap(switch_value)),
             "switch_label": label,
             "cases": {key: _unbuilt(child) for key, child in normalized.items()},
@@ -324,7 +322,7 @@ class Guard(_Selecting):
         is truthy is selected; if none is, ``default`` is. A callable condition is called, in
         order, until one branch matches.
         """
-        require_name(name, "guard")
+        name = require_name(name, "guard")
         if default is not None:
             require_child(default, "guard() default")
         unpacked = [_unpack_branch(branch, index) for index, branch in enumerate(branches)]
@@ -340,7 +338,11 @@ class Guard(_Selecting):
             else:
                 problem: Optional[str] = None
                 try:
-                    value = condition() if lazy else condition  # type: ignore[operator]
+                    value = (
+                        call_user(condition, check=False)  # type: ignore[arg-type]
+                        if lazy
+                        else condition
+                    )
                     if is_descriptor(value):
                         truth, problem = False, (
                             "returned a check, which is always truthy; return its verdict "
@@ -349,13 +351,15 @@ class Guard(_Selecting):
                     else:
                         truth = bool(value)
                 except Exception as exc:
-                    if _stops_test(exc):
+                    if passes_through(exc):
                         raise
                     truth, problem = False, f"raised {describe_error(exc)}"
                 if problem is not None and deciding:
                     error = f"condition of branch {index} ({safe_str(label)}) {problem}"
                 if truth and deciding and error is None:
                     matched_index = index
+            if isinstance(label, str):
+                label = plain_text(label)  # a str enum member is stored as its value
             normalized.append({"condition": truth, "label": label, "check": check})
         if error is None and matched_index is not None:
             branch = normalized[matched_index]
@@ -368,7 +372,7 @@ class Guard(_Selecting):
         desc: CheckDescriptor = {
             "check_type": "guard",
             "name": name,
-            "description": f"Verify '{escape(name)}' [guarded]",
+            "description": f"Verify '{render_text(name)}' [guarded]",
             "branches": normalized,
             "default": _unbuilt(default),
             "matched_index": matched_index,

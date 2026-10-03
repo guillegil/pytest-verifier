@@ -426,6 +426,11 @@ failed check instead of propagating when the expected exception is missing. Comb
 add an ini option `verify_errors = record | raise` so teams can choose whether an exception
 inside a check is recorded or raised. *Effort M, impact high, minor.*
 
+Shipped in 0.10.0: `with verify.raises(...)`, soft only for what the code under test did
+(nothing raised, or the expected type with another message); other exceptions propagate after
+the failed check is recorded. `verify_errors` was left out: `verify.require` and fail-fast
+already stop at a check that could not be evaluated.
+
 #### FEAT-3. Strictness controls
 
 Add ways to make checks stricter where needed: a marker or ini option for fail-fast (the first
@@ -502,6 +507,9 @@ LIMITS = {
 verify.limits(measurements, LIMITS, on_missing="fail")
 ```
 
+Shipped in 0.10.0, with strict rows, `load_limits(path, select=, columns=, encoding=)`, cells
+typed by the measurement, and `limit_source` on each record.
+
 #### FEAT-11. `verify.eventually` and `verify.stable`
 
 Readings take time to settle after power-up or a setpoint change. `verify.eventually(read,
@@ -509,6 +517,9 @@ check_factory, timeout=2.0, interval=0.1, name=...)` records one check that pass
 sample passes, and stores the number of samples and the settling time. `verify.stable(...)`
 requires every sample in a window to pass and stores the worst sample. *Effort M, impact medium,
 minor.*
+
+Shipped in 0.10.0 with one `sample` callable that makes the check, try scopes (a try that is
+not kept is dropped with its checks), a bounded trace and `settled_at`.
 
 #### FEAT-12. Verbosity-aware CLI options and a session summary
 

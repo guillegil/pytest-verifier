@@ -9,18 +9,25 @@ the test, pytest's tracebacks and ``--pdb`` show the test's line, not these fram
 """
 from __future__ import annotations
 
+import datetime
 import re
+from types import TracebackType
 from typing import (
     Any,
     Callable,
     Container,
     ContextManager,
+    Dict,
+    Generic,
     Iterable,
+    List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
     Sized,
     Tuple,
+    Type,
     TypeVar,
     Union,
 )
@@ -48,15 +55,23 @@ from ._checks import (
     MATCHES,
     NOT_CONTAINS,
     NOT_EQUAL,
+    RAISES,
     child_checks,
 )
+from ._checks._raises import exception_classes, expected_instance, handles
+from ._checks._sampling import EVENTUALLY, STABLE, Sampler
 from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
+from ._limits import limit_checks
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
+from ._settle import settle
 
 #: The type of the items an ``all_satisfy`` factory receives.
 _Item = TypeVar("_Item")
+
+#: The exception type a ``raises`` block expects.
+_E = TypeVar("_E", bound=BaseException)
 
 _RECORD_NEEDS_FIXTURE = (
     "checks.record() cannot record a check: pytest_verifier.checks only builds checks. Request "
@@ -67,6 +82,12 @@ _SECTION_NEEDS_FIXTURE = (
     "checks.section() cannot group checks: pytest_verifier.checks only builds checks, and only "
     "recorded checks belong to a section. Request the 'verify' fixture in the test and use "
     "verify.section() on it."
+)
+
+_RAISES_NEEDS_FIXTURE = (
+    "checks.raises() cannot check a block: pytest_verifier.checks only builds checks, and a "
+    "raises block means something only when its check is recorded. Request the 'verify' "
+    "fixture in the test and use `with verify.raises(...):` on it."
 )
 
 _REQUIRE_NEEDS_FIXTURE = (
@@ -81,10 +102,36 @@ class Sink:
     This one, used by ``pytest_verifier.checks``, returns them unevaluated.
     """
 
-    def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
-        """Take a check that has no children."""
+    def check(self, descriptor: CheckDescriptor, site: Any = None) -> CheckDescriptor:
+        """Take a check that has no children; *site* is where it was made, from :meth:`where`
+        (``None``: here)."""
         _unused.built(descriptor)
         return descriptor
+
+    def ended(
+        self,
+        descriptor: CheckDescriptor,
+        site: Any,
+        keep: Callable[[CheckDescriptor], None],
+        stop: bool,
+    ) -> None:
+        """Take the check of a ``raises`` block that ended: *keep* gets it before a required
+        check stops the test, and *stop* False records it without stopping (an exception
+        that goes on stops the test anyway; if a try or a composite takes that exception as a
+        failure, the fixture stops the test once that check is recorded)."""
+        keep(self.check(descriptor, site))
+
+    def block(self, raises: Raises[Any]) -> Any:
+        """Take a ``raises`` block when it is made, and return where it is made: its check is
+        taken when the block ends, but belongs to the ``with`` line."""
+        raise RuntimeError(_RAISES_NEEDS_FIXTURE)
+
+    def entered(self, raises: Raises[Any]) -> None:
+        """The ``raises`` block is being entered."""
+
+    def origin(self, traceback: Optional[TracebackType]) -> Optional[str]:
+        """Where the exception with *traceback* was raised, for a ``raises`` check."""
+        return None
 
     def composite(
         self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
@@ -101,6 +148,26 @@ class Sink:
         _unused.used(*child_checks(descriptor))
         _unused.built(descriptor)
         return descriptor
+
+    def sampling(
+        self, build: Callable[[Sampler], CheckDescriptor], arguments: Sequence[Any]
+    ) -> CheckDescriptor:
+        """Take a check that samples (``eventually``, ``stable``), built by calling *build*
+        with the sampler that takes its tries. Here a try's check is settled when it is made,
+        so the built check keeps the verdicts its tries had then."""
+        try:
+            descriptor = build(_SettlingSampler())
+        except BaseException:
+            _unused.used(*loose_children(*arguments))
+            raise
+        _unused.built(descriptor)
+        return descriptor
+
+    def batch(self, descriptors: List[CheckDescriptor]) -> List[CheckDescriptor]:
+        """Take checks that have no children and were built together (a limits table)."""
+        for descriptor in descriptors:
+            _unused.built(descriptor)
+        return descriptors
 
     def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
         """Take a check built elsewhere; *call* names the method, for usage errors."""
@@ -119,7 +186,10 @@ class Sink:
 class _NoRequire(Sink):
     """``checks.require``: only the fixture can stop a test."""
 
-    def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+    def check(self, descriptor: CheckDescriptor, site: Any = None) -> CheckDescriptor:
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
+    def block(self, raises: Raises[Any]) -> Any:
         raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
 
     def composite(
@@ -128,12 +198,31 @@ class _NoRequire(Sink):
         _unused.used(*loose_children(*arguments))
         raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
 
+    def sampling(
+        self, build: Callable[[Sampler], CheckDescriptor], arguments: Sequence[Any]
+    ) -> CheckDescriptor:
+        _unused.used(*loose_children(*arguments))
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
+    def batch(self, descriptors: List[CheckDescriptor]) -> List[CheckDescriptor]:
+        raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
+
     def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
         _unused.used(descriptor)
         raise RuntimeError(_REQUIRE_NEEDS_FIXTURE)
 
     def hard(self) -> Sink:
         return self
+
+
+class _SettlingSampler(Sampler):
+    """The tries of ``checks.eventually``/``checks.stable``: each check is judged and
+    snapshotted when it is made, as the fixture would record it, so that evaluating the built
+    check later agrees with the sampling."""
+
+    def keep(self, check: Any, attempt: Any) -> Any:
+        _unused.used(check)
+        return settle(check)[0]
 
 
 _BUILD_ONLY = Sink()
@@ -580,6 +669,243 @@ class Verify:
             (branches, default),
         )
 
+    def eventually(
+        self,
+        sample: Callable[[], CheckDescriptor],
+        *,
+        timeout: Union[float, datetime.timedelta],
+        interval: Union[float, datetime.timedelta] = 0.1,
+        name: str,
+    ) -> CheckDescriptor:
+        """Check that a check passes within *timeout* seconds, trying it again until it does.
+
+        *sample* is a zero-argument callable that reads the value and makes the check, such as
+        ``lambda: verify.less(read_temp(), 40, name="Temperature")``. It is called at once,
+        then each try starts *interval* seconds after the start of the one before (at once when
+        that one took longer), until a try passes or *timeout* has passed; the last try starts
+        at the timeout::
+
+            verify.eventually(lambda: verify.equal(dut.state(), "READY", name="State"),
+                              timeout=5, name="Boots")
+
+        A try passes when the check it returns passes and so does every other check it
+        records. The check passes when a try passed, and keeps that try, or the last one, as
+        its child; the other checks that failed the kept try are named in ``also_failed``.
+        It records ``tries``, ``elapsed`` and ``settled_at`` (seconds from the call to the
+        start of the passing try), and a ``trace`` of ``[seconds, value, passed]`` for the
+        first and the last 50 tries. A sample that raises an ``Exception`` fails that try and
+        the tries go on; one raised by pytest-verifier itself (a usage error), a sample that
+        returns something that is not a check (an ``async def`` sample returns a coroutine),
+        or the same check again, fails the check at once. ``pytest.skip``, ``pytest.exit``
+        and ``KeyboardInterrupt`` go on, and no try is kept.
+
+        Every check recorded while a try runs belongs to it, and so does the check the sample
+        returns when another thread recorded it: a try that is not kept is dropped with its
+        checks, so failed tries never fail or stop the test. The kept try's other checks stay
+        on their own, and ``verify.require``/fail-fast apply to them once the check is
+        recorded. A plain thread (not ``asyncio.to_thread``) runs outside the try: the other
+        checks it records stay whatever happens to the try, and a required or fail-fast check
+        it records that fails stops that thread at once, even one the sample would return.
+        With ``pytest_verifier.checks`` each try is evaluated when it is taken.
+
+        It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
+        the event loop (a ``RuntimeWarning`` says so).
+
+        Args:
+            sample: A callable with no arguments that reads the value and returns a check.
+            timeout: How long to keep trying, in seconds or a ``timedelta`` (0: try once).
+            interval: Seconds from the start of one try to the next (more than 0).
+            name: Human-readable label for the check.
+
+        Returns:
+            A :class:`CheckDescriptor` dict.
+
+        Raises:
+            TypeError: If *sample* is not a callable, or *timeout* or *interval* is not a
+                number of seconds.
+            ValueError: If *timeout* is negative, *interval* is not more than 0, or either is
+                not finite.
+        """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        return self._sink.sampling(
+            lambda sampler: EVENTUALLY.build(
+                sample, timeout=timeout, interval=interval, name=name, sampler=sampler
+            ),
+            (sample,),
+        )
+
+    def stable(
+        self,
+        sample: Callable[[], CheckDescriptor],
+        *,
+        duration: Union[float, datetime.timedelta],
+        interval: Union[float, datetime.timedelta] = 0.1,
+        name: str,
+    ) -> CheckDescriptor:
+        """Check that a check keeps passing for *duration* seconds, trying it again and again.
+
+        *sample* is a zero-argument callable that reads the value and makes the check, such as
+        ``lambda: verify.approx(psu.vout(), 3.3, abs_tol=0.05, name="Vout", units="V")``.
+        It is called at once, then each try starts *interval* seconds after the start of the
+        one before (at once when that one took longer), until a try fails or a try has started
+        at or after *duration*, and at least twice when *duration* is more than 0::
+
+            verify.stable(lambda: verify.less(ripple(), 0.05, name="Ripple", units="V"),
+                          duration=2, interval=0.2, name="Ripple steady")
+
+        The check passes when every try passed: a try passes when the check it returns passes
+        and so does every other check it records. It keeps the try that failed (its failed
+        checks stay recorded, named in ``also_failed``), or the passing one closest to its
+        limit (the last, for checks without a numeric limit), as its child, and records
+        ``tries``, ``elapsed`` and a ``trace`` as :meth:`eventually` does. A sample that raises
+        an ``Exception`` fails its try; usage errors, ``pytest.skip``, threads and the other
+        tries' checks behave as in :meth:`eventually`.
+
+        It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
+        the event loop (a ``RuntimeWarning`` says so).
+
+        Args:
+            sample: A callable with no arguments that reads the value and returns a check.
+            duration: How long the check must hold, in seconds or a ``timedelta`` (0: try
+                once).
+            interval: Seconds from the start of one try to the next (more than 0).
+            name: Human-readable label for the check.
+
+        Returns:
+            A :class:`CheckDescriptor` dict.
+
+        Raises:
+            TypeError: If *sample* is not a callable, or *duration* or *interval* is not a
+                number of seconds.
+            ValueError: If *duration* is negative, *interval* is not more than 0, or either is
+                not finite.
+        """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        return self._sink.sampling(
+            lambda sampler: STABLE.build(
+                sample, duration=duration, interval=interval, name=name, sampler=sampler
+            ),
+            (sample,),
+        )
+
+    def limits(
+        self,
+        measurements: Mapping[Any, Any],
+        table: Mapping[str, Any],
+        *,
+        on_missing: Literal["fail", "ignore"] = "fail",
+    ) -> Dict[str, CheckDescriptor]:
+        """Check measurements against a table of limits: one check per row, in table order.
+
+        *table* maps each check's name to its row, and the measurement of the same name is the
+        value the row checks. A row holds the arguments of a check method after the value
+        (``expected``, ``abs_tol``, ``rel_tol``, ``threshold``, ``low``, ``high``,
+        ``inclusive``, ``units``, ``needle``, ``pattern``, ``expected_type``) and, under
+        ``"check"``, the method: ``equal``, ``not_equal``, ``approx``, ``greater``,
+        ``greater_equal``, ``less``, ``less_equal``, ``between``, ``is_true``, ``is_false``,
+        ``is_none``, ``is_not_none``, ``contains``, ``not_contains``, ``matches``, ``length``
+        or ``is_instance``. Without ``"check"`` the limits say which: ``low`` and ``high`` make
+        a ``between``; ``low`` alone a ``greater_equal`` and ``high`` alone a ``less_equal``
+        (``greater``/``less`` with ``inclusive=False``); ``expected`` with ``abs_tol`` or
+        ``rel_tol`` an ``approx``; ``expected`` alone an ``equal``, except for a ``float``,
+        which needs a tolerance or ``"check": "equal"``. ``low`` can stand for the
+        ``threshold`` of ``greater``/``greater_equal``, and ``high`` for that of
+        ``less``/``less_equal``. A ``None`` value counts as not given, ``"source"`` (text) is
+        kept on the record as ``limit_source``, and the table is never changed::
+
+            LIMITS = {
+                "Vout": {"expected": 3.3, "abs_tol": 0.05, "units": "V"},
+                "Ripple": {"high": 0.05, "units": "V"},
+                "FW": {"check": "matches", "pattern": "^v2"},
+            }
+            verify.limits({"Vout": 3.31, "Ripple": 0.02, "FW": "v2.4"}, LIMITS)
+
+        Limits are strict: ``low``, ``high``, ``threshold``, the tolerances and the
+        ``expected`` of ``approx`` must be finite numbers (not text, NaN or infinity),
+        ``rel_tol`` a fraction below 1 (``0.02`` is 2%), ``inclusive`` a ``bool``, and the
+        ``expected`` of ``length`` a whole number. Measurement names match row names as text:
+        an ``int`` key matches its decimal string and an enum member its value. Measurements
+        the table has no row for are not checked.
+
+        Every row is built before any check is recorded: an unknown check or argument, a
+        missing one, or an invalid one raises and records nothing. The checks are then
+        recorded together, so ``verify.require.limits`` (and fail-fast) stops at the first
+        failed row only after the whole table is recorded.
+
+        Args:
+            measurements: The measured values, by name.
+            table: The rows (:class:`pytest_verifier.LimitRow` dicts), by name, such as the
+                result of :func:`pytest_verifier.load_limits`.
+            on_missing: For a row without a measurement: ``"fail"`` records its check as
+                failed, with an ``error`` that starts with ``"not measured"`` and names a
+                measurement that looks like it (the limits stay in the record); ``"ignore"``
+                makes no check for it.
+
+        Returns:
+            The checks made, in table order, by the table's row names.
+
+        Raises:
+            TypeError: If a row is not a mapping, names an argument its check does not take
+                or misses one, has a limit of the wrong type, or a measurement name is not a
+                str, an int or an enum member.
+            ValueError: If the table is empty, a row names an unknown check or has an invalid
+                argument, on_missing is "ignore" and no row has a measurement, or
+                *on_missing* is another value.
+        """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        return limit_checks(self._sink, measurements, table, on_missing)
+
+    def raises(
+        self,
+        expected_exception: Union[Type[_E], Tuple[Type[_E], ...]],
+        *,
+        match: Optional[Union[str, "re.Pattern[str]"]] = None,
+        name: str,
+    ) -> Raises[_E]:
+        """Check that a ``with`` block raises *expected_exception*, without stopping the test.
+
+        The check is recorded when the block ends. It passes when the block raised an instance
+        of *expected_exception* (a class or a tuple of classes) whose message (``str()``, and
+        its notes) *match* finds, with ``re.search``, when *match* is given::
+
+            with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
+                psu.set_voltage(7)
+            # raised.value is the exception, raised.check the recorded check
+
+        The expected exception is caught, and the test goes on. If nothing was raised, or the
+        message does not match, the check fails and the test goes on too. Any other exception
+        makes the check fail and then goes on, with its traceback, as with ``pytest.raises``:
+        it is a bug or a broken bench, not the behaviour under test. Exceptions that are not
+        an ``Exception`` (``KeyboardInterrupt``, ``pytest.skip``) and the error of a required
+        check that stopped the test go on unchanged, and make no check.
+
+        Put only the call that must raise in the block: the statements after it do not run.
+        A ``verify.raises()`` that is never used in a ``with`` statement becomes a failed check
+        at the end of the test phase, with the place and section where it was made, unless the
+        code that made it ended with an exception (the phase: a stopped test, an error, a skip;
+        or a sample, lazy child, guard condition or factory that raised): it may never have
+        reached the ``with``.
+
+        Args:
+            expected_exception: The exception class, or a tuple of them. ``Exception`` and
+                ``BaseException`` need *match*: alone, a typo in the block would pass.
+            match: A regular expression (a string or a compiled pattern) that the message
+                (``str()`` of the exception, and its notes) must contain; not empty.
+            name: Human-readable label for the check.
+
+        Returns:
+            A :class:`Raises` context manager; ``raised.check`` is the check once the block
+            ended, ``raised.value`` the expected exception or ``None``.
+
+        Raises:
+            TypeError: If *expected_exception* is not an exception class or a tuple of them,
+                or is too broad without *match*.
+            ValueError: If *match* is empty or not a valid regular expression.
+            RuntimeError: When called on ``pytest_verifier.checks``: only the fixture can
+                record a block's check.
+        """
+        return Raises(self._sink, expected_exception, match=match, name=name)
+
     def fail(self, msg: str, *, name: Optional[str] = None) -> CheckDescriptor:
         """Unconditionally failing check.
 
@@ -598,7 +924,10 @@ class Verify:
         ``pytest_verifier.checks``.
 
         Only the fixture records checks. The check is judged and recorded like one made
-        through the fixture, and a check the fixture already recorded is returned as is.
+        through the fixture, and a check the fixture already recorded is returned as is,
+        except one that a composite took without selecting it (so it counts nowhere): that
+        check is recorded again on its own, as a copy, and the copy is returned (the same copy
+        each time).
 
         Args:
             check: A check descriptor.
@@ -696,6 +1025,120 @@ class Verify:
         when the check could not be evaluated.
         """
         return _evaluate_detailed(*descriptors)
+
+
+class Raises(Generic[_E]):
+    """A ``verify.raises`` block: its check is made when the block ends.
+
+    Use it once, in a ``with`` statement; one that is never used in a ``with`` statement
+    becomes a failed check at the end of the test phase, unless the code that made it ended
+    with an exception::
+
+        with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
+            psu.set_voltage(7)
+        raised.check   # the check, once the block has ended
+        raised.value   # the ValueError, or None
+
+    Attributes:
+        value: The exception the block raised, when it is of an expected type (whether or not
+            *match* found it in its message); else ``None``.
+    """
+
+    def __init__(
+        self,
+        sink: Sink,
+        expected_exception: Union[Type[_E], Tuple[Type[_E], ...]],
+        *,
+        match: Optional[Union[str, "re.Pattern[str]"]] = None,
+        name: str,
+    ) -> None:
+        RAISES.build(None, expected_exception, match=match, name=name)  # usage errors raise now
+        self._expected = exception_classes(expected_exception)
+        self._arguments: Tuple[Any, Any, str] = (expected_exception, match, name)
+        self._sink = sink
+        self._entered = False
+        self._check: Optional[CheckDescriptor] = None
+        self.value: Optional[_E] = None
+        # Where the check is made: here, on the ``with`` line (``__exit__`` sees another line
+        # on Python 3.9). A sink that cannot record refuses here, before the block runs.
+        self._site = sink.block(self)
+
+    @property
+    def check(self) -> CheckDescriptor:
+        """The check made when the block ended.
+
+        Raises:
+            RuntimeError: Before the block has ended.
+        """
+        if self._check is None:
+            raise RuntimeError(
+                "verify.raises(): no check yet: it is made when the with block ends (not when "
+                "it ended with an exception that makes none, such as pytest.skip); read "
+                ".check after the block"
+            )
+        return self._check
+
+    @property
+    def type(self) -> Optional[Type[_E]]:
+        """The class of :attr:`value`, or ``None``."""
+        return None if self.value is None else type(self.value)
+
+    def __enter__(self) -> Raises[_E]:
+        if self._entered:
+            raise RuntimeError(
+                "a verify.raises() block can run only once: call verify.raises() again for "
+                "another block"
+            )
+        self._entered = True
+        self._sink.entered(self)
+        return self
+
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        traceback: Optional[TracebackType],
+    ) -> bool:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        if exc is not None and not handles(exc, self._expected):
+            return False
+        expected = expected_instance(exc, self._expected)
+        if expected:
+            self.value = exc  # type: ignore[assignment]
+        expected_exception, match, name = self._arguments
+        where = None if exc is None else self._sink.origin(exc.__traceback__)
+        descriptor = RAISES.build(
+            exc, expected_exception, match=match, name=name, raised_at=where
+        )
+        # Only what the code under test did is soft: nothing raised, or the expected type with
+        # another message. Any other exception goes on, with its traceback, after the check;
+        # it stops the test itself, so a required check does not replace it.
+        try:
+            self._sink.ended(descriptor, self._site, self._keep, stop=exc is None or expected)
+        except BaseException as error:
+            stopped = getattr(error, "stops_test", False) is True
+            if stopped and exc is not None and expected and error.__context__ is exc:
+                # The check tells what the block raised: not shown again as the context, but
+                # what the test was handling around the block still is.
+                error.__context__ = exc.__context__
+            raise
+        return expected
+
+    def _keep(self, check: CheckDescriptor) -> None:
+        self._check = check
+
+    def unentered(self) -> Optional[Tuple[CheckDescriptor, Any]]:
+        """The failed check of a block that was never entered, with its site; else ``None``."""
+        if self._entered:
+            return None
+        self._entered = True  # reported once
+        expected_exception, match, name = self._arguments
+        descriptor = RAISES.build(None, expected_exception, match=match, name=name)
+        descriptor["error"] = (
+            "verify.raises() was never used in a with statement: write "
+            "`with verify.raises(...):` around the code that must raise"
+        )
+        return descriptor, self._site
 
 
 class Require(Verify):

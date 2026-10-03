@@ -22,7 +22,7 @@ import pytest
 
 from pytest_verifier import ChecksFailedError
 from pytest_verifier import checks
-from pytest_verifier._checks import REGISTRY, render_detail
+from pytest_verifier._checks import RAISES, REGISTRY, render_detail
 from pytest_verifier._exceptions import format_summary
 from pytest_verifier._run import Run, recording_verify
 
@@ -58,6 +58,24 @@ def _recursive() -> List[Any]:
     value: List[Any] = [1]
     value.append(value)
     return value
+
+
+class HostileError(ValueError):
+    """An exception whose message cannot be read."""
+
+    def __str__(self) -> str:
+        raise RuntimeError("hostile message")
+
+
+def _raises(v: Any, raised: Optional[BaseException], expected: Any, **kwargs: Any) -> Any:
+    """A ``raises`` check of a block that raised *raised*. ``checks`` cannot make one (a block
+    only means something when recorded), so the builder path uses the check type directly."""
+    if v is checks:
+        return RAISES.build(raised, expected, **kwargs)
+    with v.raises(expected, **kwargs) as block:
+        if raised is not None:
+            raise raised
+    return block.check
 
 
 class Example(NamedTuple):
@@ -182,6 +200,44 @@ EXAMPLES = [
     Example("guard", "no match", lambda v: v.guard([(0, "a", v.fail("a"))], name="g"), False),
     Example("guard", "hostile condition",
             lambda v: v.guard([(Hostile(), "a", v.fail("a"))], name="g"), False, True),
+    Example("raises", "pass",
+            lambda v: _raises(v, ValueError("7 V is out of range"), ValueError,
+                              match="out of range", name="r"),
+            True),
+    Example("raises", "nothing raised", lambda v: _raises(v, None, KeyError, name="r"), False),
+    Example("raises", "no match",
+            lambda v: _raises(v, ValueError("bad unit"), (ValueError, TypeError),
+                              match=re.compile("RANGE", re.IGNORECASE), name="r"),
+            False),
+    Example("raises", "hostile message",
+            lambda v: _raises(v, HostileError(), ValueError, match="x", name="r"), False, True),
+    Example("eventually", "pass",
+            lambda v: v.eventually(lambda: v.less(1, 2, name="T"), timeout=0, name="ev"), True),
+    Example("eventually", "fail",
+            lambda v: v.eventually(lambda: v.less(5, 2, name="T", units="C"), timeout=0.02,
+                                   interval=0.01, name="ev"),
+            False),
+    Example("eventually", "sample raises",
+            lambda v: v.eventually(lambda: 1 / 0, timeout=0, name="ev"), False),
+    Example("eventually", "hostile value",
+            lambda v: v.eventually(lambda: v.equal(Hostile(), 1, name="h"), timeout=0,
+                                   name="ev"),
+            False),
+    Example("eventually", "sample forgot return",
+            lambda v: v.eventually(lambda: None, timeout=0, name="ev"), False, True),
+    Example("stable", "pass",
+            lambda v: v.stable(lambda: v.between(0.3, 0.1, 0.5, name="I"), duration=0.02,
+                               interval=0.01, name="st"),
+            True),
+    Example("stable", "fail",
+            lambda v: v.stable(lambda: v.approx(3.0, 3.3, abs_tol=0.05, name="V"), duration=0,
+                               name="st"),
+            False),
+    Example("stable", "hostile value",
+            lambda v: v.stable(lambda: v.greater(Hostile(), 1, name="h"), duration=0, name="st"),
+            False),
+    Example("stable", "sample returns a bool",
+            lambda v: v.stable(lambda: 3 > 2, duration=0, name="st"), False, True),
 ]
 
 
@@ -261,6 +317,12 @@ MUTABLES = [
                                           name="cd")),
     Mutable("guard", lambda v, data: v.guard([(data, "has data", v.length(data, 2, name="n"))],
                                              name="g")),
+    Mutable("eventually",
+            lambda v, data: v.eventually(lambda: v.equal(data, [1, 2], name="eq"), timeout=0,
+                                         name="ev")),
+    Mutable("stable",
+            lambda v, data: v.stable(lambda: v.length(data, 2, name="n"), duration=0,
+                                     name="st")),
 ]
 
 

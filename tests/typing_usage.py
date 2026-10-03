@@ -7,9 +7,11 @@ documented examples are known to work at runtime too.
 """
 from __future__ import annotations
 
+import datetime
 import enum
 import re
-from typing import Any, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Type
 
 import pytest
 
@@ -18,10 +20,13 @@ from pytest_verifier import (
     CheckDescriptor,
     ChecksFailedError,
     GuardBranch,
+    LimitRow,
+    Raises,
     Require,
     Verify,
     checks,
     get_check_results,
+    load_limits,
 )
 
 
@@ -127,6 +132,106 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     assert titles == ["3V3", "Load"]
 
 
+class SetpointError(ValueError):
+    """A DUT error with a field of its own."""
+
+    def __init__(self, volts: float) -> None:
+        super().__init__(f"{volts} V is out of range")
+        self.volts = volts
+
+
+def _set_voltage(volts: float) -> None:
+    raise SetpointError(volts)
+
+
+#: A limits table typed with the exported row type.
+LIMITS: Dict[str, LimitRow] = {
+    "Vout": {"expected": 3.3, "abs_tol": 0.05, "units": "V"},
+    "Ripple": {"high": 0.05, "units": "V"},
+    "Iq": {"low": 0.1, "high": 0.5, "inclusive": False, "units": "A"},
+    "FW": {"check": "matches", "pattern": "^v2"},
+}
+
+#: The README's table: not annotated, rows of mixed value types.
+README_LIMITS = {
+    "3V3": {"low": 3.2, "high": 3.4, "units": "V"},
+    "Vref": {"expected": 1.25, "abs_tol": 0.01, "units": "V"},
+    "Ripple": {"high": 20, "units": "mV"},
+    "FW": {"check": "matches", "pattern": r"\A2\.\d+\Z"},
+}
+
+
+def lab_api(fixture: Verify, folder: Path) -> None:
+    """``verify.raises``, ``eventually``/``stable``, ``limits`` and ``load_limits`` (0.10.0)."""
+    # raises: the block's exception is typed as the expected class.
+    with fixture.raises(SetpointError, match="out of range", name="Reject 7 V") as raised:
+        _set_voltage(7)
+    block: Raises[SetpointError] = raised
+    error: Optional[SetpointError] = block.value
+    assert error is not None and error.volts == 7
+    kind: Optional[Type[SetpointError]] = raised.type
+    assert kind is SetpointError
+    rejected: CheckDescriptor = raised.check
+    assert rejected.get("passed") is True
+    readings: Dict[str, float] = {}
+    with fixture.raises((KeyError, IndexError), name="Lookup") as lookup:
+        readings["missing"]  # noqa: B018
+    found: Optional[LookupError] = lookup.value
+    assert isinstance(found, KeyError)
+
+    # eventually/stable: a lambda sample, durations in seconds or as a timedelta.
+    settled: CheckDescriptor = fixture.eventually(
+        lambda: fixture.less(31.5, 40, name="Temperature", units="C"),
+        timeout=datetime.timedelta(seconds=0),
+        interval=0.05,
+        name="Cools down",
+    )
+    steady: CheckDescriptor = fixture.stable(
+        lambda: fixture.approx(3.31, 3.3, abs_tol=0.05, name="Vout", units="V"),
+        duration=0,
+        interval=datetime.timedelta(milliseconds=50),
+        name="Vout steady",
+    )
+    assert settled.get("passed") is True and steady.get("passed") is True
+    built: CheckDescriptor = checks.eventually(
+        lambda: checks.is_true(True, name="Ready"), timeout=0, name="Boots"
+    )
+    assert checks.evaluate(built)
+
+    # limits: a typed table in, the checks by name out.
+    made: Dict[str, CheckDescriptor] = fixture.limits(
+        {"Vout": 3.31, "Ripple": 0.02, "Iq": 0.3, "FW": "v2.4"}, LIMITS
+    )
+    assert [check.get("passed") for check in made.values()] == [True] * 4
+    partial = fixture.limits({"Vout": 3.31}, LIMITS, on_missing="ignore")
+    assert list(partial) == ["Vout"]
+    one_row: Dict[str, LimitRow] = {"Ripple": LIMITS["Ripple"]}
+    required: Dict[str, CheckDescriptor] = fixture.require.limits({"Ripple": 0.01}, one_row)
+    assert required["Ripple"].get("passed") is True
+    rails = fixture.limits({"3V3": 3.3, "Vref": 1.25, "Ripple": 12, "FW": "2.4"}, README_LIMITS)
+    assert all(check.get("passed") for check in rails.values())
+
+    # load_limits: a CSV file, selected by corner, with a column skipped.
+    path = folder / "limits.csv"
+    path.write_text(
+        "name,corner,low,high,units,notes\n"
+        "Vout,hot,3.2,3.4,V,wide\n"
+        "Vout,,3.25,3.35,V,\n"
+        "Ripple,cold,,0.05,V,\n",
+        encoding="utf-8",
+    )
+    rows: Dict[str, LimitRow] = load_limits(path, select={"corner": "hot"}, columns={"notes": None})
+    assert list(rows) == ["Vout"]
+    row: LimitRow = rows["Vout"]
+    source: Optional[str] = row.get("source")
+    assert row.get("low") == 3.2 and source is not None and source.endswith("limits.csv:2")
+    # Another corner gets the line that leaves it empty.
+    cold = load_limits(str(path), select={"corner": "cold"}, columns={"Notes": None})
+    loaded = fixture.limits({"Vout": 3.3, "Ripple": 0.01}, cold)
+    assert loaded["Vout"].get("passed") is True and loaded["Vout"].get("low") == 3.25
+    assert loaded["Ripple"].get("check_type") == "less_equal"
+
+
 def _connect(require: Require) -> CheckDescriptor:
     """A helper that receives ``verify.require``."""
     require.is_true(True, name="Powered")
@@ -157,6 +262,21 @@ def misuse() -> None:
     checks.require("not a check")  # type: ignore[arg-type]
     checks.require.equal(1, 1)  # type: ignore[call-arg]
     checks.section(["3V3"])  # type: ignore[arg-type]
+    checks.eventually(checks.less(1, 2, name="T"), timeout=1, name="E")  # type: ignore[arg-type]
+    checks.stable(lambda: checks.fail("x"), duration="2", name="S")  # type: ignore[arg-type]
+    checks.stable(lambda: checks.less(1, 2, name="T"), duration=1)  # type: ignore[call-arg]
+    checks.limits({"Vout": 3.3}, LIMITS, on_missing="skip")  # type: ignore[arg-type]
+    typo: LimitRow = {"hi": 0.05}  # type: ignore[typeddict-unknown-key]
+    text_limit: LimitRow = {"abs_tol": "0.05"}  # type: ignore[typeddict-item]
+    load_limits(5)  # type: ignore[arg-type]
+    load_limits("limits.csv", columns={"Min": 0})  # type: ignore[dict-item]
+    with checks.raises(ValueError, name="R") as raised:
+        pass
+    wrong: Optional[KeyError] = raised.value  # type: ignore[assignment]
+    wrong_type: Optional[Type[KeyError]] = raised.type  # type: ignore[assignment]
+    raised.value.args  # type: ignore[union-attr]  # noqa: B018
+    checks.raises("ValueError", name="R")  # type: ignore[arg-type]
+    checks.raises(ValueError)  # type: ignore[call-arg]
     from pytest_verifier import chekcs  # type: ignore[attr-defined]  # noqa: F401
     pytest_verifier.get_check_result  # type: ignore[attr-defined]  # noqa: B018
 

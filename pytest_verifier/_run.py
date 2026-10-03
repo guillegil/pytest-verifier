@@ -27,10 +27,13 @@ has its own: a check is in the sections of the code that records it.
 from __future__ import annotations
 
 import contextvars
+import functools
 import os
 import sys
 import threading
+from types import TracebackType
 from typing import (
+    AbstractSet,
     Any,
     Callable,
     ContextManager,
@@ -44,13 +47,15 @@ from typing import (
 )
 
 from . import _unused
-from ._checks import child_checks
+from ._checks import chosen_checks, child_checks
+from ._checks._base import CALLER
+from ._checks._sampling import Sampler, Try
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
-from ._location import NOWHERE, FunctionCode, Site, locate
-from ._render import utf8_safe
+from ._location import NOWHERE, FunctionCode, Site, locate, raised_at
+from ._render import safe_str, utf8_safe
 from ._settle import settle
-from ._verify import Sink, Verify
+from ._verify import Raises, Sink, Verify
 
 _CLOSED = (
     "pytest-verifier: this 'verify' fixture belongs to a test that has already finished, so the "
@@ -86,17 +91,99 @@ _SECTIONS: contextvars.ContextVar[Tuple[object, Tuple[Tuple[object, str], ...]]]
 )
 
 
+class _TryScope:
+    """One try of a sampling check (``eventually``, ``stable``): the checks recorded while its
+    sample ran, and the stops they would have made. A try that is dropped takes its checks
+    (and its ``verify.raises`` blocks) with it; the stops of the try that is kept are made once
+    the sampling check is recorded."""
+
+    __slots__ = ("key", "parent", "records", "deferred", "blocks", "opened")
+
+    def __init__(self, key: object, parent: Optional[_TryScope], opened: int) -> None:
+        self.key = key
+        #: The try this one runs in, when a sampling check is made inside a sample.
+        self.parent = parent
+        #: :attr:`Run.made` when the try started: later records were made while it ran.
+        self.opened = opened
+        self.records: List[CheckDescriptor] = []
+        #: ``(record, hard)`` of each failed check that would have stopped the test.
+        self.deferred: List[Tuple[CheckDescriptor, bool]] = []
+        #: The ``verify.raises`` blocks made while its sample ran.
+        self.blocks: List[Any] = []
+
+
+#: The try the code running now is in, if any. Keyed by run (:attr:`_TryScope.key`), so tries
+#: never reach another test; a thread starts outside it.
+_TRYING: contextvars.ContextVar[Optional[_TryScope]] = contextvars.ContextVar(
+    "pytest_verifier_trying", default=None
+)
+
+
+class _Call:
+    """A call of user code that takes what the code raises as a failure: a sample of a
+    sampling check, or a lazy child, guard condition or ``all_satisfy`` factory of a composite.
+
+    If the code raises, the ``verify.raises`` blocks it made go (it never reached their
+    ``with``), and the stops of the required blocks whose unexpected exception went on wait
+    for the check that takes the error (see :meth:`Recorder._wait`). If it returns, the code
+    caught those exceptions itself: they stop nothing, as at the top level of the test.
+    """
+
+    __slots__ = ("key", "parent", "blocks", "waiting")
+
+    def __init__(self, key: object, parent: Optional[_Call]) -> None:
+        self.key = key
+        self.parent = parent
+        #: The ``verify.raises`` blocks made during the call.
+        self.blocks: List[Any] = []
+        #: ``(record, hard)`` of each failed required block whose exception went on.
+        self.waiting: List[Tuple[CheckDescriptor, bool]] = []
+
+
+#: The innermost call of user code that a composite or a sampling check is making now. Keyed by
+#: run (:attr:`_Call.key`); a thread starts outside it.
+_CALLING: contextvars.ContextVar[Optional[_Call]] = contextvars.ContextVar(
+    "pytest_verifier_calling", default=None
+)
+
+
+class _Block:
+    """A ``verify.raises`` block not entered yet, with the phase, sections and order in which
+    it was made: the check of a block never entered keeps them (see
+    :meth:`Run.take_unjudged`)."""
+
+    __slots__ = ("raises", "phase", "section", "order")
+
+    def __init__(self, raises: Any, phase: str, section: Tuple[str, ...], order: int) -> None:
+        self.raises = raises
+        self.phase = phase
+        self.section = section
+        self.order = order
+
+
 class _Entry:
     """What the run knows about one recorded descriptor."""
 
-    __slots__ = ("record", "passed", "top_level", "judged")
+    __slots__ = (
+        "record", "passed", "order", "top_level", "judged", "counted", "pinned", "parent", "copy"
+    )
 
-    def __init__(self, record: CheckDescriptor, passed: bool) -> None:
+    def __init__(self, record: CheckDescriptor, passed: bool, order: int) -> None:
         self.record = record
         self.passed = passed
+        #: When it was made, among the run's records and blocks (see :attr:`Run.made`).
+        self.order = order
         #: Whether the record is in :attr:`Run.records`, that is, no composite absorbed it.
         self.top_level = True
         self.judged = False
+        #: Whether the composite that absorbed it selected it, so that it counts there.
+        self.counted = False
+        #: Whether ``record()`` asked for it on its own: a composite then leaves it there.
+        self.pinned = False
+        #: The entry of the composite that absorbed it.
+        self.parent: Optional[_Entry] = None
+        #: The copy ``record()`` made of it, when it counted nowhere.
+        self.copy: Optional[CheckDescriptor] = None
 
 
 class Run:
@@ -134,6 +221,10 @@ class Run:
         #: The errors :meth:`stop` raised, each with the check that made it stop.
         self._stops: List[Tuple[ChecksFailedError, CheckDescriptor]] = []
         self._entries: Dict[int, _Entry] = {}
+        #: The ``verify.raises`` blocks made and not entered yet (see :meth:`take_unjudged`).
+        self.blocks: List[_Block] = []
+        #: How many records and blocks were made, dropped ones included: the order of the next.
+        self.made = 0
         #: Identifies this run's sections in :data:`_SECTIONS` without keeping the run alive.
         self.key = object()
 
@@ -166,30 +257,93 @@ class Run:
         passed: bool,
         absorb: Iterable[Any] = (),
         site: Site = NOWHERE,
+        chosen: Iterable[Any] = (),
     ) -> None:
         """Record a check at the top level, first absorbing the children of a composite (see
         :meth:`absorb`)."""
-        location, called_from = site
         with self.lock:
             self.ensure_open()
-            self.absorb(absorb)
-            record["phase"] = self.phase
-            # A copy of another record brings that record's site and section; this one may
-            # have none.
-            record.pop("location", None)
-            record.pop("called_from", None)
-            record.pop("section", None)
-            if location is not None:
-                record["location"] = location
-            if called_from is not None:
-                record["called_from"] = called_from
-            section = self.section_path()
-            if section:
-                record["section"] = list(section)
-            self._entries[id(record)] = _Entry(record, passed)
+            entry = _Entry(record, passed, self.made)
+            self.made += 1
+            self.absorb(absorb, chosen, entry)
+            _stamp(record, site, self.phase, self.section_path())
+            self._entries[id(record)] = entry
             self.records.append(record)
+            scope = self.trying()
+            while scope is not None:
+                scope.records.append(record)
+                scope = scope.parent
 
-    def absorb(self, children: Iterable[Any]) -> None:
+    def add_block(self, raises: Any) -> None:
+        """Keep the ``verify.raises`` block made now until it is entered (see
+        :meth:`take_unjudged`). One made in a try goes with that try, and one made by user code
+        that a composite calls goes when that code raises."""
+        with self.lock:
+            self.ensure_open()
+            self.blocks.append(_Block(raises, self.phase, self.section_path(), self.made))
+            self.made += 1
+            scope = self.trying()
+            while scope is not None:
+                scope.blocks.append(raises)
+                scope = scope.parent
+            call = self.calling()
+            while call is not None:
+                call.blocks.append(raises)
+                call = call.parent
+
+    def drop_blocks(self, blocks: Iterable[Any]) -> None:
+        """Forget these ``verify.raises`` blocks: entered, or made by code that will never reach
+        their ``with`` (a dropped try, user code that raised)."""
+        with self.lock:
+            ids = {id(raises) for raises in blocks}
+            if ids:
+                self.blocks = [block for block in self.blocks if id(block.raises) not in ids]
+
+    def calling(self) -> Optional[_Call]:
+        """The innermost call of user code that this run's composite or sampling check is
+        making now, if any."""
+        call = _CALLING.get()
+        return call if call is not None and call.key is self.key else None
+
+    def trying(self) -> Optional[_TryScope]:
+        """The try of this run's sampling check the code running now is in, if any."""
+        scope = _TRYING.get()
+        return scope if scope is not None and scope.key is self.key else None
+
+    def adopt(self, record: CheckDescriptor, scope: _TryScope) -> None:
+        """Add *record* to the try *scope* (and the tries it runs in) when it was recorded
+        while that try ran, but outside it: on another thread, which starts outside every try.
+        A sample that returns such a check makes it in the try all the same."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is None or entry.record is not record or entry.order < scope.opened:
+                return  # recorded before the try: not the try's to drop
+            if any(known is record for known in scope.records):
+                return
+            parent: Optional[_TryScope] = scope
+            while parent is not None:
+                parent.records.append(record)
+                parent = parent.parent
+
+    def failed(self, records: Iterable[Any]) -> List[CheckDescriptor]:
+        """Those of *records* that are failed checks at the top level: the ones that count on
+        their own (no composite took them in, and they were not dropped)."""
+        with self.lock:
+            found = []
+            for record in records:
+                entry = self._entries.get(id(record))
+                if (
+                    entry is not None
+                    and entry.record is record
+                    and entry.top_level
+                    and not entry.passed
+                ):
+                    found.append(record)
+            return found
+
+    def absorb(
+        self, children: Iterable[Any], chosen: Iterable[Any] = (), parent: Optional[_Entry] = None
+    ) -> None:
         """Take the recorded checks passed to a composite as children out of the top level.
 
         A child belongs to the composite whenever it was recorded, so building ``cases`` or
@@ -200,11 +354,15 @@ class Run:
         A check that stopped the test stays at the top level too: the end of the phase must
         judge it, and the summary names it as the check the test stopped at. So does a check
         an earlier phase judged (a teardown composite of checks made in the test body): it was
-        reported, and numbered, with that phase.
+        reported, and numbered, with that phase. And so does a check ``record()`` pinned.
+
+        *chosen* are the children the composite selected: they count there (see
+        :meth:`counted`).
         """
         with self.lock:
             ids = set()
             triggers = {id(trigger) for _, trigger in self._stops}
+            selected = {id(child) for child in chosen}
             for child in children:
                 entry = self._entries.get(id(child))
                 if (
@@ -212,11 +370,33 @@ class Run:
                     or entry.record is not child
                     or not entry.top_level
                     or entry.judged
+                    or entry.pinned
                     or id(child) in triggers
                 ):
                     continue
                 entry.top_level = False
+                entry.counted = id(child) in selected
+                entry.parent = parent
                 ids.add(id(child))
+            self._remove(ids)
+
+    def discard(self, records: Iterable[Any]) -> None:
+        """Forget *records* (the checks of a dropped try): out of the top level and out of the
+        run, as if never made."""
+        with self.lock:
+            ids = set()
+            for record in records:
+                entry = self._entries.get(id(record))
+                if entry is None or entry.record is not record:
+                    continue
+                del self._entries[id(record)]
+                if entry.top_level:
+                    ids.add(id(record))
+            self._remove(ids)
+
+    def _remove(self, ids: AbstractSet[int]) -> None:
+        """Take the records with these ids out of :attr:`records`."""
+        with self.lock:
             if not ids:
                 return
             # Children are usually the most recent records: find the oldest one from the end,
@@ -229,13 +409,45 @@ class Run:
                     remaining -= 1
             records[start:] = [record for record in records[start:] if id(record) not in ids]
 
-    def take_unjudged(self) -> Tuple[int, List[CheckDescriptor]]:
+    def take_unjudged(
+        self, exc: Optional[BaseException] = None
+    ) -> Tuple[int, List[CheckDescriptor]]:
         """Top-level checks not judged by an earlier phase, each with its private verdict.
 
         Returns the index of the first of them in :attr:`records` too. They always come last:
         records are appended, and a phase judges every record made before its end.
+
+        A ``verify.raises`` block that was never entered is recorded first, as a failed check,
+        when the phase ended without an exception (*exc*, the one it ended with): else the code
+        may never have reached its ``with`` statement (a stop, an error, a skip). The check
+        keeps the phase, sections and site where the block was made, and its place among the
+        records made around it.
         """
-        return self._unjudged(take=True)
+        with self.lock:
+            blocks, self.blocks = self.blocks, []
+            if exc is None:
+                for block in blocks:
+                    self._add_unentered(block)
+            return self._unjudged(take=True)
+
+    def _add_unentered(self, block: _Block) -> None:
+        """Record the failed check of *block* if it was never entered. Also once the run is
+        closed: the end of fixture teardown judges the checks after closing it."""
+        unentered = block.raises.unentered()
+        if unentered is None:
+            return
+        descriptor, site = unentered
+        record, passed = settle(descriptor, self.known)
+        _stamp(record, site, block.phase, block.section)
+        self._entries[id(record)] = _Entry(record, passed, block.order)
+        # Before the records made after the block, never before a judged one.
+        records, index = self.records, len(self.records)
+        while index > 0:
+            before = self._entries[id(records[index - 1])]
+            if before.judged or before.order < block.order:
+                break
+            index -= 1
+        records.insert(index, record)
 
     def _unjudged(self, take: bool) -> Tuple[int, List[CheckDescriptor]]:
         with self.lock:
@@ -246,6 +458,42 @@ class Run:
                     entry.judged = take
                     pending.append(dict(record, passed=entry.passed))
             return len(self.records) - len(pending), pending  # type: ignore[return-value]
+
+    def uncounted(self, record: CheckDescriptor) -> bool:
+        """Whether *record* is a recorded check that counts nowhere: a composite took it in
+        without selecting it (an unselected case), or selected it but counts nowhere itself."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is None or entry.record is not record:
+                return False
+            while not entry.top_level:
+                parent = entry.parent
+                if not entry.counted or parent is None:
+                    return True
+                if self._entries.get(id(parent.record)) is not parent:
+                    return True  # its composite was dropped with a try
+                entry = parent
+            return False
+
+    def copy_of(self, record: CheckDescriptor) -> Optional[CheckDescriptor]:
+        """The copy :meth:`Recorder.record` made of *record*, if it is still recorded."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            copy = None if entry is None or entry.record is not record else entry.copy
+            return copy if copy is not None and self.known(copy) is not None else None
+
+    def keep_copy(self, record: CheckDescriptor, copy: CheckDescriptor) -> None:
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is not None and entry.record is record:
+                entry.copy = copy
+
+    def pin(self, record: CheckDescriptor) -> None:
+        """Keep the top-level *record* at the top level when a composite takes it in."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is not None and entry.record is record and entry.top_level:
+                entry.pinned = True
 
     def pending(self, record: CheckDescriptor) -> bool:
         """Whether *record* is a top-level check that the end of this phase will judge."""
@@ -343,6 +591,22 @@ class _Section:
         # leave here.
 
 
+def _stamp(record: CheckDescriptor, site: Site, phase: str, section: Tuple[str, ...]) -> None:
+    """Set where *record* was made: its phase, site and sections."""
+    location, called_from = site
+    record["phase"] = phase
+    # A copy of another record brings that record's site and section; this one may have none.
+    record.pop("location", None)
+    record.pop("called_from", None)
+    record.pop("section", None)
+    if location is not None:
+        record["location"] = location
+    if called_from is not None:
+        record["called_from"] = called_from
+    if section:
+        record["section"] = list(section)
+
+
 def cause_of(exc: BaseException) -> Optional[BaseException]:
     """What *exc* is chained to, so that an error raised in its place keeps that chain."""
     if exc.__cause__ is not None or exc.__suppress_context__:
@@ -355,7 +619,14 @@ class Recorder(Sink):
 
     A *hard* recorder (``verify.require``) stops the test when a check fails; with fail-fast
     on, every recorder does, except in teardown (and a ``TestCase``'s cleanup): the test is
-    over by then, and stopping would only cut the cleanup short.
+    over by then, and stopping would only cut the cleanup short. Inside a try of a sampling
+    check, the stop waits until that check is recorded, and is dropped with the try.
+
+    A ``verify.raises`` block that gets an unexpected exception lets it go on instead of
+    stopping: it stops the test itself. When a try, a lazy child, a guard condition or an
+    ``all_satisfy`` factory takes it as a failure, the stop waits until that try's sampling
+    check, or that composite, is recorded (see :class:`_Call`); when the user's code catches it,
+    nothing stops, as at the top level.
     """
 
     def __init__(self, run: Run, hard: bool = False) -> None:
@@ -368,22 +639,85 @@ class Recorder(Sink):
     def section(self, title: str) -> ContextManager[None]:
         return _Section(self._run, title)
 
-    def _enforce(self, record: CheckDescriptor, passed: bool) -> None:
+    def _enforce(self, record: CheckDescriptor, passed: bool, hard: Optional[bool] = None) -> None:
+        """Stop the test at the failed *record* if it is required (*hard*: this recorder's
+        default) or fail-fast applies."""
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         if passed:
             return
         run = self._run
-        if self._hard or (run.fail_fast and run.phase != "teardown" and not run.cleaning):
+        hard = self._hard if hard is None else hard
+        scope = run.trying()
+        if scope is not None:
+            scope.deferred.append((record, hard))
+            return
+        if hard or (run.fail_fast and run.phase != "teardown" and not run.cleaning):
             run.stop(record)
 
-    def check(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+    def block(self, raises: Any) -> Site:
+        run = self._run
+        run.add_block(raises)
+        return run.locate()
+
+    def entered(self, raises: Any) -> None:
+        self._run.drop_blocks((raises,))
+
+    def origin(self, traceback: Optional[TracebackType]) -> Optional[str]:
+        return raised_at(traceback, self._run.rootdir)
+
+    def check(self, descriptor: CheckDescriptor, site: Optional[Site] = None) -> CheckDescriptor:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
         run.ensure_open()
         record, passed = settle(descriptor, run.known)
-        run.add(record, passed, site=run.locate())
+        run.add(record, passed, site=run.locate() if site is None else site)
         self._enforce(record, passed)
         return record
+
+    def ended(
+        self,
+        descriptor: CheckDescriptor,
+        site: Any,
+        keep: Callable[[CheckDescriptor], None],
+        stop: bool,
+    ) -> None:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        run.ensure_open()
+        record, passed = settle(descriptor, run.known)
+        run.add(record, passed, site=site)
+        keep(record)
+        if stop:
+            self._enforce(record, passed)
+        elif not passed:
+            self._wait(record, self._hard)
+
+    def _wait(self, record: CheckDescriptor, hard: bool) -> None:
+        """Keep the stop of the failed *record*, whose exception goes on, for the call of user
+        code running now (see :class:`_Call`): if that call raises, the try or the composite
+        that takes the error makes the stop once recorded, unless the record is no longer
+        pending then. Outside such a call, the exception stops the test itself."""
+        call = self._run.calling()
+        if call is not None:
+            call.waiting.append((record, hard))
+
+    def batch(self, descriptors: List[CheckDescriptor]) -> List[CheckDescriptor]:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        run.ensure_open()
+        site = run.locate()
+        recorded = []
+        for descriptor in descriptors:
+            record, passed = settle(descriptor, run.known)
+            run.add(record, passed, site=site)
+            recorded.append((record, passed))
+        # Every row first, so that a stop lists the whole table; then the first failed row
+        # stops the test if it must.
+        for record, passed in recorded:
+            if not passed:
+                self._enforce(record, passed)
+                break
+        return [record for record, _ in recorded]
 
     def composite(
         self, build: Callable[[], CheckDescriptor], arguments: Sequence[Any]
@@ -391,8 +725,14 @@ class Recorder(Sink):
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
         run.ensure_open()
+        # The stops of the calls of user code that raised (see _Call), made once recorded.
+        waiting: List[Tuple[CheckDescriptor, bool]] = []
+        token = CALLER.set(functools.partial(self._call, waiting))
         try:
-            descriptor = build()
+            try:
+                descriptor = build()
+            finally:
+                CALLER.reset(token)
         except BaseException:
             # Invalid arguments, or a lazy child or condition that skipped or failed the test:
             # the checks passed to this call were never selected, so they must not linger as
@@ -400,11 +740,83 @@ class Recorder(Sink):
             loose = loose_children(*arguments)
             _unused.used(*loose)
             run.absorb(loose)
+            for each, hard in waiting:  # for the try or composite that takes this error, if any
+                self._wait(each, hard)
             raise
-        _unused.used(*child_checks(descriptor))
+        record = self._add_composite(descriptor)
+        # A required ``raises`` block whose unexpected exception a lazy child, condition or
+        # factory took as a failure stops the test now.
+        for each, hard in waiting:
+            if run.pending(each):
+                self._enforce(each, False, hard)
+        return record
+
+    def _call(
+        self,
+        waiting: List[Tuple[CheckDescriptor, bool]],
+        function: Callable[..., Any],
+        args: Tuple[Any, ...],
+        check: bool,
+    ) -> Any:
+        """Make a call of user code for the composite being built (see :class:`_Call` and
+        :func:`~pytest_verifier._checks._base.call_user`): if it raises, its blocks go and its
+        stops go to *waiting*, the composite's. A block it returns in place of a check
+        (*check*) is reported by the composite's error, not as never used too."""
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        call = _Call(run.key, run.calling())
+        token = _CALLING.set(call)
+        try:
+            returned = function(*args)
+        except BaseException:
+            run.drop_blocks(call.blocks)
+            waiting.extend(call.waiting)
+            raise
+        finally:
+            _CALLING.reset(token)
+        if check and isinstance(returned, Raises):
+            run.drop_blocks((returned,))
+        return returned
+
+    def _add_composite(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        children = child_checks(descriptor)
+        _unused.used(*children)
         record, passed = settle(descriptor, run.known)
-        run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
+        run.add(
+            record, passed, absorb=children, chosen=chosen_checks(descriptor), site=run.locate()
+        )
         self._enforce(record, passed)
+        return record
+
+    def sampling(
+        self, build: Callable[[Sampler], CheckDescriptor], arguments: Sequence[Any]
+    ) -> CheckDescriptor:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        run.ensure_open()
+        sampler = _RecordingSampler(self)
+        try:
+            descriptor = build(sampler)
+        except BaseException:
+            # Interrupted (pytest.skip in a sample, Ctrl-C) or invalid arguments: the tries were
+            # only tries, so they go, and a skip stays a skip.
+            for attempt in list(sampler.tries):
+                sampler.drop(attempt)
+            loose = loose_children(*arguments)
+            _unused.used(*loose)
+            run.absorb(loose)
+            raise
+        record = self._add_composite(descriptor)
+        # The checks the kept try made besides the one it returned stay on their own; those
+        # that would have stopped the test stop it now (or wait for an outer try).
+        for attempt in sampler.tries:
+            if attempt.scope is None:
+                continue
+            for deferred, hard in attempt.scope.deferred:
+                if run.pending(deferred):
+                    self._enforce(deferred, False, hard)
         return record
 
     def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
@@ -415,19 +827,123 @@ class Recorder(Sink):
         hit = run.known(descriptor)
         if hit is not None:
             passed, record = hit
-            if self._hard and not passed:  # fail-fast already stopped when it was recorded
+            if run.uncounted(record):
+                # It counts nowhere (a composite took it in without selecting it): recording it
+                # asks for it on its own, so record a copy, as ``dict(check)`` would have kept.
+                # Once: recording it again is recording that copy again.
+                copy = run.copy_of(record)
+                if copy is None:
+                    fresh: CheckDescriptor = dict(record)  # type: ignore[assignment]
+                    run.add(fresh, passed, site=run.locate())
+                    run.pin(fresh)  # asked for on its own: no later composite takes it
+                    run.keep_copy(record, fresh)
+                    self._enforce(fresh, passed)
+                    return fresh
+                record = copy
+            run.pin(record)
+            # Fail-fast already stopped when it was recorded.
+            if self._hard and not passed:
                 if not run.pending(record):
-                    # A composite absorbed it, or an earlier phase judged it: record a copy,
-                    # so that the error names it and this phase fails too.
+                    # An earlier phase judged it, or a composite counts it: record a copy, so
+                    # that the error names it and this phase fails too.
                     record = dict(record)  # type: ignore[assignment]
                     run.add(record, False, site=run.locate())
-                run.stop(record)
+                self._enforce(record, False, True)
             return record
         _unused.used(descriptor)
         record, passed = settle(descriptor, run.known)
-        run.add(record, passed, absorb=child_checks(descriptor), site=run.locate())
+        run.add(
+            record,
+            passed,
+            absorb=child_checks(descriptor),
+            chosen=chosen_checks(descriptor),
+            site=run.locate(),
+        )
         self._enforce(record, passed)
         return record
+
+
+class _RecordingSampler(Sampler):
+    """The tries of the fixture's ``eventually``/``stable``: each runs in its own try scope, so
+    that dropping it takes every check it recorded, and the check it returned if another thread
+    recorded that one while it ran. Other checks recorded on plain threads are not in it."""
+
+    def __init__(self, recorder: Recorder) -> None:
+        super().__init__()
+        self._recorder = recorder
+        self._run = recorder._run
+        #: The tries taken so far and not dropped: a dropped one is forgotten at once.
+        self.tries: List[Try] = []
+
+    def call(self, sample: Any, attempt: Try) -> Any:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        scope = _TryScope(run.key, run.trying(), run.made)
+        attempt.scope = scope
+        self.tries.append(attempt)
+        call = _Call(run.key, run.calling())
+        token = _TRYING.set(scope)
+        calling = _CALLING.set(call)
+        try:
+            returned = sample()
+        except BaseException:
+            # A failed try (or an interrupted sampling): the sample never reached the with of
+            # the blocks it made, so they go, even from the try that is kept; the stops of its
+            # required blocks wait with the try's (made if it is kept).
+            run.drop_blocks(call.blocks)
+            scope.deferred.extend(call.waiting)
+            raise
+        finally:
+            _CALLING.reset(calling)
+            _TRYING.reset(token)
+        if isinstance(returned, Raises):
+            # The sampling check says so (not a check): not reported as never used too.
+            self._recorder.entered(returned)
+        return returned
+
+    def keep(self, check: Any, attempt: Try) -> Any:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        if self._run.known(check) is not None:
+            # Made on another thread (a worker that reads the instrument): the try's still.
+            self._run.adopt(check, attempt.scope)
+            return check
+        # Built with ``checks``: recorded in the try, like a check the sample recorded.
+        token = _TRYING.set(attempt.scope)
+        try:
+            return self._recorder.record(check)
+        finally:
+            _TRYING.reset(token)
+
+    def origin(self, traceback: Optional[TracebackType]) -> Optional[str]:
+        return raised_at(traceback, self._run.rootdir)
+
+    def failed_beside(self, check: Any, attempt: Try) -> List[str]:
+        names = []
+        for record in self._run.failed(attempt.scope.records):
+            if record is not check:
+                # Text, as summaries name it: a hand-built check may have another name, or none.
+                name = record.get("name", "")
+                names.append(name if isinstance(name, str) else safe_str(name))
+        return names
+
+    def drop(self, attempt: Try) -> None:
+        scope = attempt.scope
+        if scope is None:
+            return
+        attempt.scope = None
+        self.tries.remove(attempt)
+        run = self._run
+        with run.lock:
+            run.discard(scope.records)
+            # The tries this one runs in (a sampling check in a sample) list its checks too:
+            # forget them there as well, so that a long inner sampling keeps no dropped try.
+            parent = scope.parent
+            while parent is not None:
+                parent.records = [
+                    record for record in parent.records if run.known(record) is not None
+                ]
+                parent = parent.parent
+        run.drop_blocks(scope.blocks)
 
 
 def recording_verify(run: Run) -> Verify:
