@@ -8,11 +8,11 @@ verdict is decided then, from the live exception, and stored (``type_check``,
 from __future__ import annotations
 
 import re
-from typing import Any, List, Mapping, Optional, Tuple, Type, Union
+from typing import Any, Mapping, Optional, Tuple, Type, Union
 
 from .._descriptors import CheckDescriptor, qualified_type_name, require_name, type_display
 from .._render import describe_error, render_text, safe_repr
-from ._base import CheckType, register
+from ._base import CheckType, passes_through, register
 from ._values import pattern_parts, regex_text, subject
 
 #: What ``raises`` expects: an exception class, or a tuple of them.
@@ -72,32 +72,10 @@ def exception_text(exc: BaseException) -> Optional[str]:
 
 
 def handles(exc: BaseException, expected: Tuple[type, ...]) -> bool:
-    """Whether a ``raises`` block ends in a check when it raised *exc*: the expected exception
-    or any other ``Exception``. Other exceptions (``KeyboardInterrupt``, ``pytest.skip``) and a
-    required check that stopped the test, also inside an exception group, go on unchanged."""
-    if _stops(exc):
-        return False
-    try:
-        return isinstance(exc, expected) or isinstance(exc, Exception)
-    except Exception:  # pragma: no cover - an exception class whose isinstance check raises
-        return isinstance(exc, Exception)
-
-
-def _stops(exc: BaseException) -> bool:
-    """Whether *exc* is, or groups, the error of a check that stopped the test."""
-    queue: List[BaseException] = [exc]
-    seen = set()
-    while queue:
-        link = queue.pop()
-        if id(link) in seen:
-            continue
-        seen.add(id(link))
-        if getattr(link, "stops_test", False) is True:
-            return True
-        members = getattr(link, "exceptions", None)
-        if isinstance(members, tuple):  # an exception group
-            queue.extend(member for member in members if isinstance(member, BaseException))
-    return False
+    """Whether a ``raises`` block ends in a check when it raised *exc*. What ends the test or
+    the session (``pytest.skip``, ``pytest.exit``, ``KeyboardInterrupt``, a required check that
+    stopped the test) goes on unchanged unless the expected types name it."""
+    return not passes_through(exc, expected)
 
 
 def expected_instance(exc: Optional[BaseException], expected: Tuple[type, ...]) -> bool:

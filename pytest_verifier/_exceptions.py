@@ -137,7 +137,7 @@ def junit_property(index: int, result: Mapping[str, Any]) -> Tuple[str, str]:
     return f"verify[{index}] {name}", f"{'passed' if passed else 'failed'}: {detail}"
 
 
-def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> str:
+def failure_header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> str:
     """``N of M checks failed``, followed by the first failure, so that the first line, which
     ``-r`` summaries and junit messages show, says what failed. When a check stopped the test,
     it is named instead: ``N of M checks failed, stopped at [k]: …``."""
@@ -190,7 +190,7 @@ def format_summary(
         except Exception as exc:
             return f"  {marker} [{idx}] <check could not be rendered: {describe_error(exc)}>"
 
-    lines: List[str] = [_header(failed, len(results), stopped_at), ""]
+    lines: List[str] = [failure_header(failed, len(results), stopped_at), ""]
     lines.extend(line("✗", idx, r, False) for idx, r in failed)
     if passed:
         shown = passed if max_passed is None else passed[: max(max_passed, 0)]

@@ -8,7 +8,9 @@ descriptor (``build``), comparing the user's values (``compare``), rendering the
 """
 from __future__ import annotations
 
+import bdb
 import math
+import unittest
 from fractions import Fraction
 from typing import (
     Any,
@@ -23,11 +25,55 @@ from typing import (
     Union,
 )
 
+import pytest
+
 from .._descriptors import is_descriptor
 from .._render import describe_error, escape, render_value, safe_repr, safe_str
 
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
 Verdict = Tuple[bool, Optional[str]]
+
+#: ``Exception`` subclasses that end the test or the session, not a check: ``pytest.exit``
+#: (also quitting the debugger), ``bdb.BdbQuit`` and ``unittest.SkipTest``.
+_ALWAYS_ON: Tuple[type, ...] = (pytest.exit.Exception, bdb.BdbQuit, unittest.SkipTest)
+
+
+def stops_test(exc: BaseException) -> bool:
+    """Whether *exc* is, or groups, the error of a check that stopped the test
+    (``verify.require``, fail-fast)."""
+    queue: List[BaseException] = [exc]
+    seen = set()
+    while queue:
+        link = queue.pop()
+        if id(link) in seen:
+            continue
+        seen.add(id(link))
+        if getattr(link, "stops_test", False) is True:
+            return True
+        members = getattr(link, "exceptions", None)
+        if isinstance(members, tuple):  # an exception group
+            queue.extend(member for member in members if isinstance(member, BaseException))
+    return False
+
+
+def passes_through(exc: BaseException, expected: Tuple[type, ...] = ()) -> bool:
+    """Whether *exc* goes on through code that takes errors as a failed check (a lazy child, a
+    condition, a factory, a sample, a ``raises`` block): a stop error, an exception that is not
+    an ``Exception`` (``pytest.skip``, ``KeyboardInterrupt``), or one of :data:`_ALWAYS_ON`.
+
+    The last two are taken when an *expected* class names them: their own class or a base of
+    it other than ``Exception`` and ``BaseException``.
+    """
+    if stops_test(exc):
+        return True
+    if isinstance(exc, Exception) and not isinstance(exc, _ALWAYS_ON):
+        return False
+    try:
+        return not any(
+            isinstance(exc, cls) and cls not in (Exception, BaseException) for cls in expected
+        )
+    except Exception:  # pragma: no cover - a misbehaving __instancecheck__
+        return True
 
 class CheckType:
     """One kind of check. Subclasses set ``check_type`` and implement ``compare`` and ``detail``.

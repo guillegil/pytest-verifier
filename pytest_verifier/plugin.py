@@ -64,6 +64,7 @@ from . import _unused
 from ._descriptors import CheckDescriptor
 from ._exceptions import (
     ChecksFailedError,
+    failure_header,
     for_terminal,
     format_summary,
     headline,
@@ -997,6 +998,7 @@ def _decorate_report(
     if checks:
         # JSON-safe, so it survives the serialization of reports (pytest-xdist).
         report.verify_checks = checks  # type: ignore[attr-defined]
+        _name_failures_in_xfail(report, checks)
     section = run.report_sections.pop(call.when, None)
     if section is not None and report.failed:
         longrepr = report.longrepr
@@ -1009,6 +1011,18 @@ def _decorate_report(
     if call.when == "teardown":
         # The run's records stay available through the results stash; drop the rest.
         del item.stash[_run_key]
+
+
+def _name_failures_in_xfail(report: pytest.TestReport, checks: List[Any]) -> None:
+    """Add the first line of the summary to the reason of an xfailed phase whose checks
+    failed: ``-rx`` and junitxml show only the reason, and the failures must not vanish."""
+    reason = getattr(report, "wasxfail", None)
+    if not report.skipped or not isinstance(reason, str):
+        return
+    failed = [(i, check) for i, check in enumerate(checks) if check.get("passed") is not True]
+    if failed:
+        header = failure_header(failed, len(checks))
+        report.wasxfail = f"{reason} [{header}]"  # type: ignore[attr-defined]
 
 
 #: The report section that holds the soft summary when the phase also raised.

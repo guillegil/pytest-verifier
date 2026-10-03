@@ -86,6 +86,26 @@ class CheckDescriptor(_CheckIdentity, total=False):
     branches: List[GuardBranch]
     matched_index: Optional[int]
     msg: str
+    #: ``raises``: the pattern, what was raised (``None``: nothing) and where.
+    match: Optional[str]
+    raised_type: Optional[str]
+    raised_message: Optional[str]
+    raised_at: Optional[str]
+    type_check: bool
+    match_check: Optional[bool]
+    #: ``eventually``/``stable``: the time limits (seconds), how many tries were taken, the
+    #: start of the try that passed (``eventually``), the seconds it took, and a bounded
+    #: ``[seconds, value, passed]`` per try.
+    timeout: float
+    duration: float
+    interval: float
+    tries: int
+    settled_at: Optional[float]
+    elapsed: float
+    trace: List[List[Any]]
+    sample_error: str
+    #: ``verify.limits``: the row's ``source``, such as ``"limits.csv:12"``.
+    limit_source: str
 
 
 class GuardBranch(typing.TypedDict):

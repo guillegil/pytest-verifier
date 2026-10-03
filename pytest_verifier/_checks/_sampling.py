@@ -24,8 +24,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 from .._descriptors import CheckDescriptor, is_descriptor, is_real, not_a_check, require_name
 from .._location import ours
 from .._render import describe_error, render_text, safe_repr
-from ._base import CompositeType, child_detail, judge, lookup, margin, register
-from ._composites import _stops_test
+from ._base import CompositeType, child_detail, judge, lookup, margin, passes_through, register
 
 #: The clock and the sleep of the sampling checks (tests replace them).
 _clock: Callable[[], float] = time.monotonic
@@ -85,7 +84,7 @@ class Sampler:
         try:
             returned = self.call(sample, attempt)
         except Exception as exc:
-            if _stops_test(exc):
+            if passes_through(exc):
                 raise
             where = self.origin(exc.__traceback__)
             attempt.error = f"raised {describe_error(exc)}" + (f" (at {where})" if where else "")

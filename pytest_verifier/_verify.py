@@ -9,6 +9,7 @@ the test, pytest's tracebacks and ``--pdb`` show the test's line, not these fram
 """
 from __future__ import annotations
 
+import datetime
 import re
 from types import TracebackType
 from typing import (
@@ -659,37 +660,53 @@ class Verify:
         self,
         sample: Callable[[], CheckDescriptor],
         *,
-        timeout: float,
-        interval: float = 0.1,
+        timeout: Union[float, datetime.timedelta],
+        interval: Union[float, datetime.timedelta] = 0.1,
         name: str,
     ) -> CheckDescriptor:
         """Check that a check passes within *timeout* seconds, trying it again until it does.
 
-        *sample* is a zero-argument callable that makes the check, such as
+        *sample* is a zero-argument callable that reads the value and makes the check, such as
         ``lambda: verify.less(read_temp(), 40, name="Temperature")``. It is called at once,
-        then about every *interval* seconds (from the start of one try to the next), until a
-        check it makes passes or *timeout* has passed; the last try is at the timeout::
+        then each try starts *interval* seconds after the start of the one before (at once when
+        that one took longer), until a check it makes passes or *timeout* has passed; the last
+        try starts at the timeout::
 
             verify.eventually(lambda: verify.equal(dut.state(), "READY", name="State"),
                               timeout=5, name="Boots")
 
         The check passes when a try passed, and keeps that try, or the last one, as its child.
-        It records ``tries`` and ``elapsed`` (seconds). A try whose sample raises an
-        ``Exception`` failed (polling goes on), and a sample that returns something that is not
-        a check makes the check fail at once. Failed tries never stop the test, even through
-        ``verify.require`` or fail-fast: only this check's own verdict can. Every check the
-        sample returns belongs to this check; other checks the sample records stay on their own.
+        It records ``tries``, ``elapsed`` and ``settled_at`` (seconds from the call to the
+        start of the passing try), and a ``trace`` of ``[seconds, value, passed]`` for the
+        first and the last 50 tries. A sample that raises an ``Exception`` fails that try and
+        the tries go on; one raised by pytest-verifier itself (a usage error), a sample that
+        returns something that is not a check, or the same check again, fails the check at
+        once. ``pytest.skip``, ``pytest.exit`` and ``KeyboardInterrupt`` go on, and no try
+        is kept.
 
-        It waits with ``time.sleep``: in an ``async`` test, it blocks the event loop.
+        Every check recorded while a try runs belongs to it: a try that is not kept is dropped
+        with its checks, so failed tries never fail or stop the test. The kept try's other
+        checks stay on their own, and ``verify.require``/fail-fast apply to them once the
+        check is recorded. With ``pytest_verifier.checks`` each try is evaluated when it is
+        taken.
+
+        It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
+        the event loop (a ``RuntimeWarning`` says so).
 
         Args:
-            sample: A callable with no arguments that returns a check.
-            timeout: How long to keep trying, in seconds (0: try once).
-            interval: Seconds from one try to the next (more than 0).
+            sample: A callable with no arguments that reads the value and returns a check.
+            timeout: How long to keep trying, in seconds or a ``timedelta`` (0: try once).
+            interval: Seconds from the start of one try to the next (more than 0).
             name: Human-readable label for the check.
 
         Returns:
             A :class:`CheckDescriptor` dict.
+
+        Raises:
+            TypeError: If *sample* is not a callable, or *timeout* or *interval* is not a
+                number of seconds.
+            ValueError: If *timeout* is negative, *interval* is not more than 0, or either is
+                not finite.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.sampling(
@@ -703,38 +720,46 @@ class Verify:
         self,
         sample: Callable[[], CheckDescriptor],
         *,
-        duration: float,
-        interval: float = 0.1,
+        duration: Union[float, datetime.timedelta],
+        interval: Union[float, datetime.timedelta] = 0.1,
         name: str,
     ) -> CheckDescriptor:
         """Check that a check keeps passing for *duration* seconds, trying it again and again.
 
-        *sample* is a zero-argument callable that makes the check, such as
+        *sample* is a zero-argument callable that reads the value and makes the check, such as
         ``lambda: verify.approx(psu.vout(), 3.3, abs_tol=0.05, name="Vout", units="V")``.
-        It is called at once, then about every *interval* seconds (from the start of one try
-        to the next), until *duration* has passed (the last try is at its end) or a check it
-        makes fails::
+        It is called at once, then each try starts *interval* seconds after the start of the
+        one before (at once when that one took longer), until a check it makes fails or a try
+        has started at or after *duration*, so it is tried at least twice when *duration* is
+        more than 0::
 
             verify.stable(lambda: verify.less(ripple(), 0.05, name="Ripple", units="V"),
                           duration=2, interval=0.2, name="Ripple steady")
 
         The check passes when every try passed. It keeps the try that failed, or the passing
-        one closest to its limit (the first, for a check without a numeric limit), as its child,
-        and records ``tries`` and ``elapsed`` (seconds). A sample that raises an ``Exception``
-        makes the try fail. Failed tries never stop the test, even through ``verify.require``
-        or fail-fast: only this check's own verdict can. Every check the sample returns belongs
-        to this check; other checks the sample records stay on their own.
+        one closest to its limit (the last, for checks without a numeric limit), as its child,
+        and records ``tries``, ``elapsed`` and a ``trace`` as :meth:`eventually` does. A sample
+        that raises an ``Exception`` fails its try; usage errors, ``pytest.skip`` and the other
+        tries' checks behave as in :meth:`eventually`.
 
-        It waits with ``time.sleep``: in an ``async`` test, it blocks the event loop.
+        It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
+        the event loop (a ``RuntimeWarning`` says so).
 
         Args:
-            sample: A callable with no arguments that returns a check.
-            duration: How long the check must hold, in seconds (0: try once).
-            interval: Seconds from one try to the next (more than 0).
+            sample: A callable with no arguments that reads the value and returns a check.
+            duration: How long the check must hold, in seconds or a ``timedelta`` (0: try
+                once).
+            interval: Seconds from the start of one try to the next (more than 0).
             name: Human-readable label for the check.
 
         Returns:
             A :class:`CheckDescriptor` dict.
+
+        Raises:
+            TypeError: If *sample* is not a callable, or *duration* or *interval* is not a
+                number of seconds.
+            ValueError: If *duration* is negative, *interval* is not more than 0, or either is
+                not finite.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return self._sink.sampling(
@@ -763,9 +788,11 @@ class Verify:
         or ``is_instance``. Without ``"check"`` the limits say which: ``low`` and ``high`` make
         a ``between``; ``low`` alone a ``greater_equal`` and ``high`` alone a ``less_equal``
         (``greater``/``less`` with ``inclusive=False``); ``expected`` with ``abs_tol`` or
-        ``rel_tol`` an ``approx``; ``expected`` alone an ``equal``. ``low``/``high`` can also
-        stand for the ``threshold`` of ``greater``/``greater_equal``/``less``/``less_equal``.
-        A ``None`` value counts as not given, and the table is never changed::
+        ``rel_tol`` an ``approx``; ``expected`` alone an ``equal``, except for a ``float``,
+        which needs a tolerance or ``"check": "equal"``. ``low``/``high`` can also stand for
+        the ``threshold`` of ``greater``/``greater_equal``/``less``/``less_equal``. A ``None``
+        value counts as not given, ``"source"`` (text) is kept on the record as
+        ``limit_source``, and the table is never changed::
 
             LIMITS = {
                 "Vout": {"expected": 3.3, "abs_tol": 0.05, "units": "V"},
@@ -774,29 +801,34 @@ class Verify:
             }
             verify.limits({"Vout": 3.31, "Ripple": 0.02, "FW": "v2.4"}, LIMITS)
 
-        Measurement names match row names as text: an ``int`` key matches its decimal string
-        and an enum member its value. Names the table does not have are ignored.
+        Limits are strict: ``low``, ``high``, ``threshold``, the tolerances and the
+        ``expected`` of ``approx`` must be finite numbers (not text, NaN or infinity),
+        ``rel_tol`` a fraction below 1 (``0.02`` is 2%), ``inclusive`` a ``bool``, and the
+        ``expected`` of ``length`` a whole number. Measurement names match row names as text:
+        an ``int`` key matches its decimal string and an enum member its value. Measurements
+        the table has no row for are not checked.
 
         Every row is built before any check is recorded: an unknown check or argument, a
-        missing one, or an invalid one (a negative tolerance, ``low`` above ``high``, an
-        invalid pattern) raises and records nothing. The checks are then recorded together,
-        so ``verify.require.limits`` (and fail-fast) stops at the first failed row only after
-        the whole table is recorded.
+        missing one, or an invalid one raises and records nothing. The checks are then
+        recorded together, so ``verify.require.limits`` (and fail-fast) stops at the first
+        failed row only after the whole table is recorded.
 
         Args:
             measurements: The measured values, by name.
             table: The rows, by name, such as the result of
                 :func:`pytest_verifier.load_limits`.
             on_missing: For a row without a measurement: ``"fail"`` records its check as
-                failed, with ``error`` ``"not measured"`` (the limits stay in the record);
-                ``"ignore"`` makes no check for it.
+                failed, with an ``error`` that starts with ``"not measured"`` and names a
+                measurement that looks like it (the limits stay in the record); ``"ignore"``
+                makes no check for it.
 
         Returns:
             The checks made, by name, in table order.
 
         Raises:
             TypeError: If a row is not a mapping, names an argument its check does not take
-                or misses one, or a measurement name is not a str, an int or an enum member.
+                or misses one, has a limit of the wrong type, or a measurement name is not a
+                str, an int or an enum member.
             ValueError: If the table is empty, a row names an unknown check or has an invalid
                 argument, no row has a measurement, or *on_missing* is another value.
         """
