@@ -111,9 +111,19 @@ Child = Union[CheckDescriptor, Callable[[], CheckDescriptor]]
 
 
 def require_name(name: object, check: str) -> str:
+    """*name* as plain text: a ``str`` subclass, such as a ``str`` enum member, becomes its
+    string value, so records store ``"3V3"``, not the member's repr."""
     if not isinstance(name, str):
         raise TypeError(f"{check}() name must be a str, got {type(name).__name__}")
-    return name
+    text = plain_text(name)
+    if not text.strip():
+        raise ValueError(f"{check}() name must not be empty: the report identifies checks by name")
+    return text
+
+
+def plain_text(text: str) -> str:
+    """*text* as a plain ``str`` (the value of a ``str`` subclass such as a ``str`` enum)."""
+    return text if type(text) is str else str.__str__(text)
 
 
 def is_descriptor(value: object) -> bool:
@@ -161,21 +171,46 @@ def loose_children(*containers: Any) -> List[Any]:
     return found
 
 
+def not_a_check(value: object) -> str:
+    """Why *value*, returned where a check was wanted, is not one, with a hint that fits it."""
+    kind = type(value).__name__
+    if value is None:
+        return f"{kind}, not a check (did you forget `return`?)"
+    if isinstance(value, bool):
+        return (
+            f"{kind}, not a check: return a check, such as "
+            "lambda: verify.greater(read(), 3.2, name=...), not a comparison"
+        )
+    if hasattr(value, "__enter__") and hasattr(value, "check"):  # a verify.raises() block
+        return (
+            "a verify.raises() block, not a check: it must be used in a with statement; use a "
+            "function that runs `with verify.raises(...) as raised:` and returns raised.check"
+        )
+    return f"{kind}, not a check"
+
+
 def is_real(value: object) -> bool:
     return isinstance(value, (numbers.Real, Decimal)) and not isinstance(value, bool)
 
 
-def validate_tolerance(value: object, label: str) -> None:
+def validate_tolerance(value: Any, label: str) -> Any:
+    """*value*, a tolerance, checked; a negative zero (``-0.0``) becomes ``0.0``."""
     if value is None:
-        return
+        return None
     if not is_real(value):
         raise TypeError(f"approx() {label} must be a real number, got {type(value).__name__}")
     try:
-        invalid = bool(value != value or value < 0)  # type: ignore[operator]
+        invalid = bool(value != value or value < 0)
     except Exception:  # Decimal('sNaN') refuses every comparison
         invalid = True
     if invalid:
         raise ValueError(f"approx() {label} must be a non-negative number, got {safe_repr(value)}")
+    if value == 0:
+        try:
+            return abs(value)  # -0.0 and Decimal('-0') would render as "± -0.0"
+        except Exception:  # a numbers.Real subclass without abs(): keep it
+            return value
+    return value
 
 
 # ---------------------------------------------------------------------------

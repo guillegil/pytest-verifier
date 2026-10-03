@@ -21,6 +21,12 @@ from typing import Any, Dict, Optional
 #: Most nodes a snapshot copies before it falls back to a bounded repr string.
 _SNAPSHOT_NODE_LIMIT = 10_000
 
+#: Longest string a snapshot copies; longer text is cut, ending in ``...``.
+SNAPSHOT_TEXT_LIMIT = 10_000
+
+#: A string in a snapshot costs one node more per this many characters.
+_CHARACTERS_PER_NODE = 100
+
 #: Ints this small are copied without checking them against the int-to-str digit limit.
 _SMALL_INT = 10**18
 
@@ -257,8 +263,9 @@ def snapshot(value: Any, limit: int = _SNAPSHOT_NODE_LIMIT, text_limit: int = 0)
     Non-finite floats become ``"nan"``, ``"inf"`` or ``"-inf"``. Anything else, including enum
     members, sets, bytes, ``Decimal`` and custom objects, becomes its (bounded) ``repr``. The
     result always passes ``json.dumps(..., allow_nan=False)``. A value with more than *limit*
-    nodes becomes its bounded ``repr`` too. With *text_limit*, longer strings are cut to it
-    (a preview rather than a copy).
+    nodes becomes its bounded ``repr`` too; long text counts as several nodes. Strings are cut
+    to :data:`SNAPSHOT_TEXT_LIMIT` characters, or to *text_limit* when given (a preview rather
+    than a copy).
     """
     budget = [limit]
     try:
@@ -277,8 +284,7 @@ def _snapshot(value: Any, budget: list[int], depth: int, text_limit: int) -> Any
     if isinstance(value, enum.Enum):
         return safe_repr(value)
     if isinstance(value, str):
-        text = utf8_safe(str(value))
-        return shorten(text, text_limit) if text_limit else text
+        return _snapshot_text(str(value), budget, text_limit)
     if isinstance(value, int):
         return _snapshot_int(value)
     if isinstance(value, float):
@@ -291,13 +297,22 @@ def _snapshot(value: Any, budget: list[int], depth: int, text_limit: int) -> Any
         return [_snapshot(item, budget, depth + 1, text_limit) for item in value]
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
         return {
-            shorten(utf8_safe(str(key)), text_limit) if text_limit else utf8_safe(str(key)): (
+            _snapshot_text(str(key), budget, text_limit): (
                 _snapshot(item, budget, depth + 1, text_limit)
             )
             for key, item in value.items()
         }
     text = utf8_safe(bounded_repr(value))
     return shorten(text, text_limit) if text_limit else text
+
+
+def _snapshot_text(text: str, budget: list[int], text_limit: int) -> str:
+    """*text* cut to the snapshot's limit, charged to its node *budget* by length."""
+    text = shorten(text, text_limit or SNAPSHOT_TEXT_LIMIT)
+    budget[0] -= len(text) // _CHARACTERS_PER_NODE
+    if budget[0] < 0:
+        raise _TooBig
+    return utf8_safe(text)
 
 
 def _snapshot_int(value: int) -> Any:

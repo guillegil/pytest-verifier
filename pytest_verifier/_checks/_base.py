@@ -157,6 +157,18 @@ def child_checks(descriptor: Mapping[str, Any]) -> List[Any]:
     return [child for child in check.children(descriptor) if child is not None]
 
 
+def chosen_checks(descriptor: Mapping[str, Any]) -> List[Any]:
+    """The children a composite selected, which count toward its verdict (``[]`` for any other
+    check, or a malformed one). Never raises."""
+    check = lookup(descriptor)
+    if not isinstance(check, CompositeType):
+        return []
+    try:
+        return [child for child in check.chosen(descriptor) if child is not None]
+    except Exception:
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Judging
 # ---------------------------------------------------------------------------

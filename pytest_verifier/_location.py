@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import os
 import sys
-from types import CodeType, FrameType
+from types import CodeType, FrameType, TracebackType
 from typing import AbstractSet, Mapping, Optional, Tuple
 
 _PACKAGE = __name__.partition(".")[0]
@@ -125,6 +125,23 @@ def locate(rootdir: Optional[str], test: FunctionCode) -> Site:
         return location, None
     except Exception:  # pragma: no cover - a location must never break a check
         return NOWHERE
+
+
+def raised_at(traceback: Optional[TracebackType], rootdir: Optional[str]) -> Optional[str]:
+    """``"path:line"`` where an exception was raised: the innermost entry of its *traceback*
+    outside this package, relative to *rootdir*. Never raises."""
+    try:
+        found = None
+        while traceback is not None:
+            if not ours(traceback.tb_frame):
+                found = traceback
+            traceback = traceback.tb_next
+        if found is None:
+            return None
+        filename = display_path(found.tb_frame.f_code.co_filename, rootdir)
+        return f"{filename}:{found.tb_lineno}"
+    except Exception:  # pragma: no cover - a location must never break a check
+        return None
 
 
 def split(site: object) -> Optional[Tuple[str, int]]:

@@ -91,6 +91,27 @@ Scope: the agent skill and its installer, asked for by the user, plus the report
 - [x] ~~Independent review and fixes~~ (installer, sections, outputs and exports; each fix with a test)
 - [x] ~~PR, CI green, merge, release v0.9.0 to PyPI and GitHub~~ (PR #7)
 
+### 0.10.0 Lab features
+
+Scope: the 0.10.0 row of `next-steps.md` (FEAT-10, FEAT-2, FEAT-11), asked for by the user
+after 0.9.0, and the problems the 0.9.0 report found but did not fix. The plan, with the
+reasons for each choice, is in `.tasks.md`.
+
+- [ ] `verify.limits(measurements, table)` and `load_limits(path)`: limits tables from a dict or a CSV file, rows picked per SKU or corner, a missing measurement fails (FEAT-10)
+- [ ] Soft `verify.raises(...)`: a context manager that records whether the block raised the expected exception (FEAT-2)
+- [ ] `verify.eventually(...)` and `verify.stable(...)` for readings that settle (FEAT-11)
+- [ ] A `str` enum as a name is stored as its text; an empty name is a usage error; a long name is bounded in the description
+- [ ] `all_satisfy` whose factory raised says how many items it checked
+- [ ] `verify.record(check)` of a check a composite took in records a copy
+- [ ] `abs_tol=-0.0` no longer renders as `± -0.0`
+- [ ] Snapshot strings are capped
+- [ ] A subtest whose checks failed is reported as failed; imperative `pytest.xfail()` after a failed check stays XFAIL (tested, documented)
+- [ ] The skill covers every new API and option; version 0.10.0
+- [ ] README, CHANGELOG, CLAUDE.md, roadmap page
+- [ ] Full test matrix, mypy, build, sdist tests against the wheel
+- [ ] Bug and corner-case hunt over the release; every confirmed finding fixed with a test
+- [ ] PR, CI green, merge, release v0.10.0 to PyPI and GitHub
+
 ## Bugs
 
 ### Critical

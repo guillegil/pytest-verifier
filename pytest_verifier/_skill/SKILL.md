@@ -2,7 +2,7 @@
 name: pytest-verifier
 description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, record, require, section), the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; hardware, lab, bench or production tests), even if the plugin is not named.
 metadata:
-  version: "0.9.0"
+  version: "0.10.0"
 ---
 
 # pytest-verifier
@@ -283,7 +283,7 @@ conftest, a reporter), read [references/results.md](references/results.md):
 
 ## This skill's version
 
-This skill describes pytest-verifier 0.9.0; the `plugins:` line of pytest's header shows the
+This skill describes pytest-verifier 0.10.0; the `plugins:` line of pytest's header shows the
 project's version (`verifier-X.Y.Z`). For another version from 0.9.0 on, run
 `pytest-verifier skill install` in the project root (with `--global` when this skill is in
 `~/.claude/skills` or `~/.agents/skills`). Versions before 0.9.0 have no skill and no
