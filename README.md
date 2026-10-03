@@ -498,7 +498,7 @@ test. The check is recorded when the block ends:
 def test_rejects_overvoltage(verify, psu):
     with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
         psu.set_voltage(7)
-    verify.equal(psu.voltage_setpoint(), 3.3, name="Setpoint unchanged", units="V")
+    verify.approx(psu.voltage_setpoint(), 3.3, abs_tol=0.01, name="Setpoint unchanged", units="V")
 ```
 
 - It passes when the block raised an instance of the class (or of a class in a tuple), and

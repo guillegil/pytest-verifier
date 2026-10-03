@@ -638,6 +638,7 @@ class Recorder(Sink):
                 if copy is None:
                     fresh: CheckDescriptor = dict(record)  # type: ignore[assignment]
                     run.add(fresh, passed, site=run.locate())
+                    run.pin(fresh)  # asked for on its own: no later composite takes it
                     run.keep_copy(record, fresh)
                     self._enforce(fresh, passed)
                     return fresh

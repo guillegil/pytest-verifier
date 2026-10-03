@@ -47,6 +47,7 @@ from types import CodeType
 from typing import (
     IO,
     Any,
+    Callable,
     Dict,
     FrozenSet,
     Generator,
@@ -97,6 +98,11 @@ _show_passed_key = pytest.StashKey[Optional[int]]()
 #: report is printed, which may be outside any hook that has the config (``--pdb``).
 _ASCII_TERMINAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "pytest_verifier_ascii_terminal", default=False
+)
+
+#: The session's config, for the terminal reporter in hooks that get only a report.
+_CONFIG: contextvars.ContextVar[Optional[pytest.Config]] = contextvars.ContextVar(
+    "pytest_verifier_config", default=None
 )
 
 
@@ -727,6 +733,7 @@ def pytest_configure(config: pytest.Config) -> None:
         manager.register(_JunitAttempts(), _JUNIT_PLUGIN)
     token = _ASCII_TERMINAL.set(ascii_only)
     config.add_cleanup(functools.partial(_reset, _ASCII_TERMINAL, token))
+    config.add_cleanup(functools.partial(_reset, _CONFIG, _CONFIG.set(config)))
 
 
 def _ascii_setting(config: pytest.Config) -> bool:
@@ -1040,14 +1047,47 @@ _SECTION = "Soft assertion failures"
 _HEADER = re.compile(r"\d+ of \d+ checks failed(, stopped at \[\d+\])?(: .*)?$")
 
 
-@pytest.hookimpl(tryfirst=True)
-def pytest_runtest_logreport(report: pytest.TestReport) -> None:
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_logreport(report: pytest.TestReport) -> Generator[None, None, None]:
     """Print soft summaries in the encoding of the terminal (also on an xdist controller)."""
-    if report.failed and getattr(report, "verify_checks", None):
-        try:
+    restore = None
+    try:
+        if report.failed and getattr(report, "verify_checks", None):
             _print_for_terminal(report.longrepr)
-        except Exception:  # pragma: no cover - reporting must never break the session
-            pass
+        restore = _verbose_reason_for_terminal(report)
+    except Exception:  # pragma: no cover - reporting must never break the session
+        pass
+    try:
+        return (yield)
+    finally:
+        if restore is not None:
+            restore()
+
+
+def _verbose_reason_for_terminal(report: pytest.TestReport) -> Optional[Callable[[], None]]:
+    """Give the verbose line of an xfailed report whose checks failed (``XFAIL (reason)``)
+    the reason in the terminal's encoding, as the ``-rx`` line gets it, while the terminal
+    reporter logs it; returns what undoes that. junitxml and other plugins read the report
+    as it is: only the terminal module's reason getter is replaced, for this report."""
+    reason = getattr(report, "wasxfail", None)
+    if not (report.skipped and isinstance(reason, str) and getattr(report, "verify_checks", None)):
+        return None
+    terminal = sys.modules.get("_pytest.terminal")
+    original = getattr(terminal, "_get_raw_skip_reason", None)
+    config = _CONFIG.get()
+    if original is None or config is None:
+        return None
+    reporter = config.pluginmanager.get_plugin("terminalreporter")
+    encoding = _terminal_encoding(getattr(reporter, "_tw", None))
+    if encoding is None:
+        return None
+
+    def raw_reason(rep: pytest.TestReport) -> str:
+        text: str = original(rep)
+        return for_terminal(text, encoding) if rep is report else text
+
+    setattr(terminal, "_get_raw_skip_reason", raw_reason)
+    return functools.partial(setattr, terminal, "_get_raw_skip_reason", original)
 
 
 def _print_for_terminal(longrepr: Any) -> None:

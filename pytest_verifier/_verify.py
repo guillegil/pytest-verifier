@@ -913,7 +913,10 @@ class Verify:
         ``pytest_verifier.checks``.
 
         Only the fixture records checks. The check is judged and recorded like one made
-        through the fixture, and a check the fixture already recorded is returned as is.
+        through the fixture, and a check the fixture already recorded is returned as is,
+        except one that a composite took without selecting it (so it counts nowhere): that
+        check is recorded again on its own, as a copy, and the copy is returned (the same copy
+        each time).
 
         Args:
             check: A check descriptor.

@@ -490,6 +490,21 @@ class TestXfail:
         assert all(line.isascii() for line in lines), lines
         assert any("Vout \\u2014 expected 3.3V \\xb1 0.05V, got 3.4V" in line for line in lines)
 
+    def test_the_ascii_terminal_gets_the_verbose_reason_in_ascii(
+        self, pytester: pytest.Pytester
+    ):
+        pytester.makepyfile(_XFAIL)
+        result = pytester.runpytest(
+            "-p", "no:cacheprovider", "-v", "--verify-ascii", "--junitxml=junit.xml"
+        )
+        result.assert_outcomes(xfailed=3)
+        lines = [line for line in result.outlines if "XFAIL" in line and "checks failed" in line]
+        assert len(lines) == 2
+        assert all(line.isascii() for line in lines), lines
+        # Only the terminal: junitxml keeps the reason in Unicode.
+        reasons = [case[0].get("message") for case in _junit_cases(pytester).values()]
+        assert any("Vout — expected 3.3V ± 0.05V, got 3.4V" in str(r) for r in reasons), reasons
+
 
 # ---------------------------------------------------------------------------
 # Pinned: unittest @expectedFailure, pytest 9 subtests
@@ -685,6 +700,20 @@ class TestRecordOfAbsorbedChecks:
             verify.require(other)
         assert len(run.records) == 2 and run.records[0] is outer
         assert run.records[1] is not other and run.records[1]["name"] == "Other"
+
+    def test_a_later_composite_does_not_take_the_copy(self):
+        run, verify = _recording()
+        bad = verify.equal(4.1, 5.0, name="5V0 rail")
+        board_a = verify.conditional(
+            "3V3", cases={"3V3": verify.equal(1, 1, name="3V3 rail"), "5V0": bad}, name="Board A"
+        )
+        kept = verify.record(bad)
+        board_b = verify.conditional(
+            "3V3", cases={"3V3": verify.equal(1, 1, name="3V3 rail b"), "5V0": kept}, name="B"
+        )
+        assert run.records == [board_a, kept, board_b]  # asked for on its own: it stays
+        assert kept["passed"] is False
+        assert verify.record(bad) is kept
 
     def test_the_summary_points_at_the_record_call(self, pytester: pytest.Pytester):
         pytester.makepyfile("""
