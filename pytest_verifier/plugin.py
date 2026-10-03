@@ -240,9 +240,10 @@ def _close_phase(
     Returns the error to raise, or ``None``. If the phase already raised *exc*, the soft
     summary is kept for that phase's report instead, except after a skip: a skip must not
     hide a failed check, so the failure is raised in its place. *later* holds stop errors a
-    ``TestCase`` recorded after *exc*.
+    ``TestCase`` recorded after *exc*. A ``verify.raises`` block never entered fails only when
+    there is no *exc* (see :meth:`Run.take_unjudged`).
     """
-    start, pending = run.take_unjudged()
+    start, pending = run.take_unjudged(exc)
     if not pending:
         return None
     passed = all(record.get("passed") is True for record in pending)

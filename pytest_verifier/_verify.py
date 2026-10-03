@@ -117,7 +117,8 @@ class Sink:
     ) -> None:
         """Take the check of a ``raises`` block that ended: *keep* gets it before a required
         check stops the test, and *stop* False records it without stopping (an exception
-        that goes on stops the test anyway)."""
+        that goes on stops the test anyway; if a try or a composite takes that exception as a
+        failure, the fixture stops the test once that check is recorded)."""
         keep(self.check(descriptor, site))
 
     def block(self, raises: Raises[Any]) -> Any:
@@ -873,7 +874,9 @@ class Verify:
 
         Put only the call that must raise in the block: the statements after it do not run.
         A ``verify.raises()`` that is never used in a ``with`` statement becomes a failed check
-        at the end of the test phase.
+        at the end of the test phase, with the place and section where it was made, unless the
+        phase ended with an exception (a stopped test, an error, a skip): the code may never
+        have reached the ``with``.
 
         Args:
             expected_exception: The exception class, or a tuple of them. ``Exception`` and
@@ -1017,7 +1020,8 @@ class Raises(Generic[_E]):
     """A ``verify.raises`` block: its check is made when the block ends.
 
     Use it once, in a ``with`` statement; one that is never used in a ``with`` statement
-    becomes a failed check at the end of the test phase::
+    becomes a failed check at the end of the test phase, unless the phase ended with an
+    exception::
 
         with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
             psu.set_voltage(7)
@@ -1098,7 +1102,14 @@ class Raises(Generic[_E]):
         # Only what the code under test did is soft: nothing raised, or the expected type with
         # another message. Any other exception goes on, with its traceback, after the check;
         # it stops the test itself, so a required check does not replace it.
-        self._sink.ended(descriptor, self._site, self._keep, stop=exc is None or expected)
+        try:
+            self._sink.ended(descriptor, self._site, self._keep, stop=exc is None or expected)
+        except BaseException as error:
+            stopped = getattr(error, "stops_test", False) is True
+            if stopped and expected and error.__context__ is exc:
+                # The check tells what the block raised: not shown again as the context.
+                error.__suppress_context__ = True
+            raise
         return expected
 
     def _keep(self, check: CheckDescriptor) -> None:

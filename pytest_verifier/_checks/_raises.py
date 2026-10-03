@@ -60,14 +60,18 @@ _TOO_BROAD = (Exception, BaseException)
 
 def exception_text(exc: BaseException) -> Optional[str]:
     """What ``match`` searches: ``str(exc)`` and its notes (PEP 678), one per line, as
-    ``pytest.raises`` does. ``None`` when ``str()`` raises."""
+    ``pytest.raises`` does. ``None`` when ``str()`` raises; notes that cannot be read are no
+    notes."""
     try:
         text = str(exc)
-        notes = getattr(exc, "__notes__", None)
     except Exception:
         return None
-    if isinstance(notes, list):
-        text = "\n".join([text, *(note for note in notes if isinstance(note, str))])
+    try:
+        notes = getattr(exc, "__notes__", None)
+        if isinstance(notes, list):
+            text = "\n".join([text, *(note for note in notes if isinstance(note, str))])
+    except Exception:
+        pass
     return text
 
 

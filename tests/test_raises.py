@@ -25,6 +25,7 @@ import pytest
 
 import pytest_verifier
 from pytest_verifier import ChecksFailedError, Raises, checks
+from pytest_verifier._checks import _sampling
 from pytest_verifier._run import Run, recording_verify
 
 
@@ -1063,7 +1064,7 @@ def test_a_block_never_used_fails_the_test(pytester: pytest.Pytester):
         [
             "*1 of 2 checks failed: Forgotten — expected ValueError, nothing was raised "
             "(verify.raises() was never used in a with statement*",
-            "*✗ [[]1[]] Forgotten (test_never.py:2)*",
+            "*✗ [[]0[]] Forgotten (test_never.py:2)*",  # where it was made: before "after"
         ]
     )
 
@@ -1165,3 +1166,353 @@ def test_an_unexpected_exception_keeps_its_traceback_when_the_check_stops(
     result = pytester.runpytest("-p", "no:cacheprovider", *args)
     result.assert_outcomes(failed=1)
     result.stdout.fnmatch_lines([">*1 / 0", "E * ZeroDivisionError: division by zero"])
+
+
+# ---------------------------------------------------------------------------
+# Bug and corner-case hunt (0.10.0): blocks in tries, composites and phases
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def no_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sampling on a clock that moves only when slept on: nothing here sleeps for real."""
+    now = [0.0]
+
+    def sleep(seconds: float) -> None:
+        now[0] += seconds
+
+    monkeypatch.setattr(_sampling, "_clock", lambda: now[0])
+    monkeypatch.setattr(_sampling, "_sleep", sleep)
+
+
+class BusyError(Exception):
+    """The DUT is busy: not the error a block expects."""
+
+
+def _busy_reject(verify: Any) -> Any:
+    """A required block that gets an unexpected exception, which goes on."""
+    with verify.require.raises(ValueError, name="Reject 7 V") as raised:
+        raise BusyError("busy")
+    return raised.check  # pragma: no cover - not reached
+
+
+def test_a_block_made_in_a_dropped_try_is_dropped_with_it(no_wait):
+    run, verify = _recording()
+    reads = iter([OSError("bus busy"), OSError("bus busy"), None])
+
+    def sample():
+        raised = verify.raises(ValueError, match="range", name="Reject 7 V")
+        error = next(reads)
+        if error is not None:
+            raise error  # the try fails before its with statement
+        with raised:
+            _set_7_volts()
+        return raised.check
+
+    record = verify.eventually(sample, timeout=1, name="Reject settles")
+    assert (record["passed"], record["tries"]) == (True, 3)
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Reject settles"]
+
+
+def test_a_block_never_entered_in_the_kept_try_is_reported(no_wait):
+    run, verify = _recording()
+
+    def sample():
+        verify.raises(ValueError, name="Forgotten")
+        return verify.equal(1, 1, name="Ready")
+
+    verify.eventually(sample, timeout=1, name="Settles")
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Forgotten", "Settles"]
+    assert pending[0]["error"].startswith("verify.raises() was never used in a with statement")
+
+
+def test_a_sample_that_returns_an_unused_block_is_reported_once(no_wait):
+    run, verify = _recording()
+    record = verify.eventually(
+        lambda: verify.raises(ValueError, name="Reject"), timeout=1, name="Rejects"
+    )
+    assert record["error"].startswith(
+        "sample returned a verify.raises() block, not a check: it must be used in a with "
+        "statement"
+    )
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Rejects"]
+
+
+def test_a_sample_that_returns_a_used_block_is_told_to_return_its_check(no_wait):
+    run, verify = _recording()
+
+    def sample():
+        with verify.raises(ValueError, name="Reject") as raised:
+            raise ValueError("out of range")
+        return raised  # meant raised.check
+
+    record = verify.eventually(sample, timeout=1, name="Rejects")
+    assert record["error"] == (
+        "sample returned a verify.raises() block, not a check: return raised.check, not the "
+        "block"
+    )
+
+
+def test_a_block_never_entered_keeps_its_section_and_its_place():
+    run, verify = _recording()
+    first = verify.equal(1, 1, name="before")
+    with verify.section("3V3"):
+        line = _line() + 1
+        verify.raises(ValueError, name="Reject 7 V")
+        inside = verify.equal(1, 1, name="Vout")
+    after = verify.equal(1, 1, name="after")
+    start, pending = run.take_unjudged()
+    assert start == 0
+    assert [check["name"] for check in pending] == ["before", "Reject 7 V", "Vout", "after"]
+    # The records the test already holds keep their identity.
+    assert run.records[0] is first and run.records[2] is inside and run.records[3] is after
+    record = run.records[1]
+    assert record["section"] == ["3V3"]
+    assert record["location"].endswith(f":{line}")
+    assert record["phase"] == "call"
+    assert record["passed"] is False
+
+
+def test_a_block_never_entered_goes_after_the_checks_an_earlier_phase_judged():
+    run, verify = _recording()
+    block = verify.raises(ValueError, name="Made in the body")
+    verify.equal(1, 1, name="body")
+    run.blocks, kept = [], run.blocks  # as if made after the body's checks were judged
+    assert [check["name"] for check in run.take_unjudged()[1]] == ["body"]
+    run.phase = "teardown"
+    verify.equal(1, 1, name="teardown")
+    run.blocks = kept
+    start, pending = run.take_unjudged()
+    assert start == 1
+    assert [check["name"] for check in pending] == ["Made in the body", "teardown"]
+    with pytest.raises(RuntimeError):
+        block.check  # noqa: B018
+
+
+_BEFORE_WITH = {
+    "stop": 'verify.require.is_true(False, name="DUT ready")',
+    "error": 'raise ConnectionError("bench lost")',
+    "skip": 'pytest.skip("no bench")',
+    "xfail": 'pytest.xfail("known DUT bug")',
+}
+
+_OUTCOMES = {
+    "stop": {"failed": 1},
+    "error": {"failed": 1},
+    "skip": {"skipped": 1},
+    "xfail": {"xfailed": 1},
+}
+
+
+@pytest.mark.parametrize("ending", sorted(_BEFORE_WITH))
+def test_a_block_the_test_never_reached_is_not_reported(pytester: pytest.Pytester, ending: str):
+    pytester.makepyfile(
+        test_cut=f"""
+        import pytest
+
+        def test_cut(verify):
+            reject = verify.raises(ValueError, name="Reject 7 V")
+            {_BEFORE_WITH[ending]}
+            with reject:
+                raise ValueError("x")
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider", "-rA")
+    result.assert_outcomes(**_OUTCOMES[ending])
+    result.stdout.no_fnmatch_line("*never used*")
+    if ending == "stop":
+        result.stdout.fnmatch_lines(["1 of 1 checks failed, stopped at [[]0[]]: DUT ready *"])
+    else:
+        result.stdout.no_fnmatch_line("*checks failed*")
+        result.stdout.no_fnmatch_line("*Soft assertion failures*")
+
+
+def test_a_skip_in_a_sample_before_its_with_stays_a_skip(pytester: pytest.Pytester):
+    pytester.makepyfile(
+        test_skip="""
+        import pytest
+
+        def test_skip(verify):
+            def sample():
+                raised = verify.raises(ValueError, name="Reject 7 V")
+                pytest.skip("no bench")
+                with raised:
+                    raise ValueError("x")
+            verify.eventually(sample, timeout=1, name="Rejects")
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider")
+    result.assert_outcomes(skipped=1)
+
+
+def test_a_testcase_skip_before_the_with_stays_a_skip(pytester: pytest.Pytester):
+    pytester.makepyfile(
+        test_case="""
+        import unittest
+
+        import pytest
+
+        class TestBench(unittest.TestCase):
+            @pytest.fixture(autouse=True)
+            def _verify(self, verify):
+                self.verify = verify
+
+            def test_reject(self):
+                reject = self.verify.raises(ValueError, name="Reject 7 V")
+                self.skipTest("no bench")
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider")
+    result.assert_outcomes(skipped=1)
+
+
+def test_blocks_never_entered_in_fixtures(pytester: pytest.Pytester):
+    pytester.makepyfile(
+        test_fixtures="""
+        import pytest
+
+        @pytest.fixture
+        def dut(verify):
+            verify.equal(1, 1, name="setup ok")
+            verify.raises(ValueError, name="never entered in setup")
+            yield
+            verify.equal(1, 2, name="td check")
+            verify.raises(ValueError, name="never entered in teardown")
+
+        def test_bench(dut, verify):
+            verify.equal(1, 1, name="body ok")
+        """
+    )
+    reprec = pytester.inline_run("-p", "no:cacheprovider")
+    reports = {report.when: report for report in reprec.getreports("pytest_runtest_logreport")}
+    call, teardown = reports["call"], reports["teardown"]
+    assert [(check["name"], check["phase"], check["passed"]) for check in call.verify_checks] == [
+        ("setup ok", "setup", True),
+        ("never entered in setup", "setup", False),
+        ("body ok", "call", True),
+    ]
+    assert call.verify_checks[1]["location"] == "test_fixtures.py:6"
+    assert teardown.failed
+    assert "RuntimeError" not in teardown.longreprtext
+    assert teardown.longreprtext.startswith("2 of 2 checks failed: td check")
+    assert [(check["name"], check["phase"]) for check in teardown.verify_checks] == [
+        ("td check", "teardown"),
+        ("never entered in teardown", "teardown"),
+    ]
+
+
+def test_a_block_never_entered_with_setup_only(pytester: pytest.Pytester):
+    pytester.makepyfile(
+        test_setup_only="""
+        import pytest
+
+        @pytest.fixture
+        def dut(verify):
+            verify.raises(ValueError, name="never entered")
+            yield
+
+        def test_bench(dut):
+            pass
+        """
+    )
+    result = pytester.runpytest("-p", "no:cacheprovider", "--setup-only")
+    result.stdout.no_fnmatch_line("*RuntimeError*")
+    result.stdout.fnmatch_lines(["*1 of 1 checks failed: never entered*"])
+
+
+@pytest.mark.parametrize("where", ["eventually", "conditional", "guard", "all_satisfy"])
+def test_a_required_block_whose_exception_is_taken_stops_once_recorded(no_wait, where: str):
+    run, verify = _recording()
+
+    def reject(*_: Any) -> Any:
+        return _busy_reject(verify)
+
+    with pytest.raises(ChecksFailedError) as excinfo:
+        if where == "eventually":
+            verify.eventually(reject, timeout=0.3, name="Rejects")
+        elif where == "conditional":
+            verify.conditional("on", cases={"on": reject}, name="Rejects")
+        elif where == "guard":
+            verify.guard([(True, "on", reject)], name="Rejects")
+        else:
+            verify.all_satisfy([7], reject, name="Rejects")
+        verify.equal(1, 1, name="not reached")
+    assert excinfo.value.stops_test is True
+    assert str(excinfo.value).startswith("2 of 2 checks failed, stopped at [0]: Reject 7 V")
+    assert [check["name"] for check in run.records] == ["Reject 7 V", "Rejects"]
+
+
+def test_a_required_block_in_a_dropped_try_does_not_stop(no_wait):
+    run, verify = _recording()
+    errors = iter([BusyError("busy"), ValueError("out of range")])
+
+    def sample():
+        with verify.require.raises(ValueError, name="Reject 7 V") as raised:
+            raise next(errors)
+        return raised.check
+
+    record = verify.eventually(sample, timeout=1, name="Rejects")
+    assert (record["passed"], record["tries"]) == (True, 2)
+    assert [check["name"] for check in run.records] == ["Rejects"]
+
+
+def test_a_required_block_whose_exception_the_test_catches_stops_no_later_composite():
+    run, verify = _recording()
+    with pytest.raises(BusyError):
+        _busy_reject(verify)
+    record = verify.all_satisfy([1], lambda item: verify.equal(item, 1, name="one"), name="Ones")
+    assert record["passed"] is True
+    assert [check["name"] for check in run.records] == ["Reject 7 V", "Ones"]
+
+
+@pytest.mark.parametrize("fail_fast", [False, True], ids=["require", "fail-fast"])
+def test_a_stop_at_the_end_of_a_block_hides_the_exception_it_took(fail_fast: bool):
+    _, verify = _recording(fail_fast=fail_fast)
+    block = verify.raises if fail_fast else verify.require.raises
+    with pytest.raises(ChecksFailedError) as excinfo:
+        with block(ValueError, match="range", name="Reject") as raised:
+            raise ValueError("bad value")
+    assert excinfo.value.stops_test is True
+    assert excinfo.value.__suppress_context__ is True
+    assert excinfo.value.__cause__ is None
+    assert isinstance(raised.value, ValueError)
+
+
+def test_a_required_block_with_another_message_prints_only_the_summary(
+    pytester: pytest.Pytester,
+):
+    pytester.makepyfile(
+        test_message="""
+        def test_message(verify):
+            with verify.require.raises(ValueError, match="range", name="Reject"):
+                raise ValueError("bad value")
+        """
+    )
+    for tb in ("auto", "line"):
+        result = pytester.runpytest("-p", "no:cacheprovider", f"--tb={tb}")
+        result.assert_outcomes(failed=1)
+        result.stdout.fnmatch_lines(["*1 of 1 checks failed, stopped at [[]0[]]: Reject *"])
+        result.stdout.no_fnmatch_line("*During handling*")
+        result.stdout.no_fnmatch_line("bad value")
+
+
+class NotesError(ValueError):
+    """An exception whose notes cannot be read, though its message can."""
+
+    @property
+    def __notes__(self) -> List[str]:
+        raise RuntimeError("hostile notes")
+
+
+def test_notes_that_cannot_be_read_are_no_notes():
+    _, verify = _recording()
+    with verify.raises(ValueError, match="hello", name="Notes") as raised:
+        raise NotesError("hello")
+    record = raised.check
+    assert record["passed"] is True
+    assert record["raised_message"] == "hello"
+    assert "error" not in record
+    _assert_judged_alike(record)

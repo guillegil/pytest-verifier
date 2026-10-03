@@ -561,9 +561,8 @@ class TestNotACheck:
         record = verify.eventually(sample, timeout=5, name="Cool")
         assert record["tries"] == 1
         assert record["error"] == (
-            "sample returned a verify.raises() block, not a check: it must be used in a with "
-            "statement; use a function that runs `with verify.raises(...) as raised:` and "
-            "returns raised.check"
+            "sample returned a verify.raises() block, not a check: return raised.check, not "
+            "the block"
         )
 
     def test_an_unused_raises_block_gets_the_hint_too(self, clock: FakeClock):
