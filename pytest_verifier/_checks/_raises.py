@@ -8,7 +8,7 @@ verdict is decided then, from the live exception, and stored (``type_check``,
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Optional, Tuple, Type, Union
+from typing import Any, List, Mapping, Optional, Tuple, Type, Union
 
 from .._descriptors import CheckDescriptor, qualified_type_name, require_name, type_display
 from .._render import describe_error, render_text, safe_repr

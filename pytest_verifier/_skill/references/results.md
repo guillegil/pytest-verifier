@@ -84,6 +84,18 @@ def pytest_sessionfinish(session):
 | `section` | Only for a check recorded in `verify.section` blocks: their titles, outermost first (`["3V3", "Load"]`) |
 | values | Per type: `actual`, `expected`, `units`, `abs_tol`, `rel_tol`, `threshold`, `low`, `high`, `inclusive`, `haystack`, `needle`, `pattern`, `flags`, `expected_type`, `actual_length`, `msg` ... as JSON-safe snapshots: tuples become lists; sets, bytes, enums, `Decimal`, NaN, dicts with non-text keys and other objects become their repr text (`"Decimal('0.1')"`, `"nan"`). A value of more than 10,000 items becomes shortened repr text, and `length` keeps only a preview of `actual` (repr text past 100 items, text cut at 240 characters): read `actual_length` |
 
+Keys of the 0.10.0 checks:
+
+- `raises`: `expected_type` (`"ValueError | KeyError"`), `expected_types`, `match`, `flags`,
+  `raised_type` and `raised_message` (`None` when nothing was raised), `raised_at` (the
+  `path:line` that raised), `type_check`, `match_check`.
+- `eventually`/`stable`: `timeout` or `duration`, `interval`, `tries`, `elapsed` (seconds),
+  `settled_at` (`eventually`: the start of the passing try, else `None`), `trace` (a list of
+  `[seconds, value, passed]`; `value` is the try's `actual` when it is a number, text, a bool
+  or `None`, else `None`), `child_checks` (the kept try), and `sample_error` when the kept
+  try's sample raised.
+- A check made by `verify.limits` from a row with a `source` has `limit_source`.
+
 Composites nest their children. Each child that was evaluated carries its own `passed`; one
 that was not selected carries no `passed` or `detail` (an eager child is still a dict, a lazy
 one is `None`), so test `"passed" in child`, not `child is None`:
@@ -103,7 +115,9 @@ with `.get()`: `check_type` is always there; `name` and `description` on every c
 
 `CheckDescriptor` is the `TypedDict` of a check, and `GuardBranch` the `TypedDict` of one entry
 of a guard record's `branches` (`guard()` itself takes `(condition, label, check)` tuples);
-both are exported by `pytest_verifier`, with `Verify`, `Require` and `ChecksFailedError`.
+both are exported by `pytest_verifier`, with `Verify`, `Require`, `ChecksFailedError`,
+`LimitRow` (a row of a `verify.limits` table) and `Raises` (the `verify.raises` block,
+generic in its exception type).
 `pytest_verifier.__version__` is the installed version.
 
 ## Evaluating built checks yourself

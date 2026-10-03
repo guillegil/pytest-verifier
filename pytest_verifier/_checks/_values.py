@@ -22,7 +22,6 @@ from .._descriptors import (
 )
 from .._render import (
     describe_error,
-    escape,
     render_text,
     render_value,
     safe_repr,

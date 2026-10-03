@@ -23,7 +23,7 @@ from .._descriptors import (
     select_case,
     unwrap,
 )
-from .._render import describe_error, escape, render_text, safe_repr, safe_str, snapshot
+from .._render import describe_error, render_text, safe_repr, safe_str, snapshot
 from ._base import CompositeType, child_detail, judge, passes_through, register
 
 

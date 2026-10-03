@@ -1022,7 +1022,7 @@ def _name_failures_in_xfail(report: pytest.TestReport, checks: List[Any]) -> Non
     failed = [(i, check) for i, check in enumerate(checks) if check.get("passed") is not True]
     if failed:
         header = failure_header(failed, len(checks))
-        report.wasxfail = f"{reason} [{header}]"  # type: ignore[attr-defined]
+        report.wasxfail = f"{reason} [{header}]"
 
 
 #: The report section that holds the soft summary when the phase also raised.

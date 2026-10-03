@@ -97,15 +97,17 @@ Scope: the 0.10.0 row of `next-steps.md` (FEAT-10, FEAT-2, FEAT-11), asked for b
 after 0.9.0, and the problems the 0.9.0 report found but did not fix. The plan, with the
 reasons for each choice, is in `.tasks.md`.
 
-- [ ] `verify.limits(measurements, table)` and `load_limits(path)`: limits tables from a dict or a CSV file, rows picked per SKU or corner, a missing measurement fails (FEAT-10)
-- [ ] Soft `verify.raises(...)`: a context manager that records whether the block raised the expected exception (FEAT-2)
-- [ ] `verify.eventually(...)` and `verify.stable(...)` for readings that settle (FEAT-11)
-- [ ] A `str` enum as a name is stored as its text; an empty name is a usage error; a long name is bounded in the description
-- [ ] `all_satisfy` whose factory raised says how many items it checked
-- [ ] `verify.record(check)` of a check a composite took in records a copy
-- [ ] `abs_tol=-0.0` no longer renders as `± -0.0`
-- [ ] Snapshot strings are capped
-- [ ] A subtest whose checks failed is reported as failed; imperative `pytest.xfail()` after a failed check stays XFAIL (tested, documented)
+- [x] ~~`verify.limits(measurements, table)` and `load_limits(path)`: limits tables from a dict or a CSV file, rows picked per SKU or corner, a missing measurement fails (FEAT-10)~~ (strict rows, measurement-typed cells, `columns=`, `limit_source`)
+- [x] ~~Soft `verify.raises(...)`: a context manager that records whether the block raised the expected exception (FEAT-2)~~ (unexpected exceptions propagate after the check)
+- [x] ~~`verify.eventually(...)` and `verify.stable(...)` for readings that settle (FEAT-11)~~ (try scopes, trace, `settled_at`)
+- [x] ~~A `str` enum as a name is stored as its text; an empty name is a usage error; a long name is bounded in the description~~
+- [x] ~~`all_satisfy` whose factory raised says how many items it checked~~
+- [x] ~~`verify.record(check)` of a check a composite took in records a copy~~ (only when it was not selected)
+- [x] ~~`abs_tol=-0.0` no longer renders as `± -0.0`~~
+- [x] ~~Snapshot strings are capped~~
+- [x] ~~Imperative `pytest.xfail()` after a failed check stays XFAIL; its reason names the failed checks~~
+- [ ] A subtest whose checks failed is reported as failed: deferred, it needs explicit subtest marks and changes `--maxfail` and junit counts (an opt-in setting for a later release)
+- [x] ~~`pytest.exit`, `bdb.BdbQuit` and `unittest.SkipTest` go through lazy children, conditions, factories, sampling and `verify.raises`~~ (found by the design review)
 - [ ] The skill covers every new API and option; version 0.10.0
 - [ ] README, CHANGELOG, CLAUDE.md, roadmap page
 - [ ] Full test matrix, mypy, build, sdist tests against the wheel

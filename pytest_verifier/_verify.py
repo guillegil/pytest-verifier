@@ -60,7 +60,7 @@ from ._checks import (
 )
 from ._checks._raises import exception_classes, expected_instance, handles
 from ._checks._sampling import EVENTUALLY, STABLE, Sampler
-from ._descriptors import CheckDescriptor, Child, ClassInfo, is_descriptor, loose_children
+from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
 from ._limits import LimitRow, limit_checks
 from ._evaluator import evaluate_detailed as _evaluate_detailed

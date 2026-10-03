@@ -1,6 +1,6 @@
 ---
 name: pytest-verifier
-description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, record, require, section), the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; hardware, lab, bench or production tests), even if the plugin is not named.
+description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, raises, eventually, stable, limits, record, require, section), load_limits for CSV limit files, the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; limit tables; values that must settle or stay stable; expected errors; hardware, lab, bench or production tests), even if the plugin is not named.
 metadata:
   version: "0.10.0"
 ---
@@ -35,7 +35,8 @@ def test_3v3_rail(verify, psu):
   identifies checks by name.
 - **Soft checks never raise.** Do not `assert verify.equal(...)` or write `if verify.equal(...)`
   (the returned dict is always truthy), and do not wrap checks in `try`/`except` or
-  `pytest.raises`: nothing is raised until the test body ends. To branch on a verdict, read
+  `pytest.raises`: nothing is raised until the test body ends (to check that code raises, use
+  `with verify.raises(...)`, below). To branch on a verdict, read
   `check["passed"]`; to stop at a failure, use `verify.require` (below). A check returns its
   record (a dict of JSON-safe snapshots), never the value: keep your own variable.
 - **Convert text replies first** (`float(reply)`). Ordering checks and `between` fail with
@@ -84,7 +85,8 @@ The same methods exist on `verify`, on `verify.require` and on the `checks` buil
 composite takes as a child (a case, a branch's check, a default, or what an `all_satisfy`
 factory returns) belongs to it: it is reported inside the composite and not on its own, and
 only the selected children count (an unselected child that failed does not fail the test).
-Pass `dict(check)` to keep a copy on its own as well.
+Pass `dict(check)`, or record the check with `verify.record(check)` before the composite, to
+keep it on its own as well; `verify.record` of a child that was not selected records a copy.
 
 **`all_satisfy(items, descriptor_factory, *, name)`** applies a check to every item. The
 factory is called once per item, at the call, and must return one check (not a bool). An
@@ -146,6 +148,102 @@ A lazy child that raises, or returns something that is not a check, fails the co
 that error. Checks a lazy child records besides the one it returns stay separate checks. To
 check several things in one case, return a group:
 `lambda: verify.all_satisfy([verify.equal(...), verify.less(...)], lambda c: c, name="Boost")`.
+
+## Expected errors
+
+`with verify.raises(expected_exception, *, match=None, name) as raised:` records a `raises`
+check when the block ends, and the test goes on. It passes when the block raised an instance
+of the class (or of a class in a tuple) whose message `match` (a regex, searched in `str(exc)`
+and its notes) finds. Nothing raised, or the expected type with another message: a failed
+check, and the test goes on. Any other exception records the failed check, then goes on with
+its traceback, as with `pytest.raises`; `pytest.skip`, `pytest.exit` and `KeyboardInterrupt`
+go on untouched.
+
+```python
+with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
+    psu.set_voltage(7)
+if raised.value is not None:   # the ValueError, else None; raised.type is its class
+    verify.equal(raised.value.args[0], "out of range", name="Reject message")
+```
+
+- Put only the call that must raise in the block: the lines after it do not run.
+- `Exception` and `BaseException` need `match=` (`TypeError` otherwise: a typo in the block
+  would raise one and pass). `match` is a regex: `re.escape()` text with `(`, `.` or `[`.
+- `raised` is a `Raises`; `raised.check` is the record once the block has ended
+  (`RuntimeError` before). A `verify.raises()` never used in a `with` fails at the end of the
+  phase. `verify.require.raises` stops the test at the end of a failed block.
+  `checks.raises` raises `RuntimeError`.
+
+## Values that settle or must hold
+
+`verify.eventually(sample, *, timeout, interval=0.1, name)` passes once a check made by
+`sample` passes within `timeout` seconds. `verify.stable(sample, *, duration, interval=0.1,
+name)` passes when every check made for `duration` seconds passes, and stops at the first
+that fails. `sample` is a zero-argument callable that reads the value and returns the check:
+a value read before the call never changes (the failure then says so).
+
+```python
+verify.eventually(lambda: verify.less(dut.temperature(), 40, name="Temp", units="C"),
+                  timeout=30, interval=1, name="Cools down")
+verify.stable(lambda: verify.approx(psu.vout(), 3.3, abs_tol=0.05, name="Vout", units="V"),
+              duration=2, interval=0.2, name="Vout steady")
+```
+
+- Each try starts `interval` seconds after the last one started; times are seconds or a
+  `timedelta`. `eventually` tries until the timeout (the last try starts at it); `stable` at
+  least twice when `duration > 0`.
+- The record keeps one try as its child (the passing one or the last; the failing one or the
+  passing one closest to its limit), plus `tries`, `elapsed`, `settled_at` (`eventually`) and
+  a `trace` of `[seconds, value, passed]` for the first and last 50 tries.
+- Failed tries never fail or stop the test: a try that is not kept is dropped with every
+  check recorded in it. A sample that raises fails its try, and the tries go on; a usage error
+  (no tolerance, no `return`, a comparison instead of a check) fails the check at once.
+- It waits with `time.sleep`: in an `async` test it blocks the event loop (`RuntimeWarning`).
+
+## Limits tables
+
+`verify.limits(measurements, table, *, on_missing="fail")` makes one ordinary check per row
+of `table` (a dict of `LimitRow`s), named by the row, of the measurement with the same name,
+and returns the checks by name. A row holds the check's arguments after the value and,
+under `"check"`, the method; without it the limits say: `low`+`high` is `between`, `low` is
+`greater_equal`, `high` is `less_equal` (`"inclusive": False` gives `greater`/`less`),
+`expected` with `abs_tol`/`rel_tol` is `approx`, and `expected` alone (not a float) `equal`.
+
+```python
+LIMITS = {
+    "3V3": {"low": 3.2, "high": 3.4, "units": "V"},
+    "Ripple": {"high": 20, "units": "mV"},
+    "FW": {"check": "matches", "pattern": r"\A2\.\d+\Z"},
+}
+verify.limits({"3V3": vout, "Ripple": ripple_mv, "FW": fw}, LIMITS)
+```
+
+- Rows are strict and checked before anything is recorded: limits are finite numbers (not
+  text), `rel_tol` is below 1, and a float `expected` needs a tolerance or `"check": "equal"`.
+- A row with no measurement fails with an `error` that starts `not measured` and names a
+  similar key (`on_missing="ignore"` skips it). Measurements without a row are not checked:
+  keys must match row names exactly (an `int` key matches its decimal string).
+- `verify.require.limits` and fail-fast stop only after the whole table is recorded.
+
+`load_limits(path, *, select=None, columns=None, encoding="utf-8-sig")` reads such a table
+from a CSV file: a `name` column, an optional `check` column and a column per argument; an
+empty cell is not given, and `#` lines are skipped.
+
+```python
+LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "hot"},
+                     columns={"Min": "low", "Max": "high", "Notes": None})
+```
+
+- Column names match in any case; `columns` renames a column or skips it (`None`). Any other
+  column is an error, so a misspelt limit is never ignored.
+- A selector column chooses lines: with `select={"corner": "hot"}`, a line whose `corner` is
+  `hot` (or lists it: `hot|cold`) beats one whose `corner` is empty. A selected value that no
+  line names is an error.
+- Numeric cells must be numbers (`3,3` only in a `;` file). The `expected` of `equal`/
+  `not_equal` and `needle` take the measurement's type when checked: `1.10` stays text against
+  a `str` reply and is a number against a number.
+- Every line is checked when the file is read (errors name `path:line`), and each record gets
+  `limit_source` (`"limits.csv:12"`). Save Excel files as "CSV UTF-8", or pass `encoding`.
 
 ## Grouping checks
 
@@ -266,6 +364,8 @@ def test_rails(verify, psu):
   does not hide it: the test fails (an error, when a fixture skipped in setup).
 - A passing test prints none of its checks. To see them, print what the `verify` calls return
   (run with `-s`), or use the results hook below.
+- A test that xfails (a marker, or `pytest.xfail()` after a failed check) stays XFAIL, and its
+  reason ends with the first line, `[N of M checks failed: ...]`.
 - `xfail(raises=AssertionError)` catches `ChecksFailedError`; with pytest-rerunfailures use
   `--only-rerun "checks failed"` (`--only-rerun ChecksFailedError` needs version 15.1).
 
