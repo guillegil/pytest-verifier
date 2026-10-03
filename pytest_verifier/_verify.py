@@ -1118,8 +1118,9 @@ class Raises(Generic[_E]):
         except BaseException as error:
             stopped = getattr(error, "stops_test", False) is True
             if stopped and expected and error.__context__ is exc:
-                # The check tells what the block raised: not shown again as the context.
-                error.__suppress_context__ = True
+                # The check tells what the block raised: not shown again as the context, but
+                # what the test was handling around the block still is.
+                error.__context__ = exc.__context__
             raise
         return expected
 

@@ -1476,9 +1476,21 @@ def test_a_stop_at_the_end_of_a_block_hides_the_exception_it_took(fail_fast: boo
         with block(ValueError, match="range", name="Reject") as raised:
             raise ValueError("bad value")
     assert excinfo.value.stops_test is True
-    assert excinfo.value.__suppress_context__ is True
+    assert excinfo.value.__context__ is None
     assert excinfo.value.__cause__ is None
     assert isinstance(raised.value, ValueError)
+
+
+def test_a_stop_at_the_end_of_a_block_keeps_what_the_test_was_handling():
+    _, verify = _recording()
+    with pytest.raises(ChecksFailedError) as excinfo:
+        try:
+            raise ConnectionError("bench lost")
+        except ConnectionError:
+            with verify.require.raises(ValueError, match="range", name="Reject"):
+                raise ValueError("bad value")
+    # As for any check that stops the test in an except block.
+    assert isinstance(excinfo.value.__context__, ConnectionError)
 
 
 def test_a_required_block_with_another_message_prints_only_the_summary(
