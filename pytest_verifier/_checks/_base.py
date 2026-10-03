@@ -112,6 +112,10 @@ class CheckType:
         is: exactly, unless the check compares in floats. May raise."""
         return None
 
+    def units(self, d: Mapping[str, Any]) -> Any:
+        """The units of the check's values and of its :meth:`margin`. May raise."""
+        return d.get("units")
+
 
 class CompositeType(CheckType):
     """A check whose verdict comes from child checks."""
@@ -131,6 +135,10 @@ class CompositeType(CheckType):
         """The composite's verdict from the verdicts of :meth:`chosen`."""
         raise NotImplementedError
 
+    def vetoed(self, d: Mapping[str, Any]) -> bool:
+        """Whether *d* fails whatever the verdicts of its children. Never raises."""
+        return False
+
     def map_children(self, d: Mapping[str, Any], fn: Callable[[Any], Any]) -> Dict[str, Any]:
         """The descriptor's child fields, rebuilt with *fn* applied to every child check."""
         raise NotImplementedError
@@ -140,7 +148,7 @@ class CompositeType(CheckType):
             chosen = self.chosen(d)
         except Exception as exc:  # a malformed hand-built descriptor
             return False, describe_error(exc)
-        return self.combine([judge(child)[0] for child in chosen]), None
+        return self.combine([judge(child)[0] for child in chosen]) and not self.vetoed(d), None
 
 
 #: Every check type, by ``check_type``.
@@ -177,6 +185,17 @@ def margin(descriptor: Mapping[str, Any]) -> Optional[float]:
     except Exception:
         return None
     return number if math.isfinite(number) else None
+
+
+def units(descriptor: Mapping[str, Any]) -> Optional[str]:
+    """The units of a check's values and of its margin (see :meth:`CheckType.units`), or
+    ``None`` when they are not text. Never raises."""
+    check = lookup(descriptor)
+    try:
+        found = descriptor.get("units") if check is None else check.units(descriptor)
+    except Exception:
+        return None
+    return found if isinstance(found, str) else None
 
 
 def plain_number(value: Any) -> Union[int, float]:

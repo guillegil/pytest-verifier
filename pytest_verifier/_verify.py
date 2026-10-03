@@ -681,26 +681,30 @@ class Verify:
         *sample* is a zero-argument callable that reads the value and makes the check, such as
         ``lambda: verify.less(read_temp(), 40, name="Temperature")``. It is called at once,
         then each try starts *interval* seconds after the start of the one before (at once when
-        that one took longer), until a check it makes passes or *timeout* has passed; the last
-        try starts at the timeout::
+        that one took longer), until a try passes or *timeout* has passed; the last try starts
+        at the timeout::
 
             verify.eventually(lambda: verify.equal(dut.state(), "READY", name="State"),
                               timeout=5, name="Boots")
 
-        The check passes when a try passed, and keeps that try, or the last one, as its child.
+        A try passes when the check it returns passes and so does every other check it
+        records. The check passes when a try passed, and keeps that try, or the last one, as
+        its child; the other checks that failed the kept try are named in ``also_failed``.
         It records ``tries``, ``elapsed`` and ``settled_at`` (seconds from the call to the
         start of the passing try), and a ``trace`` of ``[seconds, value, passed]`` for the
         first and the last 50 tries. A sample that raises an ``Exception`` fails that try and
         the tries go on; one raised by pytest-verifier itself (a usage error), a sample that
-        returns something that is not a check, or the same check again, fails the check at
-        once. ``pytest.skip``, ``pytest.exit`` and ``KeyboardInterrupt`` go on, and no try
-        is kept.
+        returns something that is not a check (an ``async def`` sample returns a coroutine),
+        or the same check again, fails the check at once. ``pytest.skip``, ``pytest.exit``
+        and ``KeyboardInterrupt`` go on, and no try is kept.
 
-        Every check recorded while a try runs belongs to it: a try that is not kept is dropped
-        with its checks, so failed tries never fail or stop the test. The kept try's other
-        checks stay on their own, and ``verify.require``/fail-fast apply to them once the
-        check is recorded. With ``pytest_verifier.checks`` each try is evaluated when it is
-        taken.
+        Every check recorded while a try runs belongs to it, and so does the check the sample
+        returns when another thread recorded it: a try that is not kept is dropped with its
+        checks, so failed tries never fail or stop the test. The kept try's other checks stay
+        on their own, and ``verify.require``/fail-fast apply to them once the check is
+        recorded. Other checks recorded on a plain thread (not ``asyncio.to_thread``) are not
+        in the try: they stay, and a required or fail-fast one that fails stops its thread at
+        once. With ``pytest_verifier.checks`` each try is evaluated when it is taken.
 
         It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
         the event loop (a ``RuntimeWarning`` says so).
@@ -741,17 +745,18 @@ class Verify:
         *sample* is a zero-argument callable that reads the value and makes the check, such as
         ``lambda: verify.approx(psu.vout(), 3.3, abs_tol=0.05, name="Vout", units="V")``.
         It is called at once, then each try starts *interval* seconds after the start of the
-        one before (at once when that one took longer), until a check it makes fails or a try
-        has started at or after *duration*, so it is tried at least twice when *duration* is
-        more than 0::
+        one before (at once when that one took longer), until a try fails or a try has started
+        at or after *duration*, and at least twice when *duration* is more than 0::
 
             verify.stable(lambda: verify.less(ripple(), 0.05, name="Ripple", units="V"),
                           duration=2, interval=0.2, name="Ripple steady")
 
-        The check passes when every try passed. It keeps the try that failed, or the passing
-        one closest to its limit (the last, for checks without a numeric limit), as its child,
-        and records ``tries``, ``elapsed`` and a ``trace`` as :meth:`eventually` does. A sample
-        that raises an ``Exception`` fails its try; usage errors, ``pytest.skip`` and the other
+        The check passes when every try passed: a try passes when the check it returns passes
+        and so does every other check it records. It keeps the try that failed (its failed
+        checks stay recorded, named in ``also_failed``), or the passing one closest to its
+        limit (the last, for checks without a numeric limit), as its child, and records
+        ``tries``, ``elapsed`` and a ``trace`` as :meth:`eventually` does. A sample that raises
+        an ``Exception`` fails its try; usage errors, ``pytest.skip``, threads and the other
         tries' checks behave as in :meth:`eventually`.
 
         It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks

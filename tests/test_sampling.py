@@ -18,9 +18,12 @@ from __future__ import annotations
 import asyncio
 import bdb
 import datetime
+import gc
 import json
 import math
 import re
+import sys
+import threading
 import unittest
 import warnings
 from decimal import Decimal
@@ -32,7 +35,7 @@ import pytest
 
 from pytest_verifier import ChecksFailedError, checks
 from pytest_verifier._checks import _sampling, margin, render_detail
-from pytest_verifier._run import Run, recording_verify
+from pytest_verifier._run import _TRYING, Run, _RecordingSampler, recording_verify
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -1051,13 +1054,15 @@ class TestStops:
             return verify.less(value, 40, name="T")
 
         with pytest.raises(ChecksFailedError) as raised:
-            verify.eventually(sample, timeout=5, name="Cool")
-        assert read.starts == [0.0, 0.1]  # sampling went on to the passing try
+            verify.eventually(sample, timeout=0.2, name="Cool")
+        assert read.starts == [0.0, 0.1, 0.2]  # sampling went on to the timeout
         assert str(raised.value).splitlines()[0] == (
-            "1 of 2 checks failed, stopped at [0]: Link — expected True, got False"
+            "2 of 2 checks failed, stopped at [0]: Link — expected True, got False (+1 more)"
         )
         assert _names(run) == ["Link", "Cool"]
-        assert run.records[1]["passed"] is True
+        # T passed in the last try, but Link failed it: no try passed with all its checks.
+        assert run.records[1]["passed"] is False
+        assert run.records[1]["child_checks"][0]["passed"] is True
 
     def test_failed_required_checks_of_dropped_tries_never_stop(self, clock: FakeClock):
         run, verify = _recording()
@@ -1096,14 +1101,17 @@ class TestStops:
             verify.require.is_true(False, name="Link")
             return verify.less(30, 40, name="T")
 
-        with pytest.raises(ChecksFailedError):
+        with pytest.raises(ChecksFailedError) as raised:
             verify.stable(
-                lambda: verify.eventually(inner, timeout=1, name="Inner"),
+                lambda: verify.eventually(inner, timeout=0.2, name="Inner"),
                 duration=0.5,
                 interval=0.25,
                 name="Outer",
             )
-        assert len(calls) == 3  # every outer try ran
+        # Link failed every inner try, so Inner failed the first outer try, which stable keeps;
+        # the stop waited until Outer was recorded.
+        assert len(calls) == 3
+        assert str(raised.value).splitlines()[0].startswith("2 of 2 checks failed, stopped at [0]")
         assert _names(run) == ["Link", "Outer"]
 
     def test_fail_fast_applies_after_sampling(self, clock: FakeClock):
@@ -1144,7 +1152,9 @@ class TestStops:
         result.stdout.no_fnmatch_line("*REACHED*")
         result.stdout.fnmatch_lines([
             "*1 of 1 checks failed, stopped at [[]0[]]: Cool — never passed in 1 s (5 tries)*",
-            "*1 of 2 checks failed, stopped at [[]0[]]: Link — expected True, got False*",
+            # Link failed the first try, so stable failed there, and stopped the test.
+            "*2 of 2 checks failed, stopped at [[]1[]]: Steady — failed at try 1 (0 s): T — 30 <"
+            " 40; also failed in that try: Link*",
         ])
 
 
@@ -1370,7 +1380,7 @@ class TestMargins:
         assert result.ret == pytest.ExitCode.OK
         result.stdout.fnmatch_lines([
             "*pytest-verifier: checks by name*",
-            "  ✓ Cool: 1 passed; margin 10",
+            "  ✓ Cool: 1 passed; margin 10C",  # the units of the kept try
             "  ✓ T: 1 passed; 30C, margin 10C",  # the dropped tries do not count
         ])
 
@@ -1426,3 +1436,323 @@ def test_built_checks_are_json_safe_and_agree_with_the_fixture(clock: FakeClock,
     text = json.dumps(built, allow_nan=False)
     assert checks.evaluate(built) is recorded["passed"]
     assert checks.evaluate(json.loads(text)) is recorded["passed"]
+
+
+# ---------------------------------------------------------------------------
+# Fixes from the bug hunt
+# ---------------------------------------------------------------------------
+
+
+def _hold(verify: Any, vout: Reader, temp: Reader, require: bool = False) -> Any:
+    """A sample that checks a temperature on the side and returns the Vout check."""
+    maker = verify.require if require else verify
+
+    def sample() -> Any:
+        maker.less(temp(), 80, name="Regulator temp", units="C")
+        return verify.approx(vout(), 3.3, abs_tol=0.05, name="Vout", units="V")
+
+    return sample
+
+
+class TestOtherChecksOfATry:
+    """A try passes only when the check it returns and every other check it records pass."""
+
+    def test_stable_stops_at_a_try_whose_other_check_failed(self, clock: FakeClock):
+        run, verify = _recording()
+        vout = Reader(clock, [3.3, 3.31, 3.34, 3.3])
+        temp = Reader(clock, [60, 95, 61])
+        record = verify.stable(
+            _hold(verify, vout, temp), duration=1, interval=0.25, name="Steady"
+        )
+        assert (record["passed"], record["tries"]) == (False, 2)
+        assert record["also_failed"] == ["Regulator temp"]
+        [child] = record["child_checks"]
+        assert (child["actual"], child["passed"]) == (3.31, True)
+        assert record["detail"] == (
+            "failed at try 2 (0.25 s): Vout — 3.31V == 3.3V ± 0.05V; also failed in that try: "
+            "Regulator temp"
+        )
+        assert record["trace"] == [[0.0, 3.3, True], [0.25, 3.31, False]]
+        # The failed check stays on its own; the passing try before it went with its checks.
+        assert _names(run) == ["Regulator temp", "Steady"]
+        assert (run.records[0]["actual"], run.records[0]["passed"]) == (95, False)
+        assert render_detail(_round_trip(record), False) == record["detail"]
+        unjudged = {
+            key: value
+            for key, value in _round_trip(record).items()
+            if key not in ("passed", "detail")
+        }
+        for copy in (record, _round_trip(record), unjudged):
+            assert checks.evaluate(copy) is False
+        assert verify.record(unjudged)["passed"] is False  # judged again, the same verdict
+
+    def test_a_required_other_check_of_that_try_stops_after_sampling(self, clock: FakeClock):
+        run, verify = _recording()
+        vout = Reader(clock, [3.3, 3.31, 3.34, 3.3])
+        temp = Reader(clock, [60, 95, 61])
+        with pytest.raises(ChecksFailedError) as raised:
+            verify.stable(
+                _hold(verify, vout, temp, require=True), duration=1, interval=0.25, name="Steady"
+            )
+        assert str(raised.value).splitlines()[0] == (
+            "2 of 2 checks failed, stopped at [0]: Regulator temp — expected < 80C, got 95C "
+            "(+1 more)"
+        )
+        assert _names(run) == ["Regulator temp", "Steady"]
+
+    def test_eventually_tries_again_after_a_try_whose_other_check_failed(self, clock: FakeClock):
+        run, verify = _recording()
+        link = Reader(clock, [False, True])
+
+        def sample():
+            verify.is_true(link(), name="Link")
+            return verify.less(30, 40, name="T")
+
+        record = verify.eventually(sample, timeout=5, interval=0.5, name="Cool")
+        assert (record["passed"], record["tries"], record["settled_at"]) == (True, 2, 0.5)
+        assert "also_failed" not in record
+        assert record["trace"] == [[0.0, 30, False], [0.5, 30, True]]
+        assert _names(run) == ["Link", "Cool"]
+        assert run.records[0]["passed"] is True  # the failed try went with its Link check
+
+    def test_eventually_fails_when_no_try_passed_with_all_its_checks(self, clock: FakeClock):
+        run, verify = _recording()
+
+        def sample():
+            verify.is_true(False, name="Link")
+            verify.is_true(False, name="Fan")
+            return verify.less(30, 40, name="T")
+
+        record = verify.eventually(sample, timeout=0.5, interval=0.25, name="Cool")
+        assert (record["passed"], record["tries"], record["settled_at"]) == (False, 3, None)
+        assert record["also_failed"] == ["Link", "Fan"]
+        # No "never changed" note: the value passed, the other checks failed.
+        assert record["detail"] == (
+            "never passed in 0.5 s (3 tries), last: T — 30 < 40; also failed in that try: Link "
+            "(+1 more)"
+        )
+        assert _names(run) == ["Link", "Fan", "Cool"]
+        assert checks.evaluate(_round_trip(record)) is False
+
+    def test_checks_that_count_inside_another_check_do_not_fail_a_try(self, clock: FakeClock):
+        run, verify = _recording()
+
+        def sample():
+            spare = verify.less(50, 40, name="Spare")  # a case that is not selected
+            return verify.conditional(
+                1, cases={1: verify.less(30, 40, name="T"), 2: spare}, name="Mode"
+            )
+
+        record = verify.stable(sample, duration=0.5, interval=0.25, name="Steady")
+        assert (record["passed"], record["tries"]) == (True, 3)
+        assert _names(run) == ["Steady"]
+
+
+class TestThreadsInATry:
+    def test_a_returned_check_made_on_another_thread_belongs_to_its_try(self, clock: FakeClock):
+        run, verify = _recording()
+        read = Reader(clock, [3.0, 3.1, 3.3])
+
+        def sample():
+            made: List[Any] = []
+            worker = threading.Thread(
+                target=lambda: made.append(verify.approx(read(), 3.3, abs_tol=0.05, name="V"))
+            )
+            worker.start()
+            worker.join()
+            return made[0]
+
+        record = verify.eventually(sample, timeout=5, name="Settles")
+        assert (record["passed"], record["tries"]) == (True, 3)
+        assert record["child_checks"][0]["actual"] == 3.3
+        assert _names(run) == ["Settles"]  # the failed tries went, with their checks
+
+    @pytest.mark.skipif(
+        bool(getattr(sys.flags, "thread_inherit_context", 0)),
+        reason="threads start in a copy of the context",
+    )
+    def test_other_checks_made_on_another_thread_stay_outside_the_try(self, clock: FakeClock):
+        run, verify = _recording()
+        read = Reader(clock, [50, 30])
+
+        def sample():
+            worker = threading.Thread(target=lambda: verify.is_true(False, name="Worker"))
+            worker.start()
+            worker.join()
+            return verify.less(read(), 40, name="T")
+
+        record = verify.eventually(sample, timeout=5, name="Cool")
+        assert (record["passed"], record["tries"]) == (True, 2)
+        assert _names(run) == ["Worker", "Worker", "Cool"]
+
+
+class TestValueChanged:
+    def test_text_that_changes_after_240_characters_changed(self, clock: FakeClock):
+        _, verify = _recording()
+        banner = "U-Boot " + "=" * 300
+        read = Reader(clock, [f"{banner}\n[{n}] starting service" for n in range(5)])
+        record = verify.eventually(
+            lambda: verify.matches(read(), "login:", name="Prompt"),
+            timeout=1,
+            interval=0.25,
+            name="Boots",
+        )
+        assert (record["passed"], record["tries"]) == (False, 5)
+        assert record["value_changed"] is True
+        assert "never changed" not in record["detail"]
+        assert [len(entry[1]) for entry in record["trace"]] == [240] * 5  # the trace keeps less
+
+    @pytest.mark.parametrize("reading", [math.nan, math.inf, -math.inf])
+    def test_a_reading_never_finite_gets_no_unchanged_note(self, clock: FakeClock, reading):
+        _, verify = _recording()
+        record = verify.eventually(
+            lambda: verify.approx(reading, 3.3, abs_tol=0.05, name="V"),
+            timeout=1,
+            interval=0.25,
+            name="Settles",
+        )
+        assert (record["passed"], record["tries"]) == (False, 5)
+        assert "never changed" not in record["detail"]
+        # The trace keeps the recorded values: snapshots, so text for a non-finite float.
+        assert [entry[1] for entry in record["trace"]] == [repr(reading)] * 5
+
+
+class TestTimes:
+    def test_stable_tries_twice_whatever_the_clock_does(
+        self, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+    ):
+        def ticking() -> float:
+            clock.now += 1  # each read of the clock is a second later than the one before
+            return clock.now
+
+        monkeypatch.setattr(_sampling, "_clock", ticking)
+        _, verify = _recording()
+        sample = lambda: verify.less(30, 40, name="T")  # noqa: E731
+        assert verify.stable(sample, duration=0.5, name="Steady")["tries"] == 2
+        assert verify.stable(sample, duration=1e-7, name="Steady")["tries"] == 2
+        assert verify.stable(sample, duration=0, name="Steady")["tries"] == 1
+
+    @pytest.mark.parametrize("zero", [-0.0, Decimal("-0")], ids=["float", "Decimal"])
+    def test_a_negative_zero_time_is_zero(self, clock: FakeClock, zero):
+        _, verify = _recording()
+        record = verify.eventually(lambda: verify.less(30, 40, name="T"), timeout=zero, name="C")
+        assert math.copysign(1, record["timeout"]) == 1
+        assert record["description"] == "Verify 'C' passes within 0 s (every 0.1 s)"
+        record = verify.stable(lambda: verify.less(30, 40, name="T"), duration=zero, name="S")
+        assert math.copysign(1, record["duration"]) == 1
+        assert record["description"] == "Verify 'S' holds for 0 s (every 0.1 s)"
+        assert record["detail"] == "held for 0 s (1 try), closest: T — 30 < 40"
+
+
+class TestAsyncSamples:
+    @pytest.mark.parametrize("builder", [False, True], ids=["fixture", "checks"])
+    def test_an_async_sample_gets_a_hint_and_no_warning(self, clock: FakeClock, builder):
+        _, verify = _recording()
+        maker = checks if builder else verify
+
+        async def sample():
+            return maker.less(30, 40, name="T")
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            record = maker.eventually(sample, timeout=5, name="Cool")
+            gc.collect()
+        assert record["tries"] == 1
+        assert record["error"] == (
+            "sample returned coroutine, not a check: use a plain function (def, not async "
+            "def), since nothing awaits it"
+        )
+        assert [str(warning.message) for warning in caught] == []
+
+    def test_the_event_loop_warning_shows_a_wrapper(self, clock: FakeClock):
+        _, verify = _recording()
+
+        async def test_body():
+            verify.stable(lambda: verify.is_true(True, name="On"), duration=0, name="X")
+
+        wrapper = "await asyncio.to_thread(lambda: verify.stable(...))"
+        with pytest.warns(RuntimeWarning, match=re.escape(wrapper)):
+            asyncio.run(test_body())
+
+
+class TestDroppedTries:
+    @staticmethod
+    def _samplers(monkeypatch: pytest.MonkeyPatch) -> List[Any]:
+        made: List[Any] = []
+        init = _RecordingSampler.__init__
+
+        def capture(sampler: Any, recorder: Any) -> None:
+            init(sampler, recorder)
+            made.append(sampler)
+
+        monkeypatch.setattr(_RecordingSampler, "__init__", capture)
+        return made
+
+    def test_dropped_tries_are_not_kept_until_sampling_ends(
+        self, clock: FakeClock, monkeypatch: pytest.MonkeyPatch
+    ):
+        samplers = self._samplers(monkeypatch)
+        _, verify = _recording()
+        hold = verify.stable(
+            lambda: verify.less(30, 40, name="T"), duration=10, interval=0.01, name="Hold"
+        )
+        cool = verify.eventually(
+            lambda: verify.less(50, 40, name="T"), timeout=10, interval=0.01, name="Cool"
+        )
+        assert hold["tries"] > 1000 and cool["tries"] > 1000
+        assert [len(sampler.tries) for sampler in samplers] == [1, 1]  # the kept try only
+
+    def test_an_outer_try_forgets_the_dropped_tries_of_an_inner_one(self, clock: FakeClock):
+        _, verify = _recording()
+        sizes: List[int] = []
+
+        def sample():
+            inner = verify.eventually(
+                lambda: verify.less(50, 40, name="T"), timeout=1, interval=0.01, name="Inner"
+            )
+            sizes.append(len(_TRYING.get().records))  # type: ignore[union-attr]
+            return inner
+
+        verify.stable(sample, duration=0, name="Outer")
+        assert sizes == [2]  # the inner check and the check of its kept try
+
+
+class TestSummaryUnits:
+    def test_a_sampling_check_has_the_units_of_its_kept_try(self, clock: FakeClock):
+        from pytest_verifier._checks import units
+
+        _, verify = _recording()
+        record = verify.stable(
+            lambda: verify.eventually(
+                lambda: verify.less(30, 40, name="T", units="C"), timeout=0, name="Inner"
+            ),
+            duration=0,
+            name="Outer",
+        )
+        assert units(record) == units(record["child_checks"][0]) == "C"
+        assert units(_round_trip(record)) == "C"
+        assert units(verify.eventually(_broken_read, timeout=0, name="Cool")) is None
+        assert units(verify.is_true(True, name="On")) is None
+        assert units({"check_type": "unknown", "name": "x", "units": "V"}) == "V"
+
+    def test_summary_margins_carry_the_units(self, pytester: pytest.Pytester):
+        pytester.makeconftest(_FAKE_CLOCK_CONFTEST)
+        pytester.makepyfile("""
+            def test_hold(verify):
+                verify.stable(lambda: verify.less(30, 40, name="T", units="C"), duration=0.2,
+                              name="Steady")
+                verify.stable(
+                    lambda: verify.eventually(
+                        lambda: verify.approx(3.31, 3.3, abs_tol=0.05, name="V", units="V"),
+                        timeout=0, name="Inner"),
+                    duration=0, name="Outer")
+        """)
+        result = pytester.runpytest("--verify-summary=stats")
+        assert result.ret == pytest.ExitCode.OK
+        result.stdout.fnmatch_lines([
+            "  ✓ Steady: 1 passed; margin 10C",
+            "  ✓ T: 1 passed; 30C, margin 10C",
+            "  ✓ Outer: 1 passed; margin 0.04V",
+            "  ✓ Inner: 1 passed; margin 0.04V",
+            "  ✓ V: 1 passed; 3.31V, margin 0.04V",
+        ])

@@ -5,8 +5,9 @@ verify.less(read_temp(), 40, name="T")``), again and again, and keep one try as 
 child: ``eventually`` the first that passed, or the last; ``stable`` the first that failed, or
 the passing one closest to its limit. Each call is a try, taken by a :class:`Sampler`: the
 sinks settle or record the check it made when it is made, and drop a try with every check it
-made once it can no longer be kept (see :class:`pytest_verifier._run.Recorder`). A bounded
-``trace`` keeps when each try started, its value and its verdict.
+made once it can no longer be kept (see :class:`pytest_verifier._run.Recorder`). A try passes
+when its check passed and so did every other check it recorded. A bounded ``trace`` keeps when
+each try started, its value and its verdict.
 
 They wait with :func:`time.sleep`, in the thread that calls them.
 """
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime
+import inspect
 import math
 import re
 import sys
@@ -44,21 +46,26 @@ TRACE_ENDS = 50
 #: The values a trace keeps (anything else is ``None``).
 _SCALARS = (bool, int, float, str, type(None))
 
+#: How a record keeps a float that is not finite (see :func:`~pytest_verifier._render.snapshot`).
+_NOT_FINITE = ("nan", "inf", "-inf")
+
 
 class Try:
     """One call of a sample.
 
     ``check`` is the check it made (``None`` when it made none: ``error`` says why), ``passed``
-    its verdict. ``usage`` marks a try that no later try can fix: the sample returned something
-    that is not a check, the same check again, or a usage error of this package. ``scope``
-    belongs to the sampler that took it.
+    its verdict: it passed when that check passed and so did every other check it made
+    (``others`` names those that failed). ``usage`` marks a try that no later try can fix: the
+    sample returned something that is not a check, the same check again, or a usage error of
+    this package. ``scope`` belongs to the sampler that took it.
     """
 
-    __slots__ = ("check", "passed", "error", "usage", "margin", "scope", "start")
+    __slots__ = ("check", "passed", "error", "usage", "margin", "scope", "start", "others")
 
     def __init__(self, start: float) -> None:
         self.check: Optional[Any] = None
         self.passed = False
+        self.others: List[str] = []
         self.error: Optional[str] = None
         self.usage = False
         self.margin: Optional[float] = None
@@ -71,8 +78,9 @@ class Sampler:
     """Takes the tries of one sampling check.
 
     This one calls the sample and judges the check it returns. A sink's sampler also settles or
-    records the check (:meth:`call`), forgets the tries the check drops (:meth:`drop`) and
-    says where a sample's error was raised (:meth:`origin`).
+    records the check (:meth:`call`), finds the other checks of a try that failed
+    (:meth:`failed_beside`), forgets the tries the check drops (:meth:`drop`) and says where a
+    sample's error was raised (:meth:`origin`).
     """
 
     def __init__(self) -> None:
@@ -95,6 +103,8 @@ class Sampler:
         if not is_descriptor(returned):
             attempt.error = f"returned {not_a_check(returned)}"
             attempt.usage = True
+            if inspect.iscoroutine(returned):
+                returned.close()  # an async sample: no "never awaited" warning
             return attempt
         if returned is self._last:
             attempt.error = (
@@ -106,7 +116,8 @@ class Sampler:
         self._last = returned
         check = self.keep(returned, attempt)
         attempt.check = check
-        attempt.passed = judge(check)[0]
+        attempt.others = self.failed_beside(check, attempt)
+        attempt.passed = judge(check)[0] and not attempt.others
         if attempt.passed:
             attempt.margin = margin(check)
         return attempt
@@ -118,6 +129,11 @@ class Sampler:
     def keep(self, check: Any, attempt: Try) -> Any:
         """The check *attempt* made, as the sampling check keeps it."""
         return check
+
+    def failed_beside(self, check: Any, attempt: Try) -> List[str]:
+        """The names of the checks *attempt* made besides *check* that failed (the try fails
+        with them). Here none: only a sink knows the other checks."""
+        return []
 
     def drop(self, attempt: Try) -> None:
         """*attempt* will not be kept: forget the checks it made."""
@@ -169,7 +185,7 @@ def _seconds_argument(value: object, label: str, check: str, positive: bool = Fa
             f"{check}() {label} must be a finite number of seconds, {wanted}; got "
             f"{render_text(safe_repr(value))}"
         )
-    return seconds
+    return abs(seconds)  # -0.0 is 0
 
 
 def seconds(value: Any) -> str:
@@ -198,7 +214,8 @@ def _validate(
         warnings.warn(
             f"verify.{check}() waits with time.sleep, which blocks the event loop of this "
             "async test: tasks cannot run while it waits. Run the code that changes the value "
-            "elsewhere, or call it from a thread (await asyncio.to_thread(...)).",
+            "elsewhere, or call it from a thread: "
+            f"await asyncio.to_thread(lambda: verify.{check}(...)).",
             RuntimeWarning,
             stacklevel=_caller_level(),
         )
@@ -253,14 +270,15 @@ def _alike(a: Any, b: Any) -> bool:
 
 class _Trace:
     """``[seconds since the start, value, passed]`` of the first and the last
-    :data:`TRACE_ENDS` tries. The value is the check's ``actual`` when it is a plain scalar."""
+    :data:`TRACE_ENDS` tries. The value is the check's ``actual`` when it is a plain scalar:
+    as recorded (a snapshot: ``"nan"`` for a NaN), text cut to :data:`VALUE_LIMIT` characters."""
 
     def __init__(self, start: float) -> None:
         self.start = start
         self.head: List[List[Any]] = []
         self.tail: List[List[Any]] = []
         #: The first try's value, and whether a later try's value differed (over every try,
-        #: not only the traced ones).
+        #: not only the traced ones; whole values, not the cut text).
         self.first: Any = None
         self.changed = False
 
@@ -271,15 +289,15 @@ class _Trace:
                 actual = attempt.check.get("actual")
             except Exception:
                 actual = None
-            if isinstance(actual, _SCALARS) and not (
-                isinstance(actual, float) and not math.isfinite(actual)
-            ):
-                value = shorten(actual, VALUE_LIMIT) if isinstance(actual, str) else actual
+            if isinstance(actual, _SCALARS):
+                value = actual
         key = (type(value), value)
         if not self.head:
             self.first = key
         elif key != self.first:
             self.changed = True
+        if isinstance(value, str):
+            value = shorten(value, VALUE_LIMIT)
         entry = [round(attempt.start - self.start, 3), value, attempt.passed]
         if len(self.head) < TRACE_ENDS:
             self.head.append(entry)
@@ -304,6 +322,11 @@ class _Sampling(CompositeType):
     def map_children(self, d: Mapping[str, Any], fn: Callable[[Any], Any]) -> Dict[str, Any]:
         return {"child_checks": [fn(child) for child in d.get("child_checks") or []]}
 
+    def vetoed(self, d: Mapping[str, Any]) -> bool:
+        """The kept try made another check that failed: the try failed, and so does this."""
+        others = d.get("also_failed")
+        return isinstance(others, list) and len(others) > 0
+
     def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
         """The margin of the kept try."""
         children = self.children(d)
@@ -312,16 +335,26 @@ class _Sampling(CompositeType):
         check = lookup(children[-1])
         return None if check is None else check.margin(children[-1])
 
+    def units(self, d: Mapping[str, Any]) -> Any:
+        """The units of the kept try."""
+        children = self.children(d)
+        if not children or not is_descriptor(children[-1]):
+            return None
+        check = lookup(children[-1])
+        return None if check is None else check.units(children[-1])
+
     @staticmethod
     def _describe(
         d: Dict[str, Any], kept: Optional[Try], trace: _Trace, start: float
     ) -> CheckDescriptor:
-        """*d* with what both sampling checks add: the trace, the kept try, and why it made no
-        check."""
+        """*d* with what both sampling checks add: the trace, the kept try, the other checks
+        that failed it, and why it made no check."""
         d["elapsed"] = round(_clock() - start, 3)
         d["trace"] = trace.entries()
         d["value_changed"] = trace.changed
         d["child_checks"] = [] if kept is None or kept.check is None else [kept.check]
+        if kept is not None and kept.others:
+            d["also_failed"] = list(kept.others)
         if kept is not None and kept.error is not None:
             if kept.usage:
                 d["error"] = f"sample {kept.error}"
@@ -346,6 +379,15 @@ class _Sampling(CompositeType):
             return f"{label} — {child_detail(child, judge(child)[0])}"
         failure = d.get("sample_error")
         return f"the sample {render_text(failure)}" if failure else "no check"
+
+    @staticmethod
+    def _also(d: Mapping[str, Any]) -> str:
+        """The other checks of the kept try that failed it, if any."""
+        others = d.get("also_failed")
+        if not isinstance(others, list) or not others:
+            return ""
+        more = f" (+{len(others) - 1} more)" if len(others) > 1 else ""
+        return f"; also failed in that try: {render_text(others[0])}{more}"
 
 
 class Eventually(_Sampling):
@@ -405,7 +447,7 @@ class Eventually(_Sampling):
             return f"stopped at try {d.get('tries')} ({seconds(d.get('elapsed'))})"
         return (
             f"never passed in {seconds(d.get('timeout'))} ({self._tries(d)}), "
-            f"last: {self._kept(d)}{_unchanged(d)}"
+            f"last: {self._kept(d)}{self._also(d)}{_unchanged(d)}"
         )
 
 
@@ -416,8 +458,14 @@ def _unchanged(d: Mapping[str, Any]) -> str:
     if d.get("value_changed") is not False or not isinstance(tries, int) or tries < 3:
         return ""
     try:
-        if trace[0][1] is None:  # type: ignore[index]
-            return ""  # no value to compare: the tries made no plain check, or raised
+        first = trace[0][1]  # type: ignore[index]
+        if first is None or first in _NOT_FINITE:
+            # No value to compare (the tries made no plain check, or raised), or a reading
+            # that is not a number (a disconnected input reads NaN however it is read).
+            return ""
+        children = d.get("child_checks") or []
+        if children and judge(children[-1])[0]:
+            return ""  # the value passed: other checks failed the tries
     except Exception:
         return ""
     return f"; the value never changed in {tries} tries: is it read inside the sample?"
@@ -435,9 +483,9 @@ class Stable(_Sampling):
         name: str,
         sampler: Optional[Sampler] = None,
     ) -> CheckDescriptor:
-        """Try *sample* until a try starts at or after *duration* seconds (so at least twice
-        when *duration* is more than 0); every check it makes must pass. Stops at the first
-        that fails."""
+        """Try *sample* until a try starts at or after *duration* seconds, and at least twice
+        when *duration* is more than 0; every check it makes must pass. Stops at the first
+        try that fails."""
         name, limit, every = _validate("stable", name, sample, duration, "duration", interval)
         sampler = sampler or Sampler()
         start = _clock()
@@ -461,7 +509,9 @@ class Stable(_Sampling):
                 kept = attempt
             else:
                 sampler.drop(attempt)
-            if attempt.start >= end:
+            # Twice at least, even when the first try started late (the clock is read before
+            # it, and a coarse clock ticks between reads).
+            if attempt.start >= end and (count > 1 or limit == 0):
                 break
             _wait(attempt.start, every, end)
         d: Dict[str, Any] = {
@@ -489,7 +539,7 @@ class Stable(_Sampling):
         elapsed = seconds(d.get("elapsed"))
         if d.get("error") is not None:
             return f"stopped at try {d.get('tries')} ({elapsed})"
-        return f"failed at try {d.get('tries')} ({_failed_at(d)}): {self._kept(d)}"
+        return f"failed at try {d.get('tries')} ({_failed_at(d)}): {self._kept(d)}{self._also(d)}"
 
 
 def _failed_at(d: Mapping[str, Any]) -> str:

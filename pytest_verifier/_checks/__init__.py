@@ -14,6 +14,7 @@ from ._base import (
     render_detail,
     summary_separator,
     truth,
+    units,
 )
 from ._composites import ALL_SATISFY, CONDITIONAL, GUARD
 from ._raises import RAISES
@@ -76,4 +77,5 @@ __all__ = [
     "render_detail",
     "summary_separator",
     "truth",
+    "units",
 ]
