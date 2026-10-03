@@ -210,6 +210,8 @@ def not_a_check(value: object) -> str:
             "lambda: verify.greater(read(), 3.2, name=...), not a comparison"
         )
     if _is_raises_block(value):
+        if getattr(value, "_entered", False) is True:  # the block ran: its check was meant
+            return "a verify.raises() block, not a check: return raised.check, not the block"
         return (
             "a verify.raises() block, not a check: it must be used in a with statement; use a "
             "function that runs `with verify.raises(...) as raised:` and returns raised.check"

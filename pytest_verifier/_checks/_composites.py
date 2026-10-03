@@ -24,7 +24,7 @@ from .._descriptors import (
     unwrap,
 )
 from .._render import describe_error, render_text, safe_repr, safe_str, snapshot
-from ._base import CompositeType, child_detail, judge, passes_through, register
+from ._base import CompositeType, call_user, child_detail, judge, passes_through, register
 
 
 def _is_lazy(child: object) -> bool:
@@ -40,7 +40,7 @@ def _resolve(child: Any, where: str) -> Tuple[Any, Optional[str]]:
     if not _is_lazy(child):
         return child, None
     try:
-        built = child()
+        built = call_user(child)
     except Exception as exc:
         if passes_through(exc):
             raise
@@ -108,7 +108,7 @@ class AllSatisfy(CompositeType):
                 error = f"iterating items raised {describe_error(exc)}"
                 break
             try:
-                child = descriptor_factory(item)
+                child = call_user(descriptor_factory, item)
             except Exception as exc:
                 if passes_through(exc):
                     raise
@@ -338,7 +338,11 @@ class Guard(_Selecting):
             else:
                 problem: Optional[str] = None
                 try:
-                    value = condition() if lazy else condition  # type: ignore[operator]
+                    value = (
+                        call_user(condition, check=False)  # type: ignore[arg-type]
+                        if lazy
+                        else condition
+                    )
                     if is_descriptor(value):
                         truth, problem = False, (
                             "returned a check, which is always truthy; return its verdict "
