@@ -27,6 +27,7 @@ has its own: a check is in the sections of the code that records it.
 from __future__ import annotations
 
 import contextvars
+import functools
 import os
 import sys
 import threading
@@ -115,17 +116,32 @@ _TRYING: contextvars.ContextVar[Optional[_TryScope]] = contextvars.ContextVar(
     "pytest_verifier_trying", default=None
 )
 
-#: The lists that collect the ``verify.raises`` blocks made now: one per call of user code
-#: that a composite is making (see :meth:`Recorder._call`), outermost first, with the key of
-#: their run. A thread starts outside them.
-_COLLECTING: contextvars.ContextVar[Tuple[object, Tuple[List[Any], ...]]] = (
-    contextvars.ContextVar("pytest_verifier_collecting", default=(None, ()))
-)
 
-#: The stops waiting for the composite being built now (see :meth:`Recorder.composite`): the
-#: key of its run, and ``(record, hard)`` of each. A thread starts outside it.
-_WAITING: contextvars.ContextVar[Tuple[object, Optional[List[Tuple[CheckDescriptor, bool]]]]] = (
-    contextvars.ContextVar("pytest_verifier_waiting", default=(None, None))
+class _Call:
+    """A call of user code that takes what the code raises as a failure: a sample of a
+    sampling check, or a lazy child, guard condition or ``all_satisfy`` factory of a composite.
+
+    If the code raises, the ``verify.raises`` blocks it made go (it never reached their
+    ``with``), and the stops of the required blocks whose unexpected exception went on wait
+    for the check that takes the error (see :meth:`Recorder._wait`). If it returns, the code
+    caught those exceptions itself: they stop nothing, as at the top level of the test.
+    """
+
+    __slots__ = ("key", "parent", "blocks", "waiting")
+
+    def __init__(self, key: object, parent: Optional[_Call]) -> None:
+        self.key = key
+        self.parent = parent
+        #: The ``verify.raises`` blocks made during the call.
+        self.blocks: List[Any] = []
+        #: ``(record, hard)`` of each failed required block whose exception went on.
+        self.waiting: List[Tuple[CheckDescriptor, bool]] = []
+
+
+#: The innermost call of user code that a composite or a sampling check is making now. Keyed by
+#: run (:attr:`_Call.key`); a thread starts outside it.
+_CALLING: contextvars.ContextVar[Optional[_Call]] = contextvars.ContextVar(
+    "pytest_verifier_calling", default=None
 )
 
 
@@ -268,10 +284,10 @@ class Run:
             while scope is not None:
                 scope.blocks.append(raises)
                 scope = scope.parent
-            key, collecting = _COLLECTING.get()
-            if key is self.key:
-                for blocks in collecting:
-                    blocks.append(raises)
+            call = self.calling()
+            while call is not None:
+                call.blocks.append(raises)
+                call = call.parent
 
     def drop_blocks(self, blocks: Iterable[Any]) -> None:
         """Forget these ``verify.raises`` blocks: entered, or made by code that will never reach
@@ -280,6 +296,12 @@ class Run:
             ids = {id(raises) for raises in blocks}
             if ids:
                 self.blocks = [block for block in self.blocks if id(block.raises) not in ids]
+
+    def calling(self) -> Optional[_Call]:
+        """The innermost call of user code that this run's composite or sampling check is
+        making now, if any."""
+        call = _CALLING.get()
+        return call if call is not None and call.key is self.key else None
 
     def trying(self) -> Optional[_TryScope]:
         """The try of this run's sampling check the code running now is in, if any."""
@@ -568,9 +590,10 @@ class Recorder(Sink):
     check, the stop waits until that check is recorded, and is dropped with the try.
 
     A ``verify.raises`` block that gets an unexpected exception lets it go on instead of
-    stopping: it stops the test itself. When a try, a lazy child or an ``all_satisfy`` factory
-    takes it as a failure, the stop waits until that try's sampling check, or that composite,
-    is recorded.
+    stopping: it stops the test itself. When a try, a lazy child, a guard condition or an
+    ``all_satisfy`` factory takes it as a failure, the stop waits until that try's sampling
+    check, or that composite, is recorded (see :class:`_Call`); when the user's code catches it,
+    nothing stops, as at the top level.
     """
 
     def __init__(self, run: Run, hard: bool = False) -> None:
@@ -637,17 +660,13 @@ class Recorder(Sink):
             self._wait(record, self._hard)
 
     def _wait(self, record: CheckDescriptor, hard: bool) -> None:
-        """Keep the stop of the failed *record* for the try or the composite that the code
-        running now builds, if any: they make it once recorded, unless the record is no longer
-        pending then."""
-        run = self._run
-        scope = run.trying()
-        if scope is not None:
-            scope.deferred.append((record, hard))
-            return
-        key, waiting = _WAITING.get()
-        if key is run.key and waiting is not None:
-            waiting.append((record, hard))
+        """Keep the stop of the failed *record*, whose exception goes on, for the call of user
+        code running now (see :class:`_Call`): if that call raises, the try or the composite
+        that takes the error makes the stop once recorded, unless the record is no longer
+        pending then. Outside such a call, the exception stops the test itself."""
+        call = self._run.calling()
+        if call is not None:
+            call.waiting.append((record, hard))
 
     def batch(self, descriptors: List[CheckDescriptor]) -> List[CheckDescriptor]:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
@@ -673,15 +692,14 @@ class Recorder(Sink):
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
         run.ensure_open()
+        # The stops of the calls of user code that raised (see _Call), made once recorded.
         waiting: List[Tuple[CheckDescriptor, bool]] = []
-        token = _WAITING.set((run.key, waiting))
-        caller = CALLER.set(self._call)
+        token = CALLER.set(functools.partial(self._call, waiting))
         try:
             try:
                 descriptor = build()
             finally:
-                CALLER.reset(caller)
-                _WAITING.reset(token)
+                CALLER.reset(token)
         except BaseException:
             # Invalid arguments, or a lazy child or condition that skipped or failed the test:
             # the checks passed to this call were never selected, so they must not linger as
@@ -689,7 +707,7 @@ class Recorder(Sink):
             loose = loose_children(*arguments)
             _unused.used(*loose)
             run.absorb(loose)
-            for each, hard in waiting:  # for the composite that takes this error, if any
+            for each, hard in waiting:  # for the try or composite that takes this error, if any
                 self._wait(each, hard)
             raise
         record = self._add_composite(descriptor)
@@ -700,24 +718,29 @@ class Recorder(Sink):
                 self._enforce(each, False, hard)
         return record
 
-    def _call(self, function: Callable[..., Any], args: Tuple[Any, ...], check: bool) -> Any:
-        """Call user code that the composite being built calls (see
-        :func:`~pytest_verifier._checks._base.call_user`). If it raises, the ``verify.raises``
-        blocks it made go: it never reached their ``with``, as when a phase ends with an
-        exception. A block it returns in place of a check (*check*) is reported by the
-        composite's error, not as never used too."""
+    def _call(
+        self,
+        waiting: List[Tuple[CheckDescriptor, bool]],
+        function: Callable[..., Any],
+        args: Tuple[Any, ...],
+        check: bool,
+    ) -> Any:
+        """Make a call of user code for the composite being built (see :class:`_Call` and
+        :func:`~pytest_verifier._checks._base.call_user`): if it raises, its blocks go and its
+        stops go to *waiting*, the composite's. A block it returns in place of a check
+        (*check*) is reported by the composite's error, not as never used too."""
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
-        made: List[Any] = []
-        key, collecting = _COLLECTING.get()
-        token = _COLLECTING.set((run.key, (collecting if key is run.key else ()) + (made,)))
+        call = _Call(run.key, run.calling())
+        token = _CALLING.set(call)
         try:
             returned = function(*args)
         except BaseException:
-            run.drop_blocks(made)
+            run.drop_blocks(call.blocks)
+            waiting.extend(call.waiting)
             raise
         finally:
-            _COLLECTING.reset(token)
+            _CALLING.reset(token)
         if check and isinstance(returned, Raises):
             run.drop_blocks((returned,))
         return returned
@@ -823,15 +846,20 @@ class _RecordingSampler(Sampler):
         scope = _TryScope(run.key, run.trying())
         attempt.scope = scope
         self.tries.append(attempt)
+        call = _Call(run.key, run.calling())
         token = _TRYING.set(scope)
+        calling = _CALLING.set(call)
         try:
             returned = sample()
         except BaseException:
             # A failed try (or an interrupted sampling): the sample never reached the with of
-            # the blocks it made, so they go with its error, even from the try that is kept.
-            run.drop_blocks(scope.blocks)
+            # the blocks it made, so they go, even from the try that is kept; the stops of its
+            # required blocks wait with the try's (made if it is kept).
+            run.drop_blocks(call.blocks)
+            scope.deferred.extend(call.waiting)
             raise
         finally:
+            _CALLING.reset(calling)
             _TRYING.reset(token)
         if isinstance(returned, Raises):
             # The sampling check says so (not a check): not reported as never used too.

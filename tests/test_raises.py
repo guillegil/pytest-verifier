@@ -1626,3 +1626,38 @@ def test_a_block_made_by_a_nested_lazy_child_goes_when_an_outer_one_raises():
     assert "BusyError: busy" in record["error"]
     _, pending = run.take_unjudged()
     assert [check["name"] for check in pending] == ["Inner", "Outer"]
+
+
+@pytest.mark.parametrize("where", ["eventually", "conditional", "guard", "all_satisfy"])
+def test_a_required_block_whose_exception_the_user_code_catches_stops_nothing(
+    no_wait, where: str
+):
+    """As at the top level of the test: only an exception that a try or a composite takes as
+    a failure makes the stop wait for it."""
+    run, verify = _recording()
+
+    def ready(*_: Any) -> Any:
+        with pytest.raises(BusyError):
+            _busy_reject(verify)
+        return verify.equal(1, 1, name="Ready")
+
+    if where == "eventually":
+        record = verify.eventually(ready, timeout=0.3, name="Rejects")
+    else:
+        record = _build_composite(verify, where, ready)
+    assert record["passed"] is True
+    after = verify.equal(1, 1, name="after")
+    assert [check["name"] for check in run.records] == ["Reject 7 V", "Rejects", "after"]
+    assert run.records[2] is after
+
+
+def test_a_required_block_taken_by_a_lazy_child_in_a_sample_stops_after_the_sampling(no_wait):
+    run, verify = _recording()
+
+    def sample():
+        return verify.conditional("on", cases={"on": lambda: _busy_reject(verify)}, name="Mode")
+
+    with pytest.raises(ChecksFailedError) as excinfo:
+        verify.eventually(sample, timeout=0.3, name="Rejects")
+    assert str(excinfo.value).startswith("2 of 2 checks failed, stopped at [0]: Reject 7 V")
+    assert [check["name"] for check in run.records] == ["Reject 7 V", "Rejects"]
