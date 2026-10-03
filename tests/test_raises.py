@@ -1516,3 +1516,113 @@ def test_notes_that_cannot_be_read_are_no_notes():
     assert record["raised_message"] == "hello"
     assert "error" not in record
     _assert_judged_alike(record)
+
+
+# ---------------------------------------------------------------------------
+# Review of the hunt fixes: blocks made by code that a try or a composite took the error of
+# ---------------------------------------------------------------------------
+
+
+def _build_composite(verify: Any, where: str, child: Any) -> Any:
+    """A composite named "Rejects" that calls *child* (with no argument) as its user code."""
+    if where == "conditional":
+        return verify.conditional("on", cases={"on": child}, name="Rejects")
+    if where == "guard":
+        return verify.guard([(True, "on", child)], name="Rejects")
+    return verify.all_satisfy([7], lambda _: child(), name="Rejects")
+
+
+def test_a_block_made_in_a_kept_try_that_raised_is_not_reported(no_wait):
+    run, verify = _recording()
+
+    def sample():
+        raised = verify.raises(ValueError, name="Reject 7 V")
+        raise BusyError("busy")  # every try, the kept one too, fails before its with
+        with raised:  # pragma: no cover - not reached
+            _set_7_volts()
+        return raised.check  # pragma: no cover - not reached
+
+    record = verify.eventually(sample, timeout=0.3, name="Rejects")
+    assert record["passed"] is False
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Rejects"]
+    assert "BusyError: busy" in pending[0]["detail"]
+
+
+@pytest.mark.parametrize("where", ["conditional", "guard", "all_satisfy"])
+def test_a_block_made_by_a_lazy_child_that_raised_is_not_reported(where: str):
+    run, verify = _recording()
+
+    def reject():
+        raised = verify.raises(ValueError, name="Reject 7 V")
+        raise BusyError("busy")
+        with raised:  # pragma: no cover - not reached
+            _set_7_volts()
+        return raised.check  # pragma: no cover - not reached
+
+    record = _build_composite(verify, where, reject)
+    assert "BusyError: busy" in record["error"]
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Rejects"]
+
+
+@pytest.mark.parametrize("where", ["conditional", "guard", "all_satisfy"])
+def test_a_lazy_child_that_returns_an_unused_block_is_reported_once(where: str):
+    run, verify = _recording()
+    record = _build_composite(verify, where, lambda: verify.raises(ValueError, name="Reject"))
+    assert "returned a verify.raises() block, not a check: it must be used" in record["error"]
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Rejects"]
+
+
+@pytest.mark.parametrize("where", ["conditional", "guard", "all_satisfy"])
+def test_a_block_a_lazy_child_forgot_is_still_reported(where: str):
+    run, verify = _recording()
+
+    def ready():
+        verify.raises(ValueError, name="Forgotten")  # no with: a real mistake
+        return verify.equal(1, 1, name="Ready")
+
+    assert _build_composite(verify, where, ready)["passed"] is True
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Forgotten", "Rejects"]
+    assert pending[0]["error"].startswith("verify.raises() was never used in a with statement")
+
+
+def test_a_block_made_by_a_guard_condition_that_raised_is_not_reported():
+    run, verify = _recording()
+
+    def ready():
+        verify.raises(ValueError, name="Reject 7 V")
+        raise BusyError("busy")
+
+    record = verify.guard([(ready, "on", verify.equal(1, 1, name="Ready"))], name="Mode")
+    assert "BusyError: busy" in record["error"]
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Mode"]
+
+
+def test_a_block_a_guard_condition_returns_is_still_reported():
+    run, verify = _recording()
+    condition = lambda: verify.raises(ValueError, name="Forgotten")  # noqa: E731 - truthy
+    record = verify.guard([(condition, "on", verify.equal(1, 1, name="Ready"))], name="Mode")
+    assert record["passed"] is True
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Forgotten", "Mode"]
+
+
+def test_a_block_made_by_a_nested_lazy_child_goes_when_an_outer_one_raises():
+    run, verify = _recording()
+
+    def inner():
+        verify.raises(ValueError, name="Reject 7 V")
+        return verify.equal(1, 1, name="Inner ready")
+
+    def outer():
+        verify.conditional("on", cases={"on": inner}, name="Inner")
+        raise BusyError("busy")  # after the inner composite: its block is never reached
+
+    record = verify.conditional("on", cases={"on": outer}, name="Outer")
+    assert "BusyError: busy" in record["error"]
+    _, pending = run.take_unjudged()
+    assert [check["name"] for check in pending] == ["Inner", "Outer"]

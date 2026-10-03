@@ -47,6 +47,7 @@ from typing import (
 
 from . import _unused
 from ._checks import chosen_checks, child_checks
+from ._checks._base import CALLER
 from ._checks._sampling import Sampler, Try
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
@@ -112,6 +113,13 @@ class _TryScope:
 #: never reach another test; a thread starts outside it.
 _TRYING: contextvars.ContextVar[Optional[_TryScope]] = contextvars.ContextVar(
     "pytest_verifier_trying", default=None
+)
+
+#: The lists that collect the ``verify.raises`` blocks made now: one per call of user code
+#: that a composite is making (see :meth:`Recorder._call`), outermost first, with the key of
+#: their run. A thread starts outside them.
+_COLLECTING: contextvars.ContextVar[Tuple[object, Tuple[List[Any], ...]]] = (
+    contextvars.ContextVar("pytest_verifier_collecting", default=(None, ()))
 )
 
 #: The stops waiting for the composite being built now (see :meth:`Recorder.composite`): the
@@ -250,7 +258,8 @@ class Run:
 
     def add_block(self, raises: Any) -> None:
         """Keep the ``verify.raises`` block made now until it is entered (see
-        :meth:`take_unjudged`). One made in a try goes with that try."""
+        :meth:`take_unjudged`). One made in a try goes with that try, and one made by user code
+        that a composite calls goes when that code raises."""
         with self.lock:
             self.ensure_open()
             self.blocks.append(_Block(raises, self.phase, self.section_path(), self.made))
@@ -259,9 +268,14 @@ class Run:
             while scope is not None:
                 scope.blocks.append(raises)
                 scope = scope.parent
+            key, collecting = _COLLECTING.get()
+            if key is self.key:
+                for blocks in collecting:
+                    blocks.append(raises)
 
     def drop_blocks(self, blocks: Iterable[Any]) -> None:
-        """Forget these ``verify.raises`` blocks: entered, or made in a dropped try."""
+        """Forget these ``verify.raises`` blocks: entered, or made by code that will never reach
+        their ``with`` (a dropped try, user code that raised)."""
         with self.lock:
             ids = {id(raises) for raises in blocks}
             if ids:
@@ -661,10 +675,12 @@ class Recorder(Sink):
         run.ensure_open()
         waiting: List[Tuple[CheckDescriptor, bool]] = []
         token = _WAITING.set((run.key, waiting))
+        caller = CALLER.set(self._call)
         try:
             try:
                 descriptor = build()
             finally:
+                CALLER.reset(caller)
                 _WAITING.reset(token)
         except BaseException:
             # Invalid arguments, or a lazy child or condition that skipped or failed the test:
@@ -683,6 +699,28 @@ class Recorder(Sink):
             if run.pending(each):
                 self._enforce(each, False, hard)
         return record
+
+    def _call(self, function: Callable[..., Any], args: Tuple[Any, ...], check: bool) -> Any:
+        """Call user code that the composite being built calls (see
+        :func:`~pytest_verifier._checks._base.call_user`). If it raises, the ``verify.raises``
+        blocks it made go: it never reached their ``with``, as when a phase ends with an
+        exception. A block it returns in place of a check (*check*) is reported by the
+        composite's error, not as never used too."""
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        made: List[Any] = []
+        key, collecting = _COLLECTING.get()
+        token = _COLLECTING.set((run.key, (collecting if key is run.key else ()) + (made,)))
+        try:
+            returned = function(*args)
+        except BaseException:
+            run.drop_blocks(made)
+            raise
+        finally:
+            _COLLECTING.reset(token)
+        if check and isinstance(returned, Raises):
+            run.drop_blocks((returned,))
+        return returned
 
     def _add_composite(self, descriptor: CheckDescriptor) -> CheckDescriptor:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
@@ -788,6 +826,11 @@ class _RecordingSampler(Sampler):
         token = _TRYING.set(scope)
         try:
             returned = sample()
+        except BaseException:
+            # A failed try (or an interrupted sampling): the sample never reached the with of
+            # the blocks it made, so they go with its error, even from the try that is kept.
+            run.drop_blocks(scope.blocks)
+            raise
         finally:
             _TRYING.reset(token)
         if isinstance(returned, Raises):

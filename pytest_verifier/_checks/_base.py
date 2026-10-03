@@ -9,6 +9,7 @@ descriptor (``build``), comparing the user's values (``compare``), rendering the
 from __future__ import annotations
 
 import bdb
+import contextvars
 import math
 import unittest
 from fractions import Fraction
@@ -74,6 +75,26 @@ def passes_through(exc: BaseException, expected: Tuple[type, ...] = ()) -> bool:
         )
     except Exception:  # pragma: no cover - a misbehaving __instancecheck__
         return True
+
+
+#: How the user code a composite calls is called, when the sink building the composite
+#: watches it (see :func:`call_user`): ``caller(function, args, check)``.
+CALLER: contextvars.ContextVar[Optional[Callable[..., Any]]] = contextvars.ContextVar(
+    "pytest_verifier_caller", default=None
+)
+
+
+def call_user(function: Callable[..., Any], *args: Any, check: bool = True) -> Any:
+    """Call *function* with *args*: user code a composite calls, a lazy child or an
+    ``all_satisfy`` factory (*check*: it must return a check) or a guard condition.
+
+    The sink building the composite may watch the call (:data:`CALLER`): the fixture's forgets
+    the ``verify.raises`` blocks the code made when it raises (it never reached their
+    ``with``), and a block it returns in place of a check (the composite's error says so).
+    """
+    caller = CALLER.get()
+    return function(*args) if caller is None else caller(function, args, check)
+
 
 class CheckType:
     """One kind of check. Subclasses set ``check_type`` and implement ``compare`` and ``detail``.

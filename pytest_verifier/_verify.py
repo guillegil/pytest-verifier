@@ -875,8 +875,9 @@ class Verify:
         Put only the call that must raise in the block: the statements after it do not run.
         A ``verify.raises()`` that is never used in a ``with`` statement becomes a failed check
         at the end of the test phase, with the place and section where it was made, unless the
-        phase ended with an exception (a stopped test, an error, a skip): the code may never
-        have reached the ``with``.
+        code that made it ended with an exception (the phase: a stopped test, an error, a skip;
+        or a sample, lazy child, guard condition or factory that raised): it may never have
+        reached the ``with``.
 
         Args:
             expected_exception: The exception class, or a tuple of them. ``Exception`` and
@@ -1020,8 +1021,8 @@ class Raises(Generic[_E]):
     """A ``verify.raises`` block: its check is made when the block ends.
 
     Use it once, in a ``with`` statement; one that is never used in a ``with`` statement
-    becomes a failed check at the end of the test phase, unless the phase ended with an
-    exception::
+    becomes a failed check at the end of the test phase, unless the code that made it ended
+    with an exception::
 
         with verify.raises(ValueError, match="out of range", name="Reject 7 V") as raised:
             psu.set_voltage(7)
