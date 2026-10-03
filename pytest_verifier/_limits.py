@@ -18,16 +18,18 @@ import csv
 import difflib
 import io
 import math
+import numbers
 import os
 import re
 import typing
+from collections.abc import Collection, Iterator
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from ._checks import REGISTRY
 from ._descriptors import CheckDescriptor, is_real, plain_text, unwrap
-from ._render import safe_repr
+from ._render import render_text, safe_repr
 
 if typing.TYPE_CHECKING:  # pragma: no cover
     from ._verify import Sink
@@ -117,6 +119,21 @@ class CellText(str):
     comma = False
 
 
+class CellNumber(float):
+    """A CSV cell of a numeric limit (``low``, ``high``, ``threshold``, a tolerance, the
+    ``expected`` of ``approx``) that is not a whole number: a ``float`` that keeps the cell's
+    text, so that it is checked as a ``Decimal`` or ``Fraction`` from its digits against one
+    (``3.2`` equals ``Decimal("3.2")``), and as a plain ``float`` against anything else."""
+
+    #: The cell, and whether the file reads ``3,3`` as a number.
+    text = ""
+    comma = False
+
+    def like(self, value: Any) -> Any:
+        """The limit to check *value* against."""
+        return _like(float(self), self.text, self.comma, value)
+
+
 class Row:
     """One row, checked: its check method and the arguments after the measured value."""
 
@@ -142,17 +159,24 @@ class Row:
         """The row's check of *value*; raises ``TypeError``/``ValueError`` naming the row.
 
         A :class:`CellText` argument becomes what *value* is compared as; when it cannot be
-        one, the check fails with an ``error`` saying why.
+        one, the check fails with an ``error`` saying why. A :class:`CellNumber` becomes a
+        ``Decimal`` or ``Fraction`` against one, else a plain ``float``.
         """
         problem: Optional[str] = None
         args = list(self.args)
         for index, argument in enumerate(args):
             if isinstance(argument, CellText):
                 args[index], problem = _typed_cell(argument, value, self.method)
+            elif isinstance(argument, CellNumber):
+                args[index] = argument.like(value)
+        kwargs = {
+            key: argument.like(value) if isinstance(argument, CellNumber) else argument
+            for key, argument in self.kwargs.items()
+        }
         check = REGISTRY[ROW_CHECKS[self.method][2]]
         try:
             descriptor: CheckDescriptor = check.build(  # type: ignore[attr-defined]
-                value, *args, name=self.name, **self.kwargs
+                value, *args, name=self.name, **kwargs
             )
         except (TypeError, ValueError) as exc:
             raise type(exc)(f"{self.context}: {exc}") from None
@@ -171,9 +195,15 @@ def _finite(value: object) -> bool:
     """Whether *value* is a real number (not a ``bool``) that is neither NaN nor infinite."""
     if not is_real(value):
         return False
+    if isinstance(value, numbers.Rational):  # int, Fraction: of any size, never a float
+        return True
+    if isinstance(value, Decimal):
+        return value.is_finite()
     try:
         return math.isfinite(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):  # Decimal('sNaN')
+    except OverflowError:  # a real number too large for a float
+        return True
+    except (TypeError, ValueError):
         return False
 
 
@@ -206,7 +236,7 @@ def _infer(given: Dict[str, Any], context: str) -> str:
         ):
             shown = safe_repr(str(expected) if isinstance(expected, str) else expected)
             raise ValueError(
-                f"{context}: expected {shown} is a number with a fraction and no tolerance: "
+                f"{context}: expected {shown} is a float and there is no tolerance: "
                 "give abs_tol or rel_tol to compare a measured number (approx), or say "
                 "check='equal' for an exact match, such as a version text"
             )
@@ -257,19 +287,22 @@ def parse_row(name: object, row: object, context: Optional[str] = None) -> Row:
             raise TypeError(f"{context}: give threshold or {alias}, not both")
         given["threshold"] = given.pop(alias)
     required, optional, _ = ROW_CHECKS[method]
+
+    def spelt(arguments: typing.Iterable[str]) -> str:
+        return ", ".join(
+            f"{argument} (or {alias})" if argument == "threshold" and alias else argument
+            for argument in arguments
+        )
+
     unknown = sorted(set(given) - set(required) - set(optional))
     if unknown:
-        takes = [
-            f"{argument} (or {alias})" if argument == "threshold" and alias else argument
-            for argument in (*required, *optional)
-        ]
         raise TypeError(
-            f"{context}: {method}() takes {', '.join(takes) or 'no limits'}; "
+            f"{context}: {method}() takes {spelt((*required, *optional)) or 'no limits'}; "
             f"not: {', '.join(unknown)}"
         )
     missing = [argument for argument in required if argument not in given]
     if missing:
-        raise TypeError(f"{context}: {method}() needs {', '.join(missing)}")
+        raise TypeError(f"{context}: {method}() needs {spelt(missing)}")
     if method == "matches":
         pattern = given["pattern"]
         if not isinstance(pattern, (str, re.Pattern)):
@@ -319,6 +352,11 @@ def _typed_cell(cell: CellText, value: Any, method: str) -> Tuple[Any, Optional[
     text = str(cell)
     measured = "the measurement is"
     if method in ("contains", "not_contains"):
+        if isinstance(value, Iterator):
+            return text, (
+                f"a CSV needle is text or a number, and a {type(value).__name__} can be read "
+                "only once: pass a list"
+            )
         kind = _kind_of_items(value)
         if kind is None:
             return text, (
@@ -373,12 +411,19 @@ def _kind(value: Any) -> Optional[str]:
 
 def _kind_of_items(haystack: Any) -> Optional[str]:
     """What a ``needle`` cell is compared as, from the haystack: text in a ``str`` (and when
-    nothing was measured), else the one kind of its items."""
+    nothing was measured), else the one kind of the items of a collection that can be read
+    again (not an iterator, and not bytes)."""
     if haystack is None or isinstance(haystack, str):
         return "text"
-    if not isinstance(haystack, (list, tuple, set, frozenset, dict, range)):
+    if (
+        not isinstance(haystack, Collection)
+        or isinstance(haystack, (Iterator, bytes, bytearray, memoryview))
+    ):
         return None
-    kinds = {_kind(item) for item in haystack}
+    try:
+        kinds = {_kind(item) for item in haystack}
+    except Exception:  # a collection that cannot be read, such as a 0-d numpy array
+        return None
     if not kinds:
         return "text"  # empty: no needle is in it, whatever its type
     if len(kinds) == 1 and None not in kinds:
@@ -415,10 +460,14 @@ def _by_name(measurements: Mapping[Any, Any]) -> Dict[str, Tuple[Any, Any]]:
 
 
 def _not_measured(name: str, unused: List[str]) -> str:
-    """The error of a row with no measurement, naming an unused key that looks like it."""
-    close = difflib.get_close_matches(name, unused, n=1, cutoff=0.6)
-    hint = f"; is it {close[0]!r}?" if close else ""
-    return f"{NOT_MEASURED}: the measurements have no {name!r}{hint}"
+    """The error of a row with no measurement, naming an unused key that looks like it, in
+    any case."""
+    folded: Dict[str, str] = {}
+    for key in unused:
+        folded.setdefault(key.casefold(), key)
+    close = difflib.get_close_matches(name.casefold(), list(folded), n=1, cutoff=0.6)
+    hint = f"; is it '{render_text(folded[close[0]])}'?" if close else ""
+    return f"{NOT_MEASURED}: the measurements have no '{render_text(name)}'{hint}"
 
 
 def limit_checks(
@@ -449,13 +498,17 @@ def limit_checks(
     names = {row.name for row in rows}
     unused = [text for text in measured if text not in names]
     built: List[CheckDescriptor] = []
+    keys: List[str] = []  # the rows' names: a record's name may be escaped
     for row in rows:
         if row.name in measured:
-            built.append(row.build(measured[row.name][1]))
+            descriptor = row.build(measured[row.name][1])
         elif on_missing == "fail":
             descriptor = row.build(None)
             descriptor["error"] = _not_measured(row.name, unused)
-            built.append(descriptor)
+        else:
+            continue
+        built.append(descriptor)
+        keys.append(row.name)
     if not built:
         shown = ", ".join(repr(row.name) for row in rows[:5])
         raise ValueError(
@@ -463,7 +516,7 @@ def limit_checks(
             f"(rows: {shown}{', ...' if len(rows) > 5 else ''}; measurements: "
             f"{', '.join(repr(text) for text in list(measured)[:5]) or 'none'})"
         )
-    return {check["name"]: check for check in sink.batch(built)}
+    return dict(zip(keys, sink.batch(built)))
 
 
 # ---------------------------------------------------------------------------
@@ -542,6 +595,11 @@ def _column_map(columns: Optional[Mapping[str, Optional[str]]]) -> Dict[str, Opt
                 "load_limits() columns maps a file's column name to a row's argument name, or "
                 f"to None to skip it; got {safe_repr(key)}: {safe_repr(target)}"
             )
+        if target is not None and not target.strip():
+            raise ValueError(
+                f"load_limits() columns maps {key!r} to an empty name; skip a column with "
+                f"None: {{{key!r}: None}}"
+            )
         name = key.strip().lower()
         if name in mapped:
             raise ValueError(
@@ -562,10 +620,11 @@ def load_limits(
 ) -> Dict[str, LimitRow]:
     """Read a limits table for :meth:`Verify.limits` from a CSV file.
 
-    The file starts with a header line; blank lines and lines whose first cell starts with
-    ``#`` are skipped. Columns are separated by commas, semicolons or tabs, whichever gives a
-    ``name`` column; with semicolons, a decimal comma (``3,3``) is a number too. Column names
-    match in any case, and cells are stripped; an empty cell is not given.
+    The file starts with a header line (after a byte-order mark, if any, whatever the
+    *encoding*); blank lines and lines whose first cell starts with ``#`` are skipped. Columns
+    are separated by commas, semicolons or tabs, whichever gives a ``name`` column; with
+    semicolons, a decimal comma (``3,3``) is a number too. Column names match in any case,
+    and cells are stripped; an empty cell is not given.
 
     Columns:
 
@@ -573,6 +632,8 @@ def load_limits(
     - ``check``: the check method; without it the limits say which (see :meth:`Verify.limits`).
     - ``low``, ``high``, ``threshold``, ``abs_tol``, ``rel_tol`` and the ``expected`` of an
       ``approx`` or ``length``: numbers (``3.3``, ``-5``, ``0x1F``; not ``nan`` or ``inf``).
+      Against a ``Decimal`` or ``Fraction`` measurement, a cell is one too, from its digits,
+      so that ``3.2`` is exactly ``Decimal("3.2")``.
     - ``expected`` of ``equal``/``not_equal``, and ``needle``: compared as the measurement is.
       Against a ``str`` the cell is text (``1.10`` stays ``"1.10"``), against a number it is
       a number (a ``Decimal`` or ``Fraction`` against one), against a ``bool`` true/false; a
@@ -631,6 +692,8 @@ def load_limits(
             f"load_limits(): {shown}:{line} is not {encoding} text ({exc.reason}): save the "
             "file as 'CSV UTF-8', or pass its encoding, such as encoding=\"cp1252\""
         ) from None
+    if text.startswith("\ufeff"):  # a byte-order mark, read with encoding="utf-8"
+        text = text[1:]
     delimiter, found = _choose_delimiter(text, mapped, shown)
     comma = delimiter == ";"
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
@@ -648,6 +711,17 @@ def load_limits(
             f"(its columns: {', '.join(named)})"
         )
     unknown = [name for name in named if name not in ARGUMENTS | _COLUMNS | set(wanted)]
+    renamed = [
+        index for index, name in enumerate(names) if name in unknown and found.renamed(index)
+    ]
+    if renamed:  # a misspelt columns= target
+        header, target = found.header[renamed[0]], str(names[renamed[0]])
+        close = difflib.get_close_matches(target, sorted(ARGUMENTS | _COLUMNS), n=1)
+        raise ValueError(
+            f"load_limits(): columns= maps the column {header!r} of {shown} to {target!r}, "
+            f"which is not a limit{f' (did you mean {close[0]!r}?)' if close else ''}. Limit "
+            f"columns: name, check, {', '.join(sorted(ARGUMENTS))}"
+        )
     if unknown:
         raise ValueError(
             f"load_limits(): {shown} has columns that are not limits: {', '.join(unknown)}. "
@@ -722,16 +796,29 @@ def load_limits(
 
 
 class _Found:
-    """The header found with one delimiter: its column names, and its line."""
+    """The header found with one delimiter: its cells, its column names, and its line."""
 
-    def __init__(self, names: List[Optional[str]], line: int, ignored: Set[int]) -> None:
+    def __init__(
+        self,
+        header: List[str],
+        names: List[Optional[str]],
+        line: int,
+        ignored: Set[int],
+        mapped: Set[int],
+    ) -> None:
+        self.header = header
         self.names = names
         self.line = line
         self.ignored = ignored
+        self.mapped = mapped
 
     def skipped(self, index: int) -> bool:
         """Whether column *index* was skipped with ``columns=``."""
         return index in self.ignored
+
+    def renamed(self, index: int) -> bool:
+        """Whether column *index* was renamed with ``columns=``."""
+        return index in self.mapped
 
 
 def _choose_delimiter(
@@ -747,17 +834,18 @@ def _choose_delimiter(
             first = header
         names: List[Optional[str]] = []
         ignored: Set[int] = set()
+        renamed: Set[int] = set()
         for index, cell in enumerate(header):
             key = cell.strip().lower()
             if key in mapped:
                 target = mapped[key]
-                if target is None:
-                    ignored.add(index)
+                (renamed if target is not None else ignored).add(index)
                 names.append(None if target is None else target.strip().lower())
             else:
                 names.append(key or None)
         if "name" in names and (best is None or len(names) > len(best[1].names)):
-            best = (delimiter, _Found(names, line, ignored))
+            cells = [cell.strip() for cell in header]
+            best = (delimiter, _Found(cells, names, line, ignored, renamed))
     if best is None:
         if not first:
             raise ValueError(f"load_limits(): {shown} has no header line")
@@ -802,11 +890,13 @@ def _row(values: Dict[str, str], where: str, comma: bool) -> LimitRow:
         ):
             number = _number(text, comma)
             if number is None:
-                hint = " (a decimal comma needs ';' between columns)" if "," in text else ""
                 raise ValueError(
                     f"load_limits(): {where}, column {column!r}: must be a number, got "
-                    f"{text!r}{hint}"
+                    f"{text!r}{_number_hint(text, comma)}"
                 )
+            if isinstance(number, float):  # keeps its digits, for a Decimal measurement
+                number = CellNumber(number)
+                number.text, number.comma = text, comma
             row[column] = number
         else:  # equal's expected, contains' needle: typed when checked
             typed = CellText(text)
@@ -814,3 +904,12 @@ def _row(values: Dict[str, str], where: str, comma: bool) -> LimitRow:
             row[column] = typed
     row["source"] = where
     return row  # type: ignore[return-value]
+
+
+def _number_hint(text: str, comma: bool) -> str:
+    """Why a cell that is not a number may be one written another way."""
+    if not comma:
+        return " (a decimal comma needs ';' between columns)" if "," in text else ""
+    if "," in text and "." in text and text.rfind(".") < text.find(","):
+        return f" (remove the thousands separator: {text.replace('.', '')})"
+    return ""

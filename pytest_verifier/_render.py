@@ -189,6 +189,8 @@ def units_text(units: object) -> str:
         return ""
     if type(units) is str:
         return _units(units)
+    if issubclass(type(units), str):  # a str enum member: its text, not Unit.VOLT
+        return _units(str.__str__(units))
     return shorten(escape(safe_str(units)), _UNITS_LIMIT)
 
 

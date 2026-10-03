@@ -147,6 +147,12 @@ def plain_text(text: str) -> str:
     return text if type(text) is str else str.__str__(text)
 
 
+def plain_units(units: Optional[str]) -> Optional[str]:
+    """*units* as a check stores them: a ``str`` subclass, such as a ``str`` enum member,
+    becomes its text, so descriptions read ``3.2V`` and records store ``"V"``."""
+    return plain_text(units) if isinstance(units, str) else units
+
+
 def is_descriptor(value: object) -> bool:
     """Whether ``value`` looks like a check descriptor (a mapping with a ``check_type``)."""
     return isinstance(value, Mapping) and "check_type" in value

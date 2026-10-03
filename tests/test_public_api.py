@@ -83,7 +83,8 @@ class TestLabNamesExported:
             "Raises.__init__": typing.get_type_hints(Raises.__init__),
         }
         assert typing.get_origin(hints["raises"]["return"]) is Raises
-        assert LimitRow in typing.get_args(typing.get_args(hints["limits"]["table"])[1])
+        # Any row: an unannotated dict of mixed rows must type-check (LimitRow documents them).
+        assert typing.get_args(hints["limits"]["table"]) == (str, typing.Any)
         assert typing.get_args(hints["load_limits"]["return"])[1] is LimitRow
         assert hints["eventually"]["return"] is pytest_verifier.CheckDescriptor
         assert hints["stable"]["return"] is pytest_verifier.CheckDescriptor
