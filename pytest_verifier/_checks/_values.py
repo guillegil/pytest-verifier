@@ -663,7 +663,7 @@ def pattern_parts(pattern: Any) -> Tuple[Any, int]:
     """``(source, flags)`` of a pattern: a compiled one is stored as its source and its flags
     (``re.UNICODE`` dropped for a ``str`` pattern, where it is implied), a string with flags 0."""
     if not isinstance(pattern, re.Pattern):
-        return pattern, 0
+        return (plain_text(pattern) if isinstance(pattern, str) else pattern), 0
     source, flags = pattern.pattern, int(pattern.flags)
     if isinstance(source, str):
         flags &= ~int(re.UNICODE)
@@ -827,7 +827,10 @@ class Fail(CheckType):
 
 
 def _message(msg: Any) -> str:
-    """A ``fail`` message as one bounded line; ``(no message)`` when it is blank."""
+    """A ``fail`` message as one bounded line; ``(no message)`` when it is blank (also when it
+    is only line breaks or tabs, which rendering would escape)."""
+    if isinstance(msg, str) and not msg.strip():
+        return "(no message)"
     text = render_text(msg, _MESSAGE_LIMIT)
     return text if text.strip() else "(no message)"
 

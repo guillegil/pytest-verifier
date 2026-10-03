@@ -1,12 +1,14 @@
 """Run the documented usage from ``typing_usage.py``, which CI also type-checks (M-16)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from pytest_verifier import ChecksFailedError, Verify
 from pytest_verifier import checks as mverify
 
-from .typing_usage import deprecated_alias, error_api, fixture_api, module_api
+from .typing_usage import deprecated_alias, error_api, fixture_api, lab_api, module_api
 
 
 def test_documented_module_usage_runs() -> None:
@@ -15,6 +17,10 @@ def test_documented_module_usage_runs() -> None:
 
 def test_documented_fixture_usage_runs(verify: Verify, request: pytest.FixtureRequest) -> None:
     fixture_api(verify, request)
+
+
+def test_documented_lab_usage_runs(verify: Verify, tmp_path: Path) -> None:
+    lab_api(verify, tmp_path)
 
 
 def test_checks_failed_error_is_an_assertion_error() -> None:

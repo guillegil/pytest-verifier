@@ -103,6 +103,7 @@ class CheckDescriptor(_CheckIdentity, total=False):
     settled_at: Optional[float]
     elapsed: float
     trace: List[List[Any]]
+    value_changed: bool
     sample_error: str
     #: ``verify.limits``: the row's ``source``, such as ``"limits.csv:12"``.
     limit_source: str
@@ -192,7 +193,8 @@ def loose_children(*containers: Any) -> List[Any]:
 
 
 def not_a_check(value: object) -> str:
-    """Why *value*, returned where a check was wanted, is not one, with a hint that fits it."""
+    """Why *value*, returned where a check was wanted, is not one, with a hint that fits it.
+    Never raises."""
     kind = type(value).__name__
     if value is None:
         return f"{kind}, not a check (did you forget `return`?)"
@@ -201,12 +203,21 @@ def not_a_check(value: object) -> str:
             f"{kind}, not a check: return a check, such as "
             "lambda: verify.greater(read(), 3.2, name=...), not a comparison"
         )
-    if hasattr(value, "__enter__") and hasattr(value, "check"):  # a verify.raises() block
+    if _is_raises_block(value):
         return (
             "a verify.raises() block, not a check: it must be used in a with statement; use a "
             "function that runs `with verify.raises(...) as raised:` and returns raised.check"
         )
     return f"{kind}, not a check"
+
+
+def _is_raises_block(value: object) -> bool:
+    """Whether *value* is a ``verify.raises()`` block (``pytest_verifier.Raises``), by its
+    class: reading its ``check`` before the block ended raises."""
+    return any(
+        cls.__name__ == "Raises" and cls.__module__ == "pytest_verifier._verify"
+        for cls in type(value).__mro__
+    )
 
 
 def is_real(value: object) -> bool:

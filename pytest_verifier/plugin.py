@@ -1022,7 +1022,7 @@ def _name_failures_in_xfail(report: pytest.TestReport, checks: List[Any]) -> Non
     failed = [(i, check) for i, check in enumerate(checks) if check.get("passed") is not True]
     if failed:
         header = failure_header(failed, len(checks))
-        report.wasxfail = f"{reason} [{header}]"
+        report.wasxfail = f"{reason} [{header}]" if reason else f"[{header}]"
 
 
 #: The report section that holds the soft summary when the phase also raised.
@@ -1138,18 +1138,26 @@ def _printing_crash_lines(terminalreporter: Any, method: Any) -> Any:
         try:
             return method(*args, **kwargs)
         finally:
-            for crash, message in saved:
-                crash.message = message
+            for holder, attribute, message in saved:
+                setattr(holder, attribute, message)
 
     return printer
 
 
 def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
-    """Adapt the crash messages of soft failures; returns ``(crash, original message)`` pairs."""
+    """Adapt the crash messages of soft failures, and the reasons of xfailed tests that name
+    failed checks; returns ``(object, attribute, original text)`` triples."""
     encoding = _terminal_encoding(terminalreporter._tw)
     if encoding is None:
         return []
     saved = []
+    for report in terminalreporter.stats.get("xfailed", ()):
+        reason = getattr(report, "wasxfail", None)
+        if getattr(report, "verify_checks", None) and isinstance(reason, str):
+            adapted = for_terminal(reason, encoding)
+            if adapted != reason:
+                saved.append((report, "wasxfail", reason))
+                report.wasxfail = adapted
     for key in ("failed", "error"):
         for report in terminalreporter.stats.get(key, ()):
             crash = getattr(getattr(report, "longrepr", None), "reprcrash", None)
@@ -1163,7 +1171,7 @@ def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
             ):
                 adapted = for_terminal(message, encoding)
                 if adapted != message:
-                    saved.append((crash, message))
+                    saved.append((crash, "message", message))
                     crash.message = adapted
     return saved
 

@@ -115,7 +115,7 @@ _TRYING: contextvars.ContextVar[Optional[_TryScope]] = contextvars.ContextVar(
 class _Entry:
     """What the run knows about one recorded descriptor."""
 
-    __slots__ = ("record", "passed", "top_level", "judged", "counted", "pinned")
+    __slots__ = ("record", "passed", "top_level", "judged", "counted", "pinned", "parent", "copy")
 
     def __init__(self, record: CheckDescriptor, passed: bool) -> None:
         self.record = record
@@ -127,6 +127,10 @@ class _Entry:
         self.counted = False
         #: Whether ``record()`` asked for it on its own: a composite then leaves it there.
         self.pinned = False
+        #: The entry of the composite that absorbed it.
+        self.parent: Optional[_Entry] = None
+        #: The copy ``record()`` made of it, when it counted nowhere.
+        self.copy: Optional[CheckDescriptor] = None
 
 
 class Run:
@@ -205,7 +209,8 @@ class Run:
         location, called_from = site
         with self.lock:
             self.ensure_open()
-            self.absorb(absorb, chosen)
+            entry = _Entry(record, passed)
+            self.absorb(absorb, chosen, entry)
             record["phase"] = self.phase
             # A copy of another record brings that record's site and section; this one may
             # have none.
@@ -219,7 +224,7 @@ class Run:
             section = self.section_path()
             if section:
                 record["section"] = list(section)
-            self._entries[id(record)] = _Entry(record, passed)
+            self._entries[id(record)] = entry
             self.records.append(record)
             scope = self.trying()
             while scope is not None:
@@ -231,7 +236,9 @@ class Run:
         scope = _TRYING.get()
         return scope if scope is not None and scope.key is self.key else None
 
-    def absorb(self, children: Iterable[Any], chosen: Iterable[Any] = ()) -> None:
+    def absorb(
+        self, children: Iterable[Any], chosen: Iterable[Any] = (), parent: Optional[_Entry] = None
+    ) -> None:
         """Take the recorded checks passed to a composite as children out of the top level.
 
         A child belongs to the composite whenever it was recorded, so building ``cases`` or
@@ -264,6 +271,7 @@ class Run:
                     continue
                 entry.top_level = False
                 entry.counted = id(child) in selected
+                entry.parent = parent
                 ids.add(id(child))
             self._remove(ids)
 
@@ -325,16 +333,33 @@ class Run:
             return len(self.records) - len(pending), pending  # type: ignore[return-value]
 
     def uncounted(self, record: CheckDescriptor) -> bool:
-        """Whether *record* is a recorded check that a composite took in without selecting it
-        (an unselected case), so that it counts nowhere."""
+        """Whether *record* is a recorded check that counts nowhere: a composite took it in
+        without selecting it (an unselected case), or selected it but counts nowhere itself."""
         with self.lock:
             entry = self._entries.get(id(record))
-            return (
-                entry is not None
-                and entry.record is record
-                and not entry.top_level
-                and not entry.counted
-            )
+            if entry is None or entry.record is not record:
+                return False
+            while not entry.top_level:
+                parent = entry.parent
+                if not entry.counted or parent is None:
+                    return True
+                if self._entries.get(id(parent.record)) is not parent:
+                    return True  # its composite was dropped with a try
+                entry = parent
+            return False
+
+    def copy_of(self, record: CheckDescriptor) -> Optional[CheckDescriptor]:
+        """The copy :meth:`Recorder.record` made of *record*, if it is still recorded."""
+        with self.lock:
+            entry = self._entries.get(id(record))
+            copy = None if entry is None or entry.record is not record else entry.copy
+            return copy if copy is not None and self.known(copy) is not None else None
+
+    def keep_copy(self, record: CheckDescriptor, copy: CheckDescriptor) -> None:
+        with self.lock:
+            entry = self._entries.get(id(record))
+            if entry is not None and entry.record is record:
+                entry.copy = copy
 
     def pin(self, record: CheckDescriptor) -> None:
         """Keep the top-level *record* at the top level when a composite takes it in."""
@@ -504,6 +529,22 @@ class Recorder(Sink):
         self._enforce(record, passed)
         return record
 
+    def ended(
+        self,
+        descriptor: CheckDescriptor,
+        site: Any,
+        keep: Callable[[CheckDescriptor], None],
+        stop: bool,
+    ) -> None:
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        run = self._run
+        run.ensure_open()
+        record, passed = settle(descriptor, run.known)
+        run.add(record, passed, site=site)
+        keep(record)
+        if stop:
+            self._enforce(record, passed)
+
     def batch(self, descriptors: List[CheckDescriptor]) -> List[CheckDescriptor]:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         run = self._run
@@ -590,12 +631,17 @@ class Recorder(Sink):
         if hit is not None:
             passed, record = hit
             if run.uncounted(record):
-                # A composite took it in without selecting it, so it counts nowhere: recording
-                # it asks for it on its own, so record a copy, as ``dict(check)`` would have kept.
-                record = dict(record)  # type: ignore[assignment]
-                run.add(record, passed, site=run.locate())
-                self._enforce(record, passed)
-                return record
+                # It counts nowhere (a composite took it in without selecting it): recording it
+                # asks for it on its own, so record a copy, as ``dict(check)`` would have kept.
+                # Once: recording it again is recording that copy again.
+                copy = run.copy_of(record)
+                if copy is None:
+                    fresh: CheckDescriptor = dict(record)  # type: ignore[assignment]
+                    run.add(fresh, passed, site=run.locate())
+                    run.keep_copy(record, fresh)
+                    self._enforce(fresh, passed)
+                    return fresh
+                record = copy
             run.pin(record)
             # Fail-fast already stopped when it was recorded.
             if self._hard and not passed:

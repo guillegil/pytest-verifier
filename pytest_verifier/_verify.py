@@ -108,6 +108,18 @@ class Sink:
         _unused.built(descriptor)
         return descriptor
 
+    def ended(
+        self,
+        descriptor: CheckDescriptor,
+        site: Any,
+        keep: Callable[[CheckDescriptor], None],
+        stop: bool,
+    ) -> None:
+        """Take the check of a ``raises`` block that ended: *keep* gets it before a required
+        check stops the test, and *stop* False records it without stopping (an exception
+        that goes on stops the test anyway)."""
+        keep(self.check(descriptor, site))
+
     def block(self, raises: Raises[Any]) -> Any:
         """Take a ``raises`` block when it is made, and return where it is made: its check is
         taken when the block ends, but belongs to the ``with`` line."""
@@ -1045,7 +1057,9 @@ class Raises(Generic[_E]):
         """
         if self._check is None:
             raise RuntimeError(
-                "verify.raises(): the check is made when the with block ends; read .check after it"
+                "verify.raises(): no check yet: it is made when the with block ends (not when "
+                "it ended with an exception that makes none, such as pytest.skip); read "
+                ".check after the block"
             )
         return self._check
 
@@ -1081,10 +1095,14 @@ class Raises(Generic[_E]):
         descriptor = RAISES.build(
             exc, expected_exception, match=match, name=name, raised_at=where
         )
-        self._check = self._sink.check(descriptor, self._site)
         # Only what the code under test did is soft: nothing raised, or the expected type with
-        # another message. Any other exception goes on, with its traceback, after the check.
+        # another message. Any other exception goes on, with its traceback, after the check;
+        # it stops the test itself, so a required check does not replace it.
+        self._sink.ended(descriptor, self._site, self._keep, stop=exc is None or expected)
         return expected
+
+    def _keep(self, check: CheckDescriptor) -> None:
+        self._check = check
 
     def unentered(self) -> Optional[Tuple[CheckDescriptor, Any]]:
         """The failed check of a block that was never entered, with its site; else ``None``."""

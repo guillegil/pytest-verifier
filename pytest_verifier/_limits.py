@@ -21,6 +21,8 @@ import math
 import os
 import re
 import typing
+from decimal import Decimal, InvalidOperation
+from fractions import Fraction
 from typing import Any, Dict, List, Mapping, Optional, Set, Tuple, Union
 
 from ._checks import REGISTRY
@@ -248,6 +250,7 @@ def parse_row(name: object, row: object, context: Optional[str] = None) -> Row:
         raise ValueError(
             f"{context}: unknown check {safe_repr(method)}; one of: {', '.join(ROW_CHECKS)}"
         )
+    _check_numbers(method, given, context)  # before low/high become the threshold
     alias = _THRESHOLD_ALIASES.get(method)
     if alias is not None and alias in given:
         if "threshold" in given:
@@ -267,10 +270,15 @@ def parse_row(name: object, row: object, context: Optional[str] = None) -> Row:
     missing = [argument for argument in required if argument not in given]
     if missing:
         raise TypeError(f"{context}: {method}() needs {', '.join(missing)}")
-    _check_numbers(method, given, context)
-    if method == "matches" and isinstance(given["pattern"], str):
+    if method == "matches":
+        pattern = given["pattern"]
+        if not isinstance(pattern, (str, re.Pattern)):
+            raise TypeError(
+                f"{context}: pattern must be text or a compiled pattern, got "
+                f"{safe_repr(pattern)}"
+            )
         try:
-            re.compile(given["pattern"])
+            re.compile(pattern)
         except re.error as exc:
             raise ValueError(
                 f"{context}: pattern is not a valid regular expression: {exc}"
@@ -292,7 +300,9 @@ def _check_numbers(method: str, given: Mapping[str, Any], context: str) -> None:
                 )
         elif argument in _NUMBERS or (argument == "expected" and method in _NUMBER_EXPECTED):
             if not _finite(value):
-                raise TypeError(f"{context}: {_not_a_number(argument, value)}")
+                # The right type with a wrong value (NaN, infinity) is a ValueError.
+                error = ValueError if is_real(value) else TypeError
+                raise error(f"{context}: {_not_a_number(argument, value)}")
     rel_tol = given.get("rel_tol")
     if rel_tol is not None and not 0 <= rel_tol < 1:
         raise ValueError(
@@ -307,6 +317,7 @@ def _typed_cell(cell: CellText, value: Any, method: str) -> Tuple[Any, Optional[
     ``bool``; a ``needle`` as what the haystack holds. A cell that cannot be that type, or a
     measurement a CSV cell cannot stand for, leaves the text and a problem."""
     text = str(cell)
+    measured = "the measurement is"
     if method in ("contains", "not_contains"):
         kind = _kind_of_items(value)
         if kind is None:
@@ -314,6 +325,9 @@ def _typed_cell(cell: CellText, value: Any, method: str) -> Tuple[Any, Optional[
                 f"a CSV needle is text or a number, and {type(value).__name__} holds "
                 "something else, or a mix: check it with a row of a Python table"
             )
+        if not (value is None or isinstance(value, str)):
+            measured = f"the measurement ({type(value).__name__}) holds"
+            value = next(iter(value), None)  # an item, for _like (one kind, so any item)
     else:
         kind = _kind(value)
         if kind is None:
@@ -326,12 +340,25 @@ def _typed_cell(cell: CellText, value: Any, method: str) -> Tuple[Any, Optional[
     if kind == "bool":
         flag = _boolean(text)
         if flag is None:
-            return text, f"the limit {text!r} is not true or false, and the measurement is a bool"
+            return text, f"the limit {text!r} is not true or false, and {measured} a bool"
         return flag, None
     number = _number(text, cell.comma)
     if number is None:
-        return text, f"the limit {text!r} is text, and the measurement is a number"
-    return number, None
+        return text, f"the limit {text!r} is text, and {measured} a number"
+    return _like(number, text, cell.comma, value), None
+
+
+def _like(number: Union[int, float], text: str, comma: bool, value: Any) -> Any:
+    """A cell's *number* as the type of *value*, a measured number, when that type is exact:
+    a ``Decimal`` or a ``Fraction`` from the cell's digits, so that ``1.10`` equals
+    ``Decimal("1.10")``."""
+    if not isinstance(value, (Decimal, Fraction)) or isinstance(number, int):
+        return number
+    digits = text.replace(",", ".") if comma and "." not in text else text
+    try:
+        return Decimal(digits) if isinstance(value, Decimal) else Fraction(digits)
+    except (InvalidOperation, ValueError):  # pragma: no cover - _number accepted it
+        return number
 
 
 def _kind(value: Any) -> Optional[str]:
@@ -508,13 +535,21 @@ def _header(text: str, delimiter: str) -> Tuple[List[str], int]:
 
 def _column_map(columns: Optional[Mapping[str, Optional[str]]]) -> Dict[str, Optional[str]]:
     mapped: Dict[str, Optional[str]] = {}
+    given: Dict[str, str] = {}
     for key, target in (columns or {}).items():
         if not isinstance(key, str) or not (target is None or isinstance(target, str)):
             raise TypeError(
                 "load_limits() columns maps a file's column name to a row's argument name, or "
                 f"to None to skip it; got {safe_repr(key)}: {safe_repr(target)}"
             )
-        mapped[key.strip().lower()] = target
+        name = key.strip().lower()
+        if name in mapped:
+            raise ValueError(
+                f"load_limits() columns names one column twice: {given[name]!r} and {key!r} "
+                "(names match in any case)"
+            )
+        given[name] = key
+        mapped[name] = target
     return mapped
 
 
@@ -573,10 +608,18 @@ def load_limits(
     """
     shown = _display(os.fspath(path))
     wanted: Dict[str, str] = {}
+    given: Dict[str, str] = {}
     for column, value in (select or {}).items():
         if not isinstance(column, str):
             raise TypeError(f"load_limits() select keys must be column names, got {column!r}")
-        wanted[column.strip().lower()] = str(unwrap(value)).strip()
+        key = column.strip().lower()
+        if key in wanted:
+            raise ValueError(
+                f"load_limits() select names one column twice: {given[key]!r} and {column!r} "
+                "(names match in any case)"
+            )
+        given[key] = column
+        wanted[key] = str(unwrap(value)).strip()
     mapped = _column_map(columns)
     try:
         with open(path, encoding=encoding, newline="") as stream:

@@ -2,6 +2,7 @@
 
 Covers:
 - get_check_results() exported from pytest_verifier
+- The names added in 0.10.0 (LimitRow, Raises, load_limits) exported and importable
 - Unconditional stash write (reporter detection removed)
 - Soft-assert failure behavior unchanged
 """
@@ -27,6 +28,65 @@ class TestGetCheckResultsExported:
             assert name in pytest_verifier.__all__
             assert hasattr(pytest_verifier, name)
         assert isinstance(pytest_verifier.checks.require, pytest_verifier.Require)
+
+
+class TestLabNamesExported:
+    """0.10.0: the types and the function of verify.raises and verify.limits."""
+
+    def test_importable_from_package(self):
+        from pytest_verifier import LimitRow, Raises, load_limits
+        from pytest_verifier._limits import LimitRow as private_row
+        from pytest_verifier._limits import load_limits as private_load
+        from pytest_verifier._verify import Raises as private_raises
+
+        assert (LimitRow, Raises, load_limits) == (private_row, private_raises, private_load)
+
+    def test_in_all(self):
+        import pytest_verifier
+
+        for name in ("LimitRow", "Raises", "load_limits"):
+            assert name in pytest_verifier.__all__
+            assert hasattr(pytest_verifier, name)
+        assert len(set(pytest_verifier.__all__)) == len(pytest_verifier.__all__)
+
+    def test_star_import_brings_them(self):
+        namespace: dict = {}
+        exec("from pytest_verifier import *", namespace)
+        assert {"LimitRow", "Raises", "load_limits"} <= set(namespace)
+
+    def test_their_kinds(self):
+        import typing
+
+        from pytest_verifier import LimitRow, Raises, load_limits
+
+        assert isinstance(LimitRow, type) and issubclass(LimitRow, dict)
+        assert LimitRow.__total__ is False  # every key of a row is optional
+        assert {"check", "expected", "low", "high", "source"} <= set(LimitRow.__annotations__)
+        assert typing.Generic in Raises.__mro__
+        Raises[ValueError]  # generic over the expected exception type  # noqa: B018
+        assert callable(load_limits) and load_limits.__doc__
+
+    def test_public_hints_resolve_to_exported_names(self):
+        # Tools evaluate public annotations with get_type_hints (also on Python 3.9).
+        import typing
+
+        import pytest_verifier
+        from pytest_verifier import LimitRow, Raises, Verify, load_limits
+
+        hints = {
+            "raises": typing.get_type_hints(Verify.raises),
+            "limits": typing.get_type_hints(Verify.limits),
+            "eventually": typing.get_type_hints(Verify.eventually),
+            "stable": typing.get_type_hints(Verify.stable),
+            "load_limits": typing.get_type_hints(load_limits),
+            "LimitRow": typing.get_type_hints(LimitRow),
+            "Raises.__init__": typing.get_type_hints(Raises.__init__),
+        }
+        assert typing.get_origin(hints["raises"]["return"]) is Raises
+        assert LimitRow in typing.get_args(typing.get_args(hints["limits"]["table"])[1])
+        assert typing.get_args(hints["load_limits"]["return"])[1] is LimitRow
+        assert hints["eventually"]["return"] is pytest_verifier.CheckDescriptor
+        assert hints["stable"]["return"] is pytest_verifier.CheckDescriptor
 
 
 class TestGetCheckResultsReturnsDescriptors:

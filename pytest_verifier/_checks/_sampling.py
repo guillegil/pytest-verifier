@@ -15,6 +15,8 @@ from __future__ import annotations
 import asyncio
 import datetime
 import math
+import re
+import sys
 import time
 import warnings
 from fractions import Fraction
@@ -23,7 +25,7 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
 
 from .._descriptors import CheckDescriptor, is_descriptor, is_real, not_a_check, require_name
 from .._location import ours
-from .._render import describe_error, render_text, safe_repr
+from .._render import VALUE_LIMIT, describe_error, render_text, safe_repr, shorten
 from ._base import CompositeType, child_detail, judge, lookup, margin, passes_through, register
 
 #: The clock and the sleep of the sampling checks (tests replace them).
@@ -88,7 +90,7 @@ class Sampler:
                 raise
             where = self.origin(exc.__traceback__)
             attempt.error = f"raised {describe_error(exc)}" + (f" (at {where})" if where else "")
-            attempt.usage = _raised_here(exc.__traceback__)
+            attempt.usage = _raised_here(exc.__traceback__) or _wrong_call(exc)
             return attempt
         if not is_descriptor(returned):
             attempt.error = f"returned {not_a_check(returned)}"
@@ -135,6 +137,20 @@ def _raised_here(traceback: Optional[TracebackType]) -> bool:
     return last is not None and ours(last.tb_frame)
 
 
+#: The message of the ``TypeError`` of a call with the wrong arguments (``name=`` left out, a
+#: misspelt keyword): no later try can fix it.
+_WRONG_CALL = re.compile(
+    r"\(\) (?:missing \d+ required|got an unexpected keyword argument|got multiple values "
+    r"for argument|takes (?:from \d+ to \d+|\d+|no|exactly \w+|at (?:most|least) \w+) "
+    r"(?:positional |keyword )?argument)"
+)
+
+
+def _wrong_call(exc: BaseException) -> bool:
+    """Whether *exc* says a function was called with the wrong arguments."""
+    return isinstance(exc, TypeError) and bool(_WRONG_CALL.search(safe_repr(exc)))
+
+
 def _seconds_argument(value: object, label: str, check: str, positive: bool = False) -> float:
     wanted = "more than 0" if positive else "0 or more"
     if isinstance(value, datetime.timedelta):
@@ -151,15 +167,18 @@ def _seconds_argument(value: object, label: str, check: str, positive: bool = Fa
     if not math.isfinite(seconds) or seconds < 0 or (positive and seconds == 0):
         raise ValueError(
             f"{check}() {label} must be a finite number of seconds, {wanted}; got "
-            f"{safe_repr(value)}"
+            f"{render_text(safe_repr(value))}"
         )
     return seconds
 
 
 def seconds(value: Any) -> str:
-    """A duration as ``"2 s"`` or ``"0.25 s"``."""
+    """A duration as ``"2 s"``, ``"0.25 s"`` or ``"86400 s"``."""
     try:
-        return f"{float(value):.4g} s"
+        number = float(value)
+        if abs(number) >= 1e4 and abs(number) < 1e15:
+            return f"{number:.0f} s"
+        return f"{number:.4g} s"
     except Exception:
         return f"{render_text(safe_repr(value))} s"
 
@@ -181,9 +200,19 @@ def _validate(
             "async test: tasks cannot run while it waits. Run the code that changes the value "
             "elsewhere, or call it from a thread (await asyncio.to_thread(...)).",
             RuntimeWarning,
-            stacklevel=4,
+            stacklevel=_caller_level(),
         )
     return resolved, limit, every
+
+
+def _caller_level() -> int:
+    """The ``stacklevel`` of a warning that points at the first frame outside this package,
+    seen from the function that calls this one."""
+    level, frame = 1, sys._getframe(1)
+    while frame is not None and ours(frame):
+        frame = frame.f_back  # type: ignore[assignment]
+        level += 1
+    return level
 
 
 def _loop_running() -> bool:
@@ -230,6 +259,10 @@ class _Trace:
         self.start = start
         self.head: List[List[Any]] = []
         self.tail: List[List[Any]] = []
+        #: The first try's value, and whether a later try's value differed (over every try,
+        #: not only the traced ones).
+        self.first: Any = None
+        self.changed = False
 
     def add(self, attempt: Try) -> None:
         value = None
@@ -241,7 +274,12 @@ class _Trace:
             if isinstance(actual, _SCALARS) and not (
                 isinstance(actual, float) and not math.isfinite(actual)
             ):
-                value = actual
+                value = shorten(actual, VALUE_LIMIT) if isinstance(actual, str) else actual
+        key = (type(value), value)
+        if not self.head:
+            self.first = key
+        elif key != self.first:
+            self.changed = True
         entry = [round(attempt.start - self.start, 3), value, attempt.passed]
         if len(self.head) < TRACE_ENDS:
             self.head.append(entry)
@@ -282,6 +320,7 @@ class _Sampling(CompositeType):
         check."""
         d["elapsed"] = round(_clock() - start, 3)
         d["trace"] = trace.entries()
+        d["value_changed"] = trace.changed
         d["child_checks"] = [] if kept is None or kept.check is None else [kept.check]
         if kept is not None and kept.error is not None:
             if kept.usage:
@@ -371,18 +410,17 @@ class Eventually(_Sampling):
 
 
 def _unchanged(d: Mapping[str, Any]) -> str:
-    """A note for a failed check whose value was the same in every try: it was probably read
-    once, outside the sample."""
-    trace = d.get("trace")
-    if not isinstance(trace, list) or len(trace) < 3:
+    """A note for a failed check whose value was the same in every try (at least 3): it was
+    probably read once, outside the sample."""
+    trace, tries = d.get("trace"), d.get("tries")
+    if d.get("value_changed") is not False or not isinstance(tries, int) or tries < 3:
         return ""
     try:
-        values = {safe_repr(entry[1]) for entry in trace}
-        if len(values) == 1 and trace[0][1] is not None:
-            return f"; the value never changed in {len(trace)} tries: is it read inside the sample?"
+        if trace[0][1] is None:  # type: ignore[index]
+            return ""  # no value to compare: the tries made no plain check, or raised
     except Exception:
-        pass
-    return ""
+        return ""
+    return f"; the value never changed in {tries} tries: is it read inside the sample?"
 
 
 class Stable(_Sampling):

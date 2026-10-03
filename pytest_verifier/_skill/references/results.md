@@ -92,8 +92,9 @@ Keys of the 0.10.0 checks:
 - `eventually`/`stable`: `timeout` or `duration`, `interval`, `tries`, `elapsed` (seconds),
   `settled_at` (`eventually`: the start of the passing try, else `None`), `trace` (a list of
   `[seconds, value, passed]`; `value` is the try's `actual` when it is a number, text, a bool
-  or `None`, else `None`), `child_checks` (the kept try), and `sample_error` when the kept
-  try's sample raised.
+  or `None`, else `None`), `value_changed` (whether that value differed between any two
+  tries), `child_checks` (the kept try), and `sample_error` when the kept try's sample
+  raised.
 - A check made by `verify.limits` from a row with a `source` has `limit_source`.
 
 Composites nest their children. Each child that was evaluated carries its own `passed`; one
