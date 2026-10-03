@@ -1022,7 +1022,15 @@ def _name_failures_in_xfail(report: pytest.TestReport, checks: List[Any]) -> Non
     failed = [(i, check) for i, check in enumerate(checks) if check.get("passed") is not True]
     if failed:
         header = failure_header(failed, len(checks))
-        report.wasxfail = f"{reason} [{header}]" if reason else f"[{header}]"
+        # pytest < 8 stores an imperative xfail's reason as "reason: <msg>" (and junitxml strips
+        # that prefix), so an empty message leaves the prefix alone.
+        prefix = _XFAIL_PREFIX if reason.startswith(_XFAIL_PREFIX) else ""
+        reason = reason[len(prefix) :]
+        report.wasxfail = f"{prefix}{reason} [{header}]" if reason else f"{prefix}[{header}]"
+
+
+#: The prefix pytest < 8 puts before the message of ``pytest.xfail()`` in ``wasxfail``.
+_XFAIL_PREFIX = "reason: "
 
 
 #: The report section that holds the soft summary when the phase also raised.

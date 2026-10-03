@@ -524,7 +524,8 @@ def test_expected_failure_with_only_soft_failures_is_an_unexpected_success(
             "  ✗ [[]0] Soft (*.py:12) — expected 2, got 1",
         ]
     )
-    result.stdout.fnmatch_lines(["FAILED *::TestBench::test_soft_only - *Unexpected success*"])
+    # pytest 7.0 prints no message after the node ID for an unexpected success.
+    result.stdout.fnmatch_lines(["FAILED *::TestBench::test_soft_only*"])
     [failure] = list(_junit_cases(pytester)["test_soft_only"])
     assert failure.tag == "failure"
     assert "Unexpected success" in (failure.text or "")
