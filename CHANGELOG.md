@@ -12,15 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `verify.limits(measurements, table, *, on_missing="fail")` checks measurements against a table
-  of limits: one ordinary check per row, named by the row, returned by name. A row holds the
-  arguments of a check method (and `"check"`, its name); without it the limits say which check
-  (`low`+`high` is `between`, `low` or `high` alone an ordering check, `expected` with a
-  tolerance `approx`, `expected` alone `equal`). Rows are validated before anything is
-  recorded: limits must be finite numbers, `rel_tol` below 1, `inclusive` a bool, and a float
-  `expected` needs a tolerance. A row with no measurement fails with `not measured: ...`,
-  naming a similar measurement key (`on_missing="ignore"` skips it). `verify.require.limits`
-  and fail-fast stop only after the whole table is recorded. `LimitRow` is the row's
-  `TypedDict`.
+  of limits: one ordinary check per row, named by the row, returned by the table's row names.
+  A row holds the arguments of a check method (and `"check"`, its name); without it the limits
+  say which check (`low`+`high` is `between`, `low` or `high` alone an ordering check,
+  `expected` with a tolerance `approx`, `expected` alone `equal`). Rows are validated before
+  anything is recorded: limits must be finite numbers, `rel_tol` below 1, `inclusive` a bool,
+  and a float `expected` needs a tolerance. A row with no measurement fails with
+  `not measured: ...`, naming a similar measurement key, in any case (`on_missing="ignore"`
+  skips it). `verify.require.limits` and fail-fast stop only after the whole table is
+  recorded. `LimitRow` is the row's `TypedDict`; `table` takes any mapping of rows, so an
+  unannotated table type-checks.
 - `pytest_verifier.load_limits(path, *, select=None, columns=None, encoding="utf-8-sig")` reads
   a limits table from a CSV file: comma, semicolon (with decimal commas) or tab separated,
   headers in any case, `#` comment lines, `columns=` to rename or skip columns, and selector
@@ -28,39 +29,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a cell may list values (`hot|warm`). Every line is validated when the file is read, with
   `path:line` in the error, and each row's `source` reaches its record as `limit_source`. The
   `expected` of `equal`/`not_equal` and `needle` are compared as the measurement is (text
-  against text, a number against a number, a `Decimal` against a `Decimal`).
+  against text, a number against a number, a `Decimal` against a `Decimal`), and a `needle`
+  works with any collection that can be read again (`dict.keys()`, `deque`). Numeric cells
+  are checked as a `Decimal` or `Fraction`, from their digits, against such a measurement.
+  They take no thousands separators: in a `;` file a dot is still a decimal point (`2.000` is
+  2.0), and `1.000,5` gets an error that says so. A byte-order mark is skipped also with
+  `encoding="utf-8"` (a "CSV UTF-8" file read as cp1252 is an error that says so), and a
+  misspelt `columns=` target, or an empty one, is an error that names it.
 - `with verify.raises(expected_exception, *, match=None, name) as raised:`, a soft
   `pytest.raises`: it records a `raises` check when the block ends. Nothing raised, or the
   expected type with a message `match` does not find, is a failed check and the test goes on;
   any other exception records the failed check and then propagates. `raised.value`,
   `raised.type` and `raised.check` give the exception and the check; the record has
   `raised_type`, `raised_message` and `raised_at` (the line that raised). `Exception` and
-  `BaseException` need `match=`. A `verify.raises()` never used in a `with` statement becomes
-  a failed check. `Raises` is exported, generic in the exception type.
+  `BaseException` need `match=`; notes that cannot be read are left out of the match. A
+  `verify.raises()` never used in a `with` statement becomes a failed check, recorded with the
+  phase, section, place and order where it was made, unless the code that made it raised first
+  (a stop, an error, a skip or an xfail before the `with`, or the sample, lazy child, guard
+  condition or `all_satisfy` factory that made it); a block made in a try that is not kept
+  goes with the try. Returning the block instead of `raised.check` from a sample, lazy child or
+  factory is reported once, with a hint. `verify.require.raises` (and fail-fast) stops the test
+  at the end of a failed block, without showing the block's exception again. When a sample,
+  lazy child, guard condition or `all_satisfy` factory takes its unexpected exception as a
+  failure, the test stops once that check is recorded (for a sample, only if its try is kept);
+  when the test's own code catches it, nothing stops.
+  `Raises` is exported, generic in the exception type.
 - `verify.eventually(sample, *, timeout, interval=0.1, name)` and `verify.stable(sample, *,
-  duration, interval=0.1, name)` try a check made by `sample` again until it passes, or for a
-  duration in which every try must pass. Each try starts one interval after the last one
-  started; `stable` tries at least twice. The record keeps the try that decided, `tries`,
-  `elapsed`, `settled_at` and a `trace` of `[seconds, value, passed]` (first and last 50
-  tries). Failed tries never fail or stop the test: a try that is not kept is dropped with
-  every check it recorded, and a skip in a sample stays a skip. A usage error in the sample
-  fails the check at once, and a value that never changed is pointed out. Times take a
-  `timedelta` too; a running event loop gets a `RuntimeWarning`.
+  duration, interval=0.1, name)` try a check made by `sample` again until a try passes, or for
+  a duration in which every try must pass. A try passes when the check it returns and every
+  other check it records pass (`also_failed` names those that failed the kept try). Each try
+  starts one interval after the last one started; `stable` tries at least twice when
+  `duration` is more than 0, unless the first try fails. The record keeps the try that
+  decided, `tries`, `elapsed`, `settled_at` and a `trace` of `[seconds, value, passed]` (first
+  and last 50 tries). Failed tries never fail or stop the test: a try that is not kept is
+  dropped with every check it recorded (and with the check it returned, even when another
+  thread recorded it), and a skip in a sample stays a skip. A usage error in the sample (an
+  `async def` sample too) fails the check at once, and a value that never changed is pointed
+  out. Times take a `timedelta` too; a running event loop gets a `RuntimeWarning` that shows
+  `await asyncio.to_thread(lambda: verify.eventually(...))`. `--verify-summary=stats` shows
+  their margin in the units of the kept try (none when other checks failed a try whose check
+  passed).
 - The reason of an xfailed test whose checks failed ends with the summary's first line
-  (`[1 of 2 checks failed: ...]`), so `-rx` and junitxml show the failures.
+  (`[1 of 2 checks failed: ...]`), so `-rx`, the `-v` line and junitxml show the failures. In
+  the terminal both lines follow the terminal's encoding and `--verify-ascii`; junitxml keeps
+  the Unicode reason.
 
 ### Changed
 
 - `verify.record(check)` of a check that a composite took but did not select records a copy of
-  it on its own (it did nothing). Recording a check before passing it to a composite keeps it
-  on its own as well.
+  it on its own (it did nothing). That copy stays on its own when a later composite takes it,
+  and recording the check again returns the same copy. Recording a check before passing it to
+  a composite keeps it on its own as well.
 - `pytest.exit` (also quitting the debugger), `bdb.BdbQuit` and `unittest.SkipTest` raised in a
   lazy child, a guard condition or an `all_satisfy` factory go on instead of failing the
   composite.
 - `verify.fail(msg)` with an empty or blank message is named `fail` and described `FAIL: (no message)`
   instead of raising; an explicit empty `name` still raises.
-- A `str` enum member (or another `str` subclass) used as a name, a `fail` message or a guard
-  label is stored as its text, not as its repr. A blank name raises `ValueError`.
+- A `str` enum member (or another `str` subclass) used as a name, units, a `fail` message or
+  a guard label is stored as its text, not as its repr; units are also shown as text (`3.2V`,
+  not `3.2Unit.VOLT`), also in the record of a hand-built descriptor. A blank name raises
+  `ValueError`.
 
 ### Fixed
 

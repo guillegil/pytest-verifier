@@ -57,7 +57,8 @@ pytest_verifier/
 │                            #   method builds a descriptor and hands it to a Sink
 ├── _checks/                 # One CheckType class per check_type, registered in REGISTRY
 │   ├── _base.py             #   CheckType, CompositeType, REGISTRY, judge() (never raises),
-│   │                        #   render_detail()
+│   │                        #   render_detail(), call_user() (CALLER: how a sink watches the
+│   │                        #   user code a composite calls)
 │   ├── _values.py           #   The 18 leaf check types (build, compare, detail)
 │   ├── _raises.py           #   raises: the check of a verify.raises block, decided at exit
 │   ├── _sampling.py         #   eventually, stable: Sampler takes tries (Try), trace, schedule
@@ -71,7 +72,8 @@ pytest_verifier/
 │                            #   snapshots, child verdicts)
 ├── _run.py                  # Run (per-attempt, thread-safe state, stop()) and Recorder (the
 │                            #   fixture's Sink: judges, records, absorbs children, stops
-│                            #   when hard or fail-fast; try scopes for sampling; raises blocks)
+│                            #   when hard or fail-fast; try scopes for sampling; raises blocks
+│                            #   (`_Block`), calls of user code (`_Call`))
 ├── _limits.py               # verify.limits (parse_row, Row, limit_checks) and load_limits (CSV)
 ├── _location.py             # Where a recorded check was made: location, called_from;
 │                            #   FunctionCode (test code by identity, or file and name),
@@ -96,9 +98,12 @@ module, so `-p pytest_verifier` and `-p no:pytest_verifier` work, and the packag
 `pytest_verifier.plugin` through `pytest_plugins`.
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
-`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`),
-registered with `register()`; a `Verify` method that passes its descriptor to the sink; and
-examples in `tests/test_contracts.py`, which fails until every registered type has them.
+`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,
+optionally `vetoed`; a leaf type whose record keeps only a preview of `actual`
+(`snapshot_limits`) may implement `reading`, which sampling compares to tell whether the value
+changed: `Length` adds `actual_length`), registered with `register()`; a `Verify` method that
+passes its descriptor to the sink; and examples in `tests/test_contracts.py`, which fails until
+every registered type has them.
 
 ## Key Types
 
@@ -157,7 +162,22 @@ class CheckDescriptor(TypedDict, total=False):
    - Sampling (`eventually`/`stable`): each try runs in a try scope (`_TRYING` ContextVar keyed
      by the run); a try that is not kept is discarded with every check recorded in it, failures
      in a try never stop the test, and after the composite is recorded require/fail-fast apply
-     to the kept try's other failed checks. A `BaseException` through sampling drops every try
+     to the kept try's other failed checks. A `BaseException` through sampling drops every try.
+     A try passes only when its check and every other check recorded in it that is still at the
+     top level pass (`Sampler.failed_beside`, `Run.failed`, `Try.others`). A kept try that
+     failed this way lists them in `also_failed` (text), and `CompositeType.vetoed` fails the
+     composite (in settle and evaluate); a vetoed sampling check whose kept check passed has no
+     margin (`_Sampling.margin`). A returned check that another thread recorded during the try
+     joins it (`Run.adopt`: made after `_TryScope.opened`, by `_Entry.order`); other thread checks
+     stay outside. Dropped tries leave `_RecordingSampler.tries` and outer try scopes at once.
+     "Never changed" compares `CheckType.reading` over every try, and ignores a reading whose
+     snapshot is a non-finite float, Decimal or numpy number (`_NOT_FINITE`)
+   - Composites call their lazy children, guard conditions and factories through `call_user`,
+     and samplers call samples, each as a `_Call` (`_CALLING`, a ContextVar keyed by run). A
+     `raises` block whose unexpected exception goes on does not stop at once: `Recorder._wait`
+     puts its stop in the innermost `_Call`. When that call raises, its blocks are dropped and
+     its stops go to the composite (enforced after it is recorded, while still pending) or to
+     the try's deferred stops. When it returns, they stop nothing
 
 2. **At the end of each phase (runtest hook wrappers):**
    - Checks recorded in setup and in the test body are judged after the test body; checks
@@ -278,21 +298,25 @@ Implementation requirements:
 ### Errors and time
 | Function | check_type | Notes |
 |----------|-----------|-------|
-| `with verify.raises(expected_exception, *, match=None, name) as raised:` | `"raises"` | Returns `Raises[E]`; the check is built at `__exit__` (`RAISES.build(raised, ...)`), the site taken at the call. Soft only for nothing raised or a non-matching message; other exceptions record the check, then propagate. Never entered: failed at `take_unjudged`. `checks.raises` raises `RuntimeError` |
+| `with verify.raises(expected_exception, *, match=None, name) as raised:` | `"raises"` | Returns `Raises[E]`; the check is built at `__exit__` (`RAISES.build(raised, ...)`), the site taken at the call. Soft only for nothing raised or a non-matching message; other exceptions record the check, then propagate. A stop at `__exit__` after the expected type takes that exception's context in place of it. Never entered: failed at `take_unjudged(exc)` only when the phase ended without an exception, with the phase/section/site/order kept in `_Block` (inserted in creation order, after judged records, without `ensure_open`). Blocks made in a dropped try (`_TryScope.blocks`), or by a sample, lazy child, guard condition or factory that raised (`_Call.blocks`), are dropped. A block returned in place of a check is forgotten. `checks.raises` raises `RuntimeError` |
 | `verify.eventually(sample, *, timeout, interval=0.1, name)` | `"eventually"` | Composite of one kept try; `Sink.sampling` runs it with a `Sampler` (settling for `checks`, try scopes for the fixture) |
 | `verify.stable(sample, *, duration, interval=0.1, name)` | `"stable"` | Same; stops at the first failed try, keeps the closest passing one by `margin` |
 
 `verify.limits(measurements, table, *, on_missing="fail")` builds one leaf check per row
 (`_limits.parse_row` validates, `Row.build` builds; CSV `CellText` cells take the measurement's
-type there) and records them with `Sink.batch`, which applies require/fail-fast after the whole
-table. `load_limits(path, *, select, columns, encoding)` validates every line with `parse_row`.
+type there, and `CellNumber` cells, floats that keep their digits, become a `Decimal` or
+`Fraction` against one) and records them with `Sink.batch`, which applies require/fail-fast
+after the whole table.
+`load_limits(path, *, select, columns, encoding)` validates every line with `parse_row`.
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-`checks`; `checks.record()` raises `RuntimeError`. `verify.section(title)` (fixture only) is a
-context manager whose recorded checks get its title in `section`; summaries show
-`3V3 › Vout`; `checks.section()` raises `RuntimeError`. `verify.require` has every check method and is
-callable like `record`; its failed checks stop the test. The methods of `checks.require`, and
-calling it, raise `RuntimeError`.
+`checks`; of a check a composite took without selecting it, it records a pinned copy (`Run.pin`;
+`Run.keep_copy` stores it and `Run.copy_of` gives the same copy again). `checks.record()`
+raises `RuntimeError`.
+`verify.section(title)` (fixture only) is a context manager whose recorded checks get its title
+in `section`; summaries show `3V3 › Vout`; `checks.section()` raises `RuntimeError`.
+`verify.require` has every check method and is callable like `record`; its failed checks stop
+the test. The methods of `checks.require`, and calling it, raise `RuntimeError`.
 
 ## Evaluation Logic
 
@@ -330,7 +354,7 @@ calling it, raise `RuntimeError`.
 - `guard`: first branch with a truthy condition (else `default`) → parent passes if that child passes
 - `fail`: always False
 - `raises`: `type_check` and `match_check`, decided when the block ended
-- `eventually`: any kept child passed; `stable`: the kept child passed
+- `eventually`: any kept child passed; `stable`: the kept child passed; both fail when the kept try made another check that failed (`also_failed`)
 
 ## Description Formatting
 
@@ -353,7 +377,10 @@ Values go through `render_value` in descriptions and details: numbers (not `bool
 with `format()` plus units, enum members as `Class.NAME` (numeric ones add `(value units)`),
 everything else as a bounded `repr` without units. It never raises, even when a type check
 does. Every rendering is one line (control characters escaped) and about 240 characters at
-most; names, labels, messages and units go through `render_text`/`units_text`/`escape`.
+most; names, labels, messages and units go through `render_text`/`units_text`/`escape` (units
+that are a `str` subclass, such as a `str` enum member, are stored as their text by
+`plain_units`, also in a hand-built descriptor's record (`_settle._evidence`), and shown as it
+by `units_text`).
 `equal`, `not_equal`, the ordering checks and `between` add the types when two values render
 the same (`value_pair`); a failed `equal` whose values still render the same adds where they
 first differ; NaN operands get a note. Truth labels (`is_true`/`is_false`) come from the
@@ -366,7 +393,9 @@ ContextVar, reset by a config cleanup, read when a report prints), `--verify-sum
 (`_Summary` plugin on the controller, from `report.verify_checks`, counting an attempt at its
 teardown report unless one of its reports was a rerun; margins from `CheckType.margin`, which
 ordering checks, `between` and `approx` implement, computed as the verdict is: exact unless the
-check compares in floats), `--verify-json` and `verify_junit_properties` (see Fixture Behavior).
+check compares in floats; units from `CheckType.units` (a sampling check: its kept child's), and
+no margin when other checks failed a kept try whose check passed), `--verify-json` and
+`verify_junit_properties` (see Fixture Behavior).
 Text in records goes through `utf8_safe` (lone surrogates escaped), and `escape` also escapes
 surrogates and U+FFFE/U+FFFF, so records encode as UTF-8 and junit reports stay well-formed.
 
@@ -374,7 +403,11 @@ The summary text (`ChecksFailedError`'s message, the "Soft assertion failures" s
 always Unicode. Only the terminal gets another form: `plugin.pytest_runtest_logreport` makes a
 failed report's `longrepr.toterminal` pass the summary lines through `for_terminal` when the
 stream's encoding cannot show them (ASCII markers, escapes for the rest), so junitxml and
-`longreprtext` keep the Unicode text, and xdist controllers adapt it too.
+`longreprtext` keep the Unicode text, and xdist controllers adapt it too. The reason of an
+xfailed report with checks (`_name_failures_in_xfail` adds the summary's first line) goes the
+same way on the `-rx` line (`_crash_lines_for_terminal`) and the `-v` line
+(`_verbose_reason_for_terminal` swaps `_pytest.terminal._get_raw_skip_reason` for that report
+while it is logged).
 
 ## Coding Standards
 

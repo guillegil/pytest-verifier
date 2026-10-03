@@ -100,7 +100,7 @@ reasons for each choice, is in `.tasks.md`.
 - [x] ~~`verify.limits(measurements, table)` and `load_limits(path)`: limits tables from a dict or a CSV file, rows picked per SKU or corner, a missing measurement fails (FEAT-10)~~ (strict rows, measurement-typed cells, `columns=`, `limit_source`)
 - [x] ~~Soft `verify.raises(...)`: a context manager that records whether the block raised the expected exception (FEAT-2)~~ (unexpected exceptions propagate after the check)
 - [x] ~~`verify.eventually(...)` and `verify.stable(...)` for readings that settle (FEAT-11)~~ (try scopes, trace, `settled_at`)
-- [x] ~~A `str` enum as a name is stored as its text; an empty name is a usage error; a long name is bounded in the description~~
+- [x] ~~A `str` enum as a name or as units is stored as its text; an empty name is a usage error; a long name is bounded in the description~~
 - [x] ~~`all_satisfy` whose factory raised says how many items it checked~~
 - [x] ~~`verify.record(check)` of a check a composite took in records a copy~~ (only when it was not selected)
 - [x] ~~`abs_tol=-0.0` no longer renders as `± -0.0`~~
@@ -111,7 +111,7 @@ reasons for each choice, is in `.tasks.md`.
 - [ ] The skill covers every new API and option; version 0.10.0
 - [ ] README, CHANGELOG, CLAUDE.md, roadmap page
 - [ ] Full test matrix, mypy, build, sdist tests against the wheel
-- [ ] Bug and corner-case hunt over the release; every confirmed finding fixed with a test
+- [x] ~~Bug and corner-case hunt over the release; every confirmed finding fixed with a test~~ (45 findings, 42 confirmed; limits: exact CSV limits for `Decimal`/`Fraction`, re-readable needles, hints for thousands separators, BOMs and `columns=` targets; raises blocks: dropped with their try, or with a sample, lazy child or factory that raised, reported only when the phase ended without an exception (with phase, section, place, creation order), no teardown crash, a returned block reported once with a fitting hint, required-block stops wait only when the try or composite took the exception, no chained context on a stop, failing `__notes__`; sampling: a try passes only when every check it made passes (`also_failed`), returned thread checks join their try, "never changed" compares whole values and lengths, async samples, margins with units; `verify.record` copies stay on their own; the verbose XFAIL line follows `--verify-ascii`)
 - [ ] PR, CI green, merge, release v0.10.0 to PyPI and GitHub
 
 ## Bugs

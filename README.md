@@ -112,9 +112,9 @@ How values read in the summary:
   [Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
 - On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
   `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
-  terminal output changes: reports such as junitxml keep the summary as it is. For a log that
-  shows Unicode wrongly although the terminal claims to support it, `--verify-ascii` forces
-  this form.
+  terminal output changes (also the reason of an xfailed test on its `-v` and `-rx` lines):
+  reports such as junitxml keep the summary as it is. For a log that shows Unicode wrongly
+  although the terminal claims to support it, `--verify-ascii` forces this form.
 
 ### Output options
 
@@ -157,6 +157,9 @@ test that pytest-rerunfailures runs again counts once, with its last attempt.
   unittest `TestCase`s too.
 - A skip after a failed check does not hide the failure: `pytest.skip()`, `unittest.SkipTest`
   and `TestCase.skipTest()` alike.
+- A test that xfails (an `xfail` marker, or `pytest.xfail()` after a failed check) stays XFAIL,
+  and its reason ends with the first line of the summary, `[1 of 2 checks failed: ...]`, so
+  the `-v` and `-rx` lines and junitxml show what failed.
 - `--pdb` opens the debugger when the failure is raised. For soft checks that is after the
   test body has finished, so the test's local variables are gone. To inspect them, check the
   returned result, e.g. `if not check["passed"]: breakpoint()`, or make the check required
@@ -307,8 +310,8 @@ Text compared with text fails (see
 | Function | Description |
 |----------|-------------|
 | `with verify.raises(expected_exception, *, match=None, name):` | The block raises the expected exception (soft) |
-| `verify.eventually(sample, *, timeout, interval=0.1, name)` | A check made by `sample` passes within `timeout` seconds |
-| `verify.stable(sample, *, duration, interval=0.1, name)` | Every check made by `sample` for `duration` seconds passes |
+| `verify.eventually(sample, *, timeout, interval=0.1, name)` | A try of `sample` passes within `timeout` seconds |
+| `verify.stable(sample, *, duration, interval=0.1, name)` | Every try of `sample` for `duration` seconds passes |
 | `verify.limits(measurements, table, *, on_missing="fail")` | One check per row of a limits table |
 | `pytest_verifier.load_limits(path, *, select=None, columns=None, encoding="utf-8-sig")` | Reads a limits table from a CSV file |
 
@@ -454,7 +457,8 @@ just a failed child. When that matters, build the children lazily (see below).
 
 To also keep a check on its own, pass a copy, `verify.guard([(cond, "label", dict(check))], ...)`,
 or record it with `verify.record(check)` before the composite. `verify.record()` of a check that a
-composite took but did not select records a copy of it on its own.
+composite took but did not select records a copy of it on its own. That copy stays on its own
+even when a later composite takes it, and recording the same check again returns the same copy.
 A check that stopped the test (see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check))
 always stays on its own as well, so the summary can name it and a test that catches the error
 still fails; a composite made afterwards that selects it counts it once more.
@@ -511,9 +515,21 @@ def test_rejects_overvoltage(verify, psu):
   `raised.check` the recorded check, once the block has ended. The check's location is the
   `with` line, and `raised_at` in the record is the line that raised.
 - `Exception` and `BaseException` need `match=`: on their own, a typo in the block would raise
-  one and pass. A `verify.raises()` that is never used in a `with` statement becomes a failed
-  check. `verify.require.raises` stops the test at the end of a block that failed.
-  `checks.raises` raises `RuntimeError`: only the fixture can record a block's check.
+  one and pass. `checks.raises` raises `RuntimeError`: only the fixture can record a block's
+  check.
+- A `verify.raises()` that is never used in a `with` statement becomes a failed check, with the
+  place and `verify.section` where it was made, unless the code that made it raised before
+  reaching the `with` (a stopped test, an error, a skip or an xfail, or the sample, lazy child,
+  guard condition or `all_satisfy` factory that made it). A block made in an
+  `eventually`/`stable` try that is not kept goes with that try. From a sample, lazy child or
+  factory, return `raised.check`, not the block.
+- `verify.require.raises` stops the test at the end of a block that failed. When the block got
+  the expected type with another message, the failure shows the summary alone: the check
+  already names the message, so the exception is not shown again before it. Another exception
+  goes on and ends the test by itself; when a sample, lazy child, guard condition or
+  `all_satisfy` factory raises it (the check takes it as a failure), the test stops once that
+  check is recorded (for a sample, if its try is the one kept). If your own code catches the
+  exception, nothing stops, just as at the top level of the test.
 
 ### `eventually` and `stable` — values that settle, values that must hold
 
@@ -534,23 +550,35 @@ def test_power_up(verify, dut, psu):
 - The sample is called at once, then each try starts `interval` seconds after the last one
   started. `eventually` stops at the first passing try, or when `timeout` has passed (the last
   try starts at it). `stable` stops at the first failed try, or once a try has started at
-  `duration`, so it tries at least twice. Times are seconds or a `timedelta`.
+  `duration`; it tries at least twice when `duration` is more than 0, unless the first try
+  fails. Times are seconds or a `timedelta`.
+- A try passes when the check the sample returns passes and so does every other check the
+  sample records in that try. So a side check (a temperature read next to Vout) that fails
+  fails `stable` at that try, and makes `eventually` try again.
 - The record keeps one try as its child (the passing one or the last; the failed one or the
   passing one closest to its limit), and `tries`, `elapsed`, `settled_at` (`eventually`) and a
-  `trace` of `[seconds, value, passed]` for the first and the last 50 tries.
+  `trace` of `[seconds, value, passed]` for the first and the last 50 tries. The kept try's
+  other checks stay on their own; those that failed it are named in `also_failed`.
 - Failed tries never fail or stop the test, even with `verify.require` or `--verify-fail-fast`:
   a try that is not kept is dropped with every check it recorded. A sample that raises fails
   its try, and the tries go on. A usage error, such as a check without a tolerance, a sample
-  without `return`, or the same check returned again (the value was read only once), fails the
-  check at once.
+  without `return`, an `async def` sample, or the same check returned again (the value was read
+  only once), fails the check at once.
+- A plain `threading.Thread`, or an executor's worker, runs outside the try. The checks it
+  records stay whatever happens to the try, except the one the sample returns, which belongs
+  to the try. A required or fail-fast check that fails there stops at once, even one the
+  sample would return: it raises in that thread, and `future.result()` raises it again in the
+  sample, which stops the test. So read the value on the thread and make the check in the
+  sample. `asyncio.to_thread` runs in a copy of the context, so its checks are in the try.
 - Both wait with `time.sleep`, in the thread that calls them. In an `async` test this blocks
-  the event loop, and a `RuntimeWarning` says so.
+  the event loop, and a `RuntimeWarning` says so: call them as
+  `await asyncio.to_thread(lambda: verify.eventually(...))`.
 
 ### `limits` and `load_limits` — check measurements against a limits table
 
 Production tests are often driven by a table of limits per product or corner. `verify.limits`
 makes one ordinary check per row of the table, named by the row, of the measurement with the
-same name, and returns the checks by name:
+same name, and returns the checks by the table's row names:
 
 ```python
 LIMITS = {
@@ -575,11 +603,13 @@ needs a tolerance, or `"check": "equal"`).
   NaN or infinity), `rel_tol` a fraction below 1, and `inclusive` a `bool`. A wrong row raises
   and names the row.
 - A row with no measurement fails with an error, `not measured: ...`, that names a similar
-  measurement key when there is one. `on_missing="ignore"` makes no check for it instead.
-  Measurements that have no row are not checked.
+  measurement key (in any case) when there is one. `on_missing="ignore"` makes no check for it
+  instead. Measurements that have no row are not checked.
 - `verify.require.limits` and `--verify-fail-fast` stop the test only after the whole table is
   recorded, so the report shows every row.
-- `LimitRow` is the `TypedDict` of a row, for type checkers.
+- `LimitRow` is the `TypedDict` of a row: annotate a table as `Dict[str, LimitRow]` to have
+  its keys checked. `verify.limits` takes any mapping of rows, so an unannotated table, as
+  above, type-checks too.
 
 `load_limits` reads the table from a CSV file, such as one exported from Excel:
 
@@ -603,15 +633,23 @@ LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "
   cell is not given. Columns are separated by commas, semicolons or tabs, whichever gives a
   `name` column; with semicolons a decimal comma is a number. Blank lines and lines that start
   with `#` are skipped. The file is UTF-8 (Excel's "CSV UTF-8"); pass `encoding="cp1252"` for
-  Excel's plain "CSV" on Windows.
-- Column names match in any case. `columns` renames columns or skips them (`None`). Any other
-  column is an error, so a misspelt limit is never ignored.
+  Excel's plain "CSV" on Windows. A byte-order mark at the start of the file is skipped, also
+  with `encoding="utf-8"`; a "CSV UTF-8" file read with `encoding="cp1252"` is an error that
+  says so.
+- Column names match in any case. `columns` renames columns or skips them (`None`; an empty
+  name is an error). Any other column is an error, so a misspelt limit is never ignored, and a
+  misspelt `columns` target is named with the limit it is close to.
 - Selector columns choose lines. With `select={"corner": "hot"}`, a line whose `corner` is
   `hot`, or lists it (`hot|warm`), beats one whose `corner` is empty, so a default line can be
   overridden per corner. A selected value that no line names is an error.
-- Numeric columns must hold numbers (`3.3`, `-5`, `0x1F`). The `expected` of `equal` and
-  `not_equal`, and `needle`, are compared as the measurement is: `1.10` stays text against a
-  `str` reply and becomes a number against a number (a `Decimal` against a `Decimal`).
+- Numeric columns must hold numbers (`3.3`, `-5`, `0x1F`) without thousands separators. In a
+  `;` file a dot is still a decimal point, so `2.000` is 2.0, and `1.000,5` is an error that
+  says to write `1000,5`. Against a `Decimal` or `Fraction` measurement, a numeric cell is one
+  too, from its digits, so `Decimal("3.4")` meets a `high` of `3.4`.
+- The `expected` of `equal` and `not_equal`, and `needle`, are compared as the measurement is:
+  `1.10` stays text against a `str` reply and becomes a number against a number (a `Decimal`
+  against a `Decimal`). A `needle` takes the type of the haystack's items: any collection that
+  can be read again, such as a list, a set, `dict.keys()` or a `deque`, but not an iterator.
 - Every line is checked when the file is read, and errors name the file and line. Each row gets
   `source`, such as `"limits.csv:3"`, which its record keeps as `limit_source`.
 
@@ -810,7 +848,8 @@ repeats (their report's outcome is `"rerun"`).
   child, a guard condition or an `all_satisfy` factory now go on, instead of failing the
   composite.
 - `verify.fail(msg)` with an empty or blank message no longer raises: the check is named `fail`.
-- A `str` enum member used as a name is stored as its text.
+- A `str` enum member used as a name or as units is stored and shown as its text (`3.2V`, not
+  `3.2Unit.VOLT`).
 - The reason of an xfailed test whose checks failed ends with `[N of M checks failed: ...]`.
 
 ## Upgrading from 0.7

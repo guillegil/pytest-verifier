@@ -58,7 +58,8 @@ def test_3v3_rail(verify, psu):
 - **Use the most specific check.** Its failure says what was expected and what was got:
   `between` beats `is_true(lo <= x <= hi)`, `length` beats `equal(len(x), n)`.
 - **`units` is only a label**, appended to numbers as written (`"V"` gives `3.3V`, `" ms"`
-  gives `3 ms`), and only the numeric checks below take it. Nothing is converted.
+  gives `3 ms`), and only the numeric checks below take it. Nothing is converted. A `str` enum
+  member is used and stored as its text.
 
 ## Checks
 
@@ -86,7 +87,8 @@ composite takes as a child (a case, a branch's check, a default, or what an `all
 factory returns) belongs to it: it is reported inside the composite and not on its own, and
 only the selected children count (an unselected child that failed does not fail the test).
 Pass `dict(check)`, or record the check with `verify.record(check)` before the composite, to
-keep it on its own as well; `verify.record` of a child that was not selected records a copy.
+keep it on its own as well; `verify.record` of a child that was not selected records a copy,
+which stays on its own (recording that child again returns the same copy).
 
 **`all_satisfy(items, descriptor_factory, *, name)`** applies a check to every item. The
 factory is called once per item, at the call, and must return one check (not a bool). An
@@ -170,17 +172,23 @@ if raised.value is not None:   # the ValueError, else None; raised.type is its c
 - `Exception` and `BaseException` need `match=` (`TypeError` otherwise: a typo in the block
   would raise one and pass). `match` is a regex: `re.escape()` text with `(`, `.` or `[`.
 - `raised` is a `Raises`; `raised.check` is the record once the block has ended
-  (`RuntimeError` before). A `verify.raises()` never used in a `with` fails at the end of the
-  phase. `verify.require.raises` stops the test at the end of a failed block.
-  `checks.raises` raises `RuntimeError`.
+  (`RuntimeError` before). Return `raised.check`, not the `raised` block, from a sample, lazy
+  child or factory. `checks.raises` raises `RuntimeError`.
+- A `verify.raises()` never used in a `with` becomes a failed check when the phase ends,
+  unless the code that made it raised first (or it was made in a dropped
+  `eventually`/`stable` try).
+- `verify.require.raises` stops the test at the end of a failed block. An unexpected
+  exception goes on instead; when a sample, lazy child, guard condition or factory raises it,
+  the test stops once the check that takes it is recorded (a sample's: if its try is kept).
 
 ## Values that settle or must hold
 
-`verify.eventually(sample, *, timeout, interval=0.1, name)` passes once a check made by
-`sample` passes within `timeout` seconds. `verify.stable(sample, *, duration, interval=0.1,
-name)` passes when every check made for `duration` seconds passes, and stops at the first
-that fails. `sample` is a zero-argument callable that reads the value and returns the check:
-a value read before the call never changes (the failure then says so).
+`verify.eventually(sample, *, timeout, interval=0.1, name)` passes once a try passes within
+`timeout` seconds. `verify.stable(sample, *, duration, interval=0.1, name)` passes when every
+try for `duration` seconds passes, and stops at the first that fails. A try is one call of
+`sample`, a zero-argument callable that reads the value and returns the check. It passes when
+that check and every other check it records pass. A value read before the call never changes
+(the failure then says so).
 
 ```python
 verify.eventually(lambda: verify.less(dut.temperature(), 40, name="Temp", units="C"),
@@ -191,23 +199,31 @@ verify.stable(lambda: verify.approx(psu.vout(), 3.3, abs_tol=0.05, name="Vout", 
 
 - Each try starts `interval` seconds after the last one started; times are seconds or a
   `timedelta`. `eventually` tries until the timeout (the last try starts at it); `stable` at
-  least twice when `duration > 0`.
+  least twice when `duration > 0` (unless the first try fails).
 - The record keeps one try as its child (the passing one or the last; the failing one or the
-  passing one closest to its limit), plus `tries`, `elapsed`, `settled_at` (`eventually`) and
-  a `trace` of `[seconds, value, passed]` for the first and last 50 tries.
+  passing one closest to its limit), plus `tries`, `elapsed`, `settled_at` (`eventually`),
+  `also_failed` (the kept try's other checks that failed it) and a `trace` of
+  `[seconds, value, passed]` for the first and last 50 tries.
 - Failed tries never fail or stop the test: a try that is not kept is dropped with every
-  check recorded in it. A sample that raises fails its try, and the tries go on; a usage error
-  (no tolerance, no `return`, a comparison instead of a check) fails the check at once.
-- It waits with `time.sleep`: in an `async` test it blocks the event loop (`RuntimeWarning`).
+  check recorded in it, and the kept try's other checks stay on their own. A sample that raises
+  fails its try, and the tries go on; a usage error (no tolerance, no `return`, a comparison
+  instead of a check, an `async def` sample) fails the check at once.
+- Make the checks in the sample, not on a plain thread or an executor's worker: those run
+  outside the try, so their checks stay when the try is dropped (except the one the sample
+  returns), and a failed `require` or fail-fast one stops at once (`future.result()` raises
+  the stop in the sample, which stops the test). `asyncio.to_thread` stays in the try.
+- It waits with `time.sleep`: in an `async` test it blocks the event loop (`RuntimeWarning`);
+  call it as `await asyncio.to_thread(lambda: verify.eventually(...))`.
 
 ## Limits tables
 
 `verify.limits(measurements, table, *, on_missing="fail")` makes one ordinary check per row
-of `table` (a dict of `LimitRow`s), named by the row, of the measurement with the same name,
-and returns the checks by name. A row holds the check's arguments after the value and,
-under `"check"`, the method; without it the limits say: `low`+`high` is `between`, `low` is
-`greater_equal`, `high` is `less_equal` (`"inclusive": False` gives `greater`/`less`),
-`expected` with `abs_tol`/`rel_tol` is `approx`, and `expected` alone (not a float) `equal`.
+of `table` (a dict of rows; `LimitRow` types one, and an unannotated dict type-checks too),
+named by the row, of the measurement with the same name, and returns the checks by the
+table's row names. A row holds the check's arguments after the value and, under `"check"`,
+the method; without it the limits say: `low`+`high` is `between`, `low` is `greater_equal`,
+`high` is `less_equal` (`"inclusive": False` gives `greater`/`less`), `expected` with
+`abs_tol`/`rel_tol` is `approx`, and `expected` alone (not a float) `equal`.
 
 ```python
 LIMITS = {
@@ -221,8 +237,8 @@ verify.limits({"3V3": vout, "Ripple": ripple_mv, "FW": fw}, LIMITS)
 - Rows are strict and checked before anything is recorded: limits are finite numbers (not
   text), `rel_tol` is below 1, and a float `expected` needs a tolerance or `"check": "equal"`.
 - A row with no measurement fails with an `error` that starts `not measured` and names a
-  similar key (`on_missing="ignore"` skips it). Measurements without a row are not checked:
-  keys must match row names exactly (an `int` key matches its decimal string).
+  similar key, in any case (`on_missing="ignore"` skips it). Measurements without a row are not
+  checked: keys must match row names exactly (an `int` key matches its decimal string).
 - `verify.require.limits` and fail-fast stop only after the whole table is recorded.
 
 `load_limits(path, *, select=None, columns=None, encoding="utf-8-sig")` reads such a table
@@ -239,9 +255,12 @@ LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "
 - A selector column chooses lines: with `select={"corner": "hot"}`, a line whose `corner` is
   `hot` (or lists it: `hot|cold`) beats one whose `corner` is empty. A selected value that no
   line names is an error.
-- Numeric cells must be numbers (`3,3` only in a `;` file). The `expected` of `equal`/
-  `not_equal` and `needle` take the measurement's type when checked: `1.10` stays text against
-  a `str` reply and is a number against a number (a `Decimal` against a `Decimal`).
+- Numeric cells must be numbers (`3,3` only in a `;` file, where `2.000` is still 2.0: no
+  thousands separators). Against a `Decimal`/`Fraction` measurement they are one too, from
+  their digits. The `expected` of `equal`/`not_equal` and `needle` take the measurement's type
+  when checked: `1.10` stays text against a `str` reply and is a number against a number (a
+  `Decimal` against a `Decimal`). A `needle` takes the type of the haystack's items (a list,
+  set, `dict.keys()` or `deque`; not an iterator).
 - Every line is checked when the file is read (errors name `path:line`), and each record gets
   `limit_source` (`"limits.csv:12"`). Save Excel files as "CSV UTF-8", or pass `encoding`.
 
