@@ -702,9 +702,10 @@ class Verify:
         returns when another thread recorded it: a try that is not kept is dropped with its
         checks, so failed tries never fail or stop the test. The kept try's other checks stay
         on their own, and ``verify.require``/fail-fast apply to them once the check is
-        recorded. Other checks recorded on a plain thread (not ``asyncio.to_thread``) are not
-        in the try: they stay, and a required or fail-fast one that fails stops its thread at
-        once. With ``pytest_verifier.checks`` each try is evaluated when it is taken.
+        recorded. A plain thread (not ``asyncio.to_thread``) runs outside the try: the other
+        checks it records stay whatever happens to the try, and a required or fail-fast check
+        it records that fails stops that thread at once, even one the sample would return.
+        With ``pytest_verifier.checks`` each try is evaluated when it is taken.
 
         It waits with ``time.sleep``, in the calling thread: in an ``async`` test it blocks
         the event loop (a ``RuntimeWarning`` says so).

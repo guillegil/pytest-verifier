@@ -26,6 +26,7 @@ import sys
 import threading
 import unittest
 import warnings
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -1613,6 +1614,26 @@ class TestThreadsInATry:
         assert (record["passed"], record["tries"]) == (True, 3)
         assert record["child_checks"][0]["actual"] == 3.3
         assert _names(run) == ["Settles"]  # the failed tries went, with their checks
+
+    def test_a_fail_fast_check_on_another_thread_stops_that_thread(self, clock: FakeClock):
+        run, verify = _recording(fail_fast=True)
+        read = Reader(clock, [3.0, 3.3])
+
+        def sample():
+            # The thread runs outside the try, so its failed check stops it before the sample
+            # can return that check; the stop goes on through the sample.
+            with ThreadPoolExecutor(1) as pool:
+                return pool.submit(
+                    lambda: verify.approx(read(), 3.3, abs_tol=0.05, name="V")
+                ).result()
+
+        with pytest.raises(ChecksFailedError) as raised:
+            verify.eventually(sample, timeout=5, name="Settles")
+        assert str(raised.value).splitlines()[0] == (
+            "1 of 1 checks failed, stopped at [0]: V — expected 3.3 ± 0.05, got 3.0"
+        )
+        assert read.starts == [0.0]
+        assert _names(run) == ["V"]
 
     @pytest.mark.skipif(
         bool(getattr(sys.flags, "thread_inherit_context", 0)),
