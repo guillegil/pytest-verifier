@@ -62,7 +62,7 @@ from ._checks._raises import exception_classes, expected_instance, handles
 from ._checks._sampling import EVENTUALLY, STABLE, Sampler
 from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
 from ._evaluator import evaluate as _evaluate
-from ._limits import LimitRow, limit_checks
+from ._limits import limit_checks
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
 from ._settle import settle
@@ -784,7 +784,7 @@ class Verify:
     def limits(
         self,
         measurements: Mapping[Any, Any],
-        table: Mapping[str, Union[LimitRow, Mapping[str, Any]]],
+        table: Mapping[str, Any],
         *,
         on_missing: Literal["fail", "ignore"] = "fail",
     ) -> Dict[str, CheckDescriptor]:
@@ -801,10 +801,10 @@ class Verify:
         a ``between``; ``low`` alone a ``greater_equal`` and ``high`` alone a ``less_equal``
         (``greater``/``less`` with ``inclusive=False``); ``expected`` with ``abs_tol`` or
         ``rel_tol`` an ``approx``; ``expected`` alone an ``equal``, except for a ``float``,
-        which needs a tolerance or ``"check": "equal"``. ``low``/``high`` can also stand for
-        the ``threshold`` of ``greater``/``greater_equal``/``less``/``less_equal``. A ``None``
-        value counts as not given, ``"source"`` (text) is kept on the record as
-        ``limit_source``, and the table is never changed::
+        which needs a tolerance or ``"check": "equal"``. ``low`` can stand for the
+        ``threshold`` of ``greater``/``greater_equal``, and ``high`` for that of
+        ``less``/``less_equal``. A ``None`` value counts as not given, ``"source"`` (text) is
+        kept on the record as ``limit_source``, and the table is never changed::
 
             LIMITS = {
                 "Vout": {"expected": 3.3, "abs_tol": 0.05, "units": "V"},
@@ -827,22 +827,23 @@ class Verify:
 
         Args:
             measurements: The measured values, by name.
-            table: The rows, by name, such as the result of
-                :func:`pytest_verifier.load_limits`.
+            table: The rows (:class:`pytest_verifier.LimitRow` dicts), by name, such as the
+                result of :func:`pytest_verifier.load_limits`.
             on_missing: For a row without a measurement: ``"fail"`` records its check as
                 failed, with an ``error`` that starts with ``"not measured"`` and names a
                 measurement that looks like it (the limits stay in the record); ``"ignore"``
                 makes no check for it.
 
         Returns:
-            The checks made, by name, in table order.
+            The checks made, in table order, by the table's row names.
 
         Raises:
             TypeError: If a row is not a mapping, names an argument its check does not take
                 or misses one, has a limit of the wrong type, or a measurement name is not a
                 str, an int or an enum member.
             ValueError: If the table is empty, a row names an unknown check or has an invalid
-                argument, no row has a measurement, or *on_missing* is another value.
+                argument, on_missing is "ignore" and no row has a measurement, or
+                *on_missing* is another value.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         return limit_checks(self._sink, measurements, table, on_missing)

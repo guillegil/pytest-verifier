@@ -152,6 +152,14 @@ LIMITS: Dict[str, LimitRow] = {
     "FW": {"check": "matches", "pattern": "^v2"},
 }
 
+#: The README's table: not annotated, rows of mixed value types.
+README_LIMITS = {
+    "3V3": {"low": 3.2, "high": 3.4, "units": "V"},
+    "Vref": {"expected": 1.25, "abs_tol": 0.01, "units": "V"},
+    "Ripple": {"high": 20, "units": "mV"},
+    "FW": {"check": "matches", "pattern": r"\A2\.\d+\Z"},
+}
+
 
 def lab_api(fixture: Verify, folder: Path) -> None:
     """``verify.raises``, ``eventually``/``stable``, ``limits`` and ``load_limits`` (0.10.0)."""
@@ -200,6 +208,8 @@ def lab_api(fixture: Verify, folder: Path) -> None:
     one_row: Dict[str, LimitRow] = {"Ripple": LIMITS["Ripple"]}
     required: Dict[str, CheckDescriptor] = fixture.require.limits({"Ripple": 0.01}, one_row)
     assert required["Ripple"].get("passed") is True
+    rails = fixture.limits({"3V3": 3.3, "Vref": 1.25, "Ripple": 12, "FW": "2.4"}, README_LIMITS)
+    assert all(check.get("passed") for check in rails.values())
 
     # load_limits: a CSV file, selected by corner, with a column skipped.
     path = folder / "limits.csv"

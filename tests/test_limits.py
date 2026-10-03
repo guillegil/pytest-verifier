@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+import array
+import collections
+import collections.abc
 import copy
 import enum
 import json
@@ -18,12 +21,13 @@ import math
 import re
 import sys
 from decimal import Decimal
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import pytest
 
-from pytest_verifier import ChecksFailedError, LimitRow, checks, load_limits
+from pytest_verifier import ChecksFailedError, LimitRow, Verify, checks, load_limits
 from pytest_verifier._run import Run, recording_verify
 
 
@@ -1089,7 +1093,8 @@ def test_the_line_that_fits_best_breaks_a_tie_of_default_lines(tmp_path):
 )
 def test_number_cells(tmp_path, cell, number):
     row = load_limits(_csv(tmp_path, f"name,low\nA,{cell}\n"))["A"]
-    assert row["low"] == number and type(row["low"]) is type(number)
+    assert row["low"] == number and isinstance(row["low"], type(number))
+    assert type(row["low"]) is int or type(number) is float  # a float cell keeps its digits
 
 
 @pytest.mark.parametrize(
@@ -1153,7 +1158,7 @@ def test_an_is_instance_line_is_refused(tmp_path, monkeypatch, check):
         ("Vout,5,1,,,,,", r"row 'Vout': between\(\) low must not exceed high"),
         ("Vout,,,,,,,approxx", r"row 'Vout': unknown check 'approxx'"),
         ("Vout,1,,,,,,", None),
-        ("Vout,,,3.3,,,,", r"row 'Vout': expected '3.3' is a number with a fraction"),
+        ("Vout,,,3.3,,,,", r"row 'Vout': expected '3.3' is a float and there is no tolerance"),
         ("Vout,,,3,,1,,", r"row 'Vout': rel_tol .* below 1"),
         ("Vout,,,3,-1,,,", r"row 'Vout': approx\(\) abs_tol must be a non-negative number"),
         ("Vout,,,,,,,between", r"row 'Vout': between\(\) needs low, high"),
@@ -1353,3 +1358,293 @@ def test_a_needle_cell_against_a_haystack_it_cannot_type_fails(tmp_path, haystac
     out = _limits_of(tmp_path, "name,check,needle\nH,contains,3\n", {"H": haystack})
     assert out["H"]["passed"] is False
     assert out["H"]["error"].startswith("a CSV needle is text or a number")
+
+
+# ---------------------------------------------------------------------------
+# Bug and corner-case hunt
+# ---------------------------------------------------------------------------
+
+
+class Unit(str, enum.Enum):
+    VOLT = "V"
+
+
+EXACT = (
+    "name,check,low,high,expected,abs_tol\n"
+    "Vmin,,3.2,,,\nVmax,,,3.4,,\nRange,,3.2,3.4,,\nNear,approx,,,3.3,0.1\nCount,,3,,,\n"
+)
+
+
+@pytest.mark.parametrize("kind", [Decimal, Fraction])
+def test_csv_number_cells_take_a_decimal_or_fraction_measurements_type(tmp_path, kind):
+    measured = {"Vmin": "3.2", "Vmax": "3.4", "Range": "3.4", "Near": "3.4", "Count": "3"}
+    out = _limits_of(tmp_path, EXACT, {name: kind(text) for name, text in measured.items()})
+    assert [record["passed"] for record in out.values()] == [True] * 5
+    assert out["Range"]["detail"].startswith(f"{kind('3.4')} ∈ [{kind('3.2')}, ")
+    built = checks.limits({"Near": kind("3.4")}, load_limits(_csv(tmp_path, EXACT)))
+    assert (built["Near"]["expected"], built["Near"]["abs_tol"]) == (kind("3.3"), kind("0.1"))
+    assert type(built["Near"]["expected"]) is kind
+    assert type(built["Count"]["threshold"]) is int
+
+
+def test_csv_number_cells_with_a_decimal_comma_take_a_decimals_type(tmp_path):
+    out = _limits_of(tmp_path, "name;low;high\nV;3,2;3,4\n", {"V": Decimal("3.4")})
+    assert out["V"]["passed"] is True
+
+
+def test_csv_number_cells_are_plain_floats_against_anything_else(tmp_path):
+    table = load_limits(_csv(tmp_path, EXACT))
+    assert table["Vmin"]["low"] == 3.2 and isinstance(table["Vmin"]["low"], float)
+    assert json.loads(json.dumps(table))["Near"] == {
+        "check": "approx", "expected": 3.3, "abs_tol": 0.1, "source": table["Near"]["source"]
+    }
+    for value in (3.3, 3, None, "3.3"):
+        built = checks.limits({"Vmin": value, "Near": value}, table)
+        assert type(built["Vmin"]["threshold"]) is float
+        assert type(built["Near"]["expected"]) is float and type(built["Near"]["abs_tol"]) is float
+    out = _limits_of(tmp_path, EXACT, {"Vmin": 3.2, "Vmax": 3.4, "Range": 3.3, "Near": 3.35,
+                                       "Count": 3})
+    assert all(record["passed"] for record in out.values())
+    assert type(out["Vmin"]["threshold"]) is float
+
+
+def test_a_python_tables_limits_stay_as_given_against_a_decimal():
+    _, verify = _recording()
+    out = verify.limits({"V": Decimal("3.2")}, {"V": {"low": 3.2}})
+    assert out["V"]["threshold"] == 3.2
+    assert out["V"]["passed"] is False  # Decimal('3.2') < 3.2 in binary, as with greater_equal()
+
+
+def test_a_needle_cell_in_any_collection_that_can_be_read_again(tmp_path):
+    measured = {
+        "H": collections.deque([1, 2, 3]),
+        "S": {"ab": 1, "cd": 2}.keys(),
+        "T": array.array("i", [1, 2]),
+    }
+    out = _limits_of(tmp_path, NEEDLES, measured)
+    assert [record["passed"] for record in out.values()] == [True, True, True]
+    assert all("error" not in record for record in out.values())
+    text = "name,check,needle\nV,contains,ab\nL,not_contains,x\n"
+    out = _limits_of(tmp_path, text, {"V": {1: "ab"}.values(), "L": collections.UserList("ab")})
+    assert [record["passed"] for record in out.values()] == [True, True]
+
+
+class _Unreadable(collections.abc.Collection):
+    """A collection whose items cannot be read, like a 0-d numpy array."""
+
+    def __len__(self) -> int:
+        return 1
+
+    def __iter__(self) -> Any:
+        raise TypeError("iteration over a 0-d array")
+
+    def __contains__(self, item: object) -> bool:
+        return False
+
+
+def test_a_needle_cell_against_a_collection_that_cannot_be_read_fails(tmp_path):
+    out = _limits_of(tmp_path, "name,check,needle\nH,contains,3\n", {"H": _Unreadable()})
+    assert out["H"]["passed"] is False
+    assert out["H"]["error"].startswith("a CSV needle is text or a number, and _Unreadable")
+
+
+def test_a_needle_cell_against_an_iterator_says_it_is_read_once(tmp_path):
+    out = _limits_of(tmp_path, "name,check,needle\nH,contains,3\n", {"H": iter([1, 2, 3])})
+    assert out["H"]["passed"] is False
+    assert out["H"]["error"] == (
+        "a CSV needle is text or a number, and a list_iterator can be read only once: "
+        "pass a list"
+    )
+
+
+@pytest.mark.parametrize(
+    "method, args",
+    [
+        ("equal", (3.3, 3.3)),
+        ("not_equal", (3.3, 3.2)),
+        ("greater", (3.3, 3.2)),
+        ("greater_equal", (3.3, 3.2)),
+        ("less", (3.1, 3.2)),
+        ("less_equal", (3.1, 3.2)),
+    ],
+)
+def test_str_enum_units_are_stored_and_shown_as_text(method, args):
+    _, verify = _recording()
+    record = getattr(verify, method)(*args, name="V", units=Unit.VOLT)
+    built = getattr(checks, method)(*args, name="V", units=Unit.VOLT)
+    for check in (record, built):
+        assert check["units"] == "V" and type(check["units"]) is str
+        assert "3.2V" in check["description"] or "3.3V" in check["description"]
+        assert "Unit" not in check["description"]
+    assert "Unit" not in record["detail"] and "V" in record["detail"]
+
+
+def test_str_enum_units_of_approx_between_and_limits_are_text():
+    _, verify = _recording()
+    approx = verify.approx(3.31, 3.3, abs_tol=0.05, name="A", units=Unit.VOLT)
+    between = verify.between(3.3, 3.2, 3.4, name="B", units=Unit.VOLT)
+    out = verify.limits({"L": 3.3}, {"L": {"low": 3.2, "units": Unit.VOLT}})
+    assert approx["description"] == "Verify 'A' == 3.3V ± 0.05V"
+    assert between["description"] == "Verify 'B' ∈ [3.2V, 3.4V]"
+    assert out["L"]["description"] == "Verify 'L' >= 3.2V"
+    assert out["L"]["detail"] == "3.3V >= 3.2V"
+    assert [approx["units"], between["units"], out["L"]["units"]] == ["V"] * 3
+
+
+def test_str_enum_units_of_a_hand_built_check_are_shown_as_text():
+    _, verify = _recording()
+    check = {"check_type": "greater", "name": "V", "description": "V > 2V", "actual": 3,
+             "threshold": 2, "units": Unit.VOLT}
+    assert verify.record(check)["detail"] == "3V > 2V"
+
+
+def test_str_enum_units_of_a_hand_built_check_are_stored_as_text():
+    run, verify = _recording()
+
+    def hand_built() -> Dict[str, Any]:
+        return {"check_type": "greater", "name": "V", "description": "V > 2V", "actual": 3,
+                "threshold": 2, "units": Unit.VOLT}
+
+    record = verify.record(hand_built())
+    guard = verify.guard([(False, "off", hand_built()), (True, "on", hand_built())], name="G")
+    unselected, selected = (branch["check"] for branch in guard["branches"])
+    for stored in (record, unselected, selected):
+        assert stored is not None and stored["units"] == "V" and type(stored["units"]) is str
+    assert json.loads(json.dumps(run.records))[0]["units"] == "V"
+
+
+def test_big_ints_fractions_and_finite_decimals_are_valid_limits(tmp_path):
+    _, verify = _recording()
+    table = {
+        "N": {"low": 10**320},
+        "D": {"low": Decimal("1E+400")},
+        "F": {"high": Fraction(10**401, 3)},
+    }
+    out = verify.limits({"N": 10**330, "D": Decimal("1E+401"), "F": Fraction(10**400, 3)}, table)
+    assert [record["passed"] for record in out.values()] == [True, True, True]
+    json.dumps(out, allow_nan=False)
+    row = load_limits(_csv(tmp_path, f"name,low\nN,1{'0' * 320}\n"))["N"]
+    assert row["low"] == 10**320
+
+
+@pytest.mark.parametrize("limit", [Decimal("Infinity"), Decimal("-Infinity"), Decimal("sNaN")])
+def test_decimals_that_are_not_finite_are_still_refused(limit):
+    _, verify = _recording()
+    with pytest.raises(ValueError, match=r"row 'X': low must be a finite number"):
+        verify.limits({"X": 1}, {"X": {"low": limit}})
+
+
+@pytest.mark.parametrize("first", ["name,low,high,units", "low,name,high,units"])
+def test_a_bom_is_skipped_with_utf_8_too(tmp_path, monkeypatch, first):
+    monkeypatch.chdir(tmp_path)
+    cells = {"name": "Vout", "low": "3.2", "high": "3.4", "units": "V"}
+    line = ",".join(cells[column] for column in first.split(","))
+    _csv(tmp_path, f"\ufeff{first}\r\n{line}\r\n")
+    for encoding in ("utf-8", "utf-8-sig"):
+        assert load_limits("limits.csv", encoding=encoding) == {
+            "Vout": {"low": 3.2, "high": 3.4, "units": "V", "source": "limits.csv:2"}
+        }
+
+
+@pytest.mark.parametrize("encoding", ["cp1252", "latin-1", "cp1250"])
+def test_a_utf_8_bom_read_with_an_8_bit_encoding_says_so(tmp_path, monkeypatch, encoding):
+    monkeypatch.chdir(tmp_path)
+    _csv(tmp_path, "\ufeffname,low,units\r\nI,3.2,\u00b5A\r\n")  # Excel's "CSV UTF-8"
+    with pytest.raises(ValueError) as info:
+        load_limits("limits.csv", encoding=encoding)
+    assert str(info.value) == (
+        "load_limits(): limits.csv starts with a UTF-8 byte-order mark, so it is 'CSV UTF-8' "
+        f"text, not {encoding}: leave out encoding="
+    )
+    _csv(tmp_path, "name,low,units\r\nI,3.2,\u00b5A\r\n", encoding=encoding)  # no mark
+    assert load_limits("limits.csv", encoding=encoding)["I"]["units"] == "\u00b5A"
+    _csv(tmp_path, "name,low\r\nI,3.2\r\n", encoding="utf-16")  # its own mark
+    assert load_limits("limits.csv", encoding="utf-16")["I"]["low"] == 3.2
+
+
+def test_a_thousands_separator_gets_its_own_hint(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _csv(tmp_path, "name;low;high;units\nPower;1.000,5;2000;W\n")
+    with pytest.raises(ValueError) as info:
+        load_limits("limits.csv")
+    assert str(info.value) == (
+        "load_limits(): limits.csv:2, column 'low': must be a number, got '1.000,5' "
+        "(remove the thousands separator: 1000,5)"
+    )
+    _csv(tmp_path, "name;high\nPower;1.000.000\n")
+    with pytest.raises(ValueError, match=r"got '1.000.000' \(remove the thousands separator: "
+                       r"1000000\)$"):
+        load_limits("limits.csv")
+    for cell in ("1,5.3", "12.5,3", ".000,5", "1.00,5"):  # not groups of three digits
+        _csv(tmp_path, f"name;low\nPower;{cell}\n")
+        with pytest.raises(ValueError, match=rf"got '{re.escape(cell)}'$"):
+            load_limits("limits.csv")
+
+
+def test_a_misspelt_columns_target_names_the_mapping(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    _csv(tmp_path, "Test,Min,Max\nVout,3.2,3.4\n")
+    with pytest.raises(ValueError) as info:
+        load_limits("limits.csv", columns={"Test": "name", "Min": "lo", "Max": "high"})
+    text = str(info.value)
+    assert text.startswith(
+        "load_limits(): columns= maps the column 'Min' of limits.csv to 'lo', which is not a "
+        "limit (did you mean 'low'?). Limit columns: name, check, "
+    ), text
+    assert "None" not in text
+
+
+@pytest.mark.parametrize("target", ["", "  "])
+def test_an_empty_columns_target_is_an_error(tmp_path, target):
+    path = _csv(tmp_path, "name,Min,Max\nVout,3.2,3.4\n")
+    with pytest.raises(ValueError, match=r"columns maps 'Max' to an empty name; skip a column "):
+        load_limits(path, columns={"Min": "low", "Max": target})
+
+
+def test_the_limits_docstring_says_when_a_value_error_is_raised():
+    doc = " ".join((Verify.limits.__doc__ or "").split())
+    assert 'on_missing is "ignore" and no row has a measurement' in doc
+    assert "``low`` can stand for the ``threshold`` of ``greater``/``greater_equal``" in doc
+    assert "and ``high`` for that of ``less``/``less_equal``" in doc
+
+
+@pytest.mark.parametrize(
+    "row, message",
+    [
+        ({"expected": 3.0}, r"row 'V': expected 3\.0 is a float and there is no tolerance: "),
+        ({"expected": 1e3}, r"row 'V': expected 1000\.0 is a float and there is no tolerance"),
+        ({"check": "greater"}, r"row 'V': greater\(\) needs threshold \(or low\)$"),
+        ({"check": "less_equal"}, r"row 'V': less_equal\(\) needs threshold \(or high\)$"),
+        ({"check": "between", "low": 1}, r"row 'V': between\(\) needs high$"),
+    ],
+)
+def test_row_errors_say_what_is_wrong(row, message):
+    _, verify = _recording()
+    with pytest.raises((TypeError, ValueError), match=message):
+        verify.limits({"V": 3}, {"V": row})
+
+
+def test_the_checks_are_returned_by_the_tables_keys():
+    run, verify = _recording()
+    table = {"V\ud800": VALID_ROW, "V\\ud800": VALID_ROW, Rail.V3: VALID_ROW}
+    out = verify.limits({"V\ud800": 1, "V\\ud800": 1, "3V3": 1}, table)
+    assert list(out) == ["V\ud800", "V\\ud800", "3V3"]
+    assert list(out.values()) == run.records
+    assert [record["name"] for record in run.records] == ["V\\ud800", "V\\ud800", "3V3"]
+
+
+def test_a_not_measured_error_is_bounded():
+    _, verify = _recording()
+    name = "V" * 3000
+    record = verify.limits({"Other": 1}, {name: VALID_ROW, "Other": VALID_ROW})[name]
+    assert record["error"].startswith("not measured: the measurements have no 'VVV")
+    assert len(record["error"]) < 300 and len(record["detail"]) < 350
+
+
+def test_a_missing_measurement_names_a_key_that_differs_in_case():
+    _, verify = _recording()
+    table = {"VOUT": VALID_ROW, "FW": VALID_ROW, "Iq": VALID_ROW}
+    out = verify.limits({"Vout": 3.3, "fw": 2, "IQ_max": 1, "iq": 1}, table)
+    assert out["VOUT"]["error"] == "not measured: the measurements have no 'VOUT'; is it 'Vout'?"
+    assert out["FW"]["error"] == "not measured: the measurements have no 'FW'; is it 'fw'?"
+    assert out["Iq"]["error"] == "not measured: the measurements have no 'Iq'; is it 'iq'?"

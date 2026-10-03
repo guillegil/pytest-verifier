@@ -15,6 +15,7 @@ from .._descriptors import (
     flatten_classes,
     is_real,
     plain_text,
+    plain_units,
     qualified_type_name,
     require_name,
     type_display,
@@ -158,7 +159,7 @@ class Equal(CheckType):
     def build(
         actual: Any, expected: Any, *, name: str, units: Optional[str] = None
     ) -> CheckDescriptor:
-        name = require_name(name, "equal")
+        name, units = require_name(name, "equal"), plain_units(units)
         return {
             "check_type": "equal",
             "name": name,
@@ -190,7 +191,7 @@ class NotEqual(CheckType):
     def build(
         actual: Any, expected: Any, *, name: str, units: Optional[str] = None
     ) -> CheckDescriptor:
-        name = require_name(name, "not_equal")
+        name, units = require_name(name, "not_equal"), plain_units(units)
         return {
             "check_type": "not_equal",
             "name": name,
@@ -262,7 +263,7 @@ class Approx(CheckType):
         name: str,
         units: Optional[str] = None,
     ) -> CheckDescriptor:
-        name = require_name(name, "approx")
+        name, units = require_name(name, "approx"), plain_units(units)
         if abs_tol is None and rel_tol is None:
             raise ValueError("approx requires at least one of abs_tol or rel_tol")
         abs_tol = validate_tolerance(abs_tol, "abs_tol")
@@ -353,7 +354,7 @@ class _Ordering(CheckType):
     def _build(
         cls, actual: Any, threshold: Any, name: str, units: Optional[str]
     ) -> CheckDescriptor:
-        name = require_name(name, cls.check_type)
+        name, units = require_name(name, cls.check_type), plain_units(units)
         return {
             "check_type": cls.check_type,
             "name": name,
@@ -446,7 +447,7 @@ class Between(CheckType):
         name: str,
         units: Optional[str] = None,
     ) -> CheckDescriptor:
-        name = require_name(name, "between")
+        name, units = require_name(name, "between"), plain_units(units)
         if is_real(low) and is_real(high):
             try:
                 inverted = bool(low > high)
