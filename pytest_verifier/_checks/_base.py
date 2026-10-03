@@ -116,6 +116,11 @@ class CheckType:
         """The units of the check's values and of its :meth:`margin`. May raise."""
         return d.get("units")
 
+    def reading(self, d: Mapping[str, Any]) -> Any:
+        """What the check read, as a record keeps it: the tries of a sampling check compare
+        it to tell whether the value changed. May raise."""
+        return d.get("actual")
+
 
 class CompositeType(CheckType):
     """A check whose verdict comes from child checks."""

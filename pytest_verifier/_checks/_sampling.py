@@ -46,8 +46,13 @@ TRACE_ENDS = 50
 #: The values a trace keeps (anything else is ``None``).
 _SCALARS = (bool, int, float, str, type(None))
 
-#: How a record keeps a float that is not finite (see :func:`~pytest_verifier._render.snapshot`).
-_NOT_FINITE = ("nan", "inf", "-inf")
+#: How a record keeps a number that is not finite (see :func:`~pytest_verifier._render.snapshot`):
+#: a ``float`` as ``nan``/``inf``/``-inf``, a ``Decimal`` or a numpy scalar as its ``repr``.
+_NOT_FINITE = re.compile(
+    r"-?(?:nan|inf)"
+    r"|Decimal\('[+-]?(?:s?NaN\d*|Infinity)'\)"
+    r"|(?:np|numpy)\.\w+\(-?(?:nan|inf)\)"
+)
 
 
 class Try:
@@ -283,15 +288,21 @@ class _Trace:
         self.changed = False
 
     def add(self, attempt: Try) -> None:
-        value = None
+        value = reading = None
         if attempt.check is not None:
             try:
                 actual = attempt.check.get("actual")
             except Exception:
                 actual = None
             if isinstance(actual, _SCALARS):
-                value = actual
-        key = (type(value), value)
+                value = reading = actual
+                found = lookup(attempt.check)
+                try:
+                    # More than the value when the record keeps a preview of it (length).
+                    reading = actual if found is None else found.reading(attempt.check)
+                except Exception:
+                    pass
+        key = (type(value), reading)
         if not self.head:
             self.first = key
         elif key != self.first:
@@ -324,16 +335,18 @@ class _Sampling(CompositeType):
 
     def vetoed(self, d: Mapping[str, Any]) -> bool:
         """The kept try made another check that failed: the try failed, and so does this."""
-        others = d.get("also_failed")
-        return isinstance(others, list) and len(others) > 0
+        return bool(_also_failed(d))
 
     def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
-        """The margin of the kept try."""
+        """The margin of the kept try, unless its check passed and other checks failed it (a
+        margin inside the limit would contradict the verdict)."""
         children = self.children(d)
         if not children or not is_descriptor(children[-1]):
             return None
         check = lookup(children[-1])
-        return None if check is None else check.margin(children[-1])
+        if check is None or (self.vetoed(d) and judge(children[-1])[0]):
+            return None
+        return check.margin(children[-1])
 
     def units(self, d: Mapping[str, Any]) -> Any:
         """The units of the kept try."""
@@ -383,11 +396,21 @@ class _Sampling(CompositeType):
     @staticmethod
     def _also(d: Mapping[str, Any]) -> str:
         """The other checks of the kept try that failed it, if any."""
-        others = d.get("also_failed")
-        if not isinstance(others, list) or not others:
+        others = _also_failed(d)
+        if not others:
             return ""
         more = f" (+{len(others) - 1} more)" if len(others) > 1 else ""
         return f"; also failed in that try: {render_text(others[0])}{more}"
+
+
+def _also_failed(d: Mapping[str, Any]) -> List[Any]:
+    """The ``also_failed`` names of *d*: a list, or a tuple in a hand-built descriptor (a record
+    keeps it as a list, so both must give the same verdict). Never raises."""
+    try:
+        others = d.get("also_failed")
+    except Exception:
+        return []
+    return list(others) if isinstance(others, (list, tuple)) else []
 
 
 class Eventually(_Sampling):
@@ -459,7 +482,7 @@ def _unchanged(d: Mapping[str, Any]) -> str:
         return ""
     try:
         first = trace[0][1]  # type: ignore[index]
-        if first is None or first in _NOT_FINITE:
+        if first is None or (isinstance(first, str) and _NOT_FINITE.fullmatch(first)):
             # No value to compare (the tries made no plain check, or raised), or a reading
             # that is not a number (a disconnected input reads NaN however it is read).
             return ""

@@ -1547,6 +1547,53 @@ class TestOtherChecksOfATry:
         assert (record["passed"], record["tries"]) == (True, 3)
         assert _names(run) == ["Steady"]
 
+    def test_a_check_failed_by_other_checks_has_no_margin_inside_its_limit(
+        self, clock: FakeClock
+    ):
+        _, verify = _recording()
+        vout = Reader(clock, [3.3, 3.31])
+        temp = Reader(clock, [60, 95])
+        record = verify.stable(_hold(verify, vout, temp), duration=1, interval=0.25, name="Steady")
+        assert record["passed"] is False
+        assert margin(record["child_checks"][0]) == pytest.approx(0.04)  # Vout passed
+        assert margin(record) is None
+        assert margin(_round_trip(record)) is None
+
+        def sample():
+            verify.is_true(False, name="Link")
+            return verify.less(50, 40, name="T")
+
+        # The kept check failed too: its margin agrees with the verdict, so it stays.
+        record = verify.eventually(sample, timeout=0, name="Cool")
+        assert record["also_failed"] == ["Link"]
+        assert margin(record) == -10
+
+    def test_a_hand_built_tuple_of_other_checks_fails_as_its_record_does(
+        self, clock: FakeClock
+    ):
+        _, verify = _recording()
+        built: Any = checks.stable(lambda: checks.less(30, 40, name="T"), duration=0, name="S")
+        built["also_failed"] = ("Link",)
+        recorded = verify.record(built)
+        assert (recorded["passed"], recorded["also_failed"]) == (False, ["Link"])
+        assert checks.evaluate(built) is False
+        assert checks.evaluate(_round_trip(recorded)) is False
+        assert recorded["detail"] == (
+            "failed at try 1 (0 s): T — 30 < 40; also failed in that try: Link"
+        )
+
+    def test_other_checks_are_named_as_text(self, clock: FakeClock):
+        _, verify = _recording()
+
+        def sample():
+            # Hand-built checks with a name that is not text, and with none.
+            verify.record({"check_type": "fail", "name": 7, "description": "A", "msg": "a"})
+            verify.record({"check_type": "fail", "description": "B", "msg": "b"})
+            return verify.less(30, 40, name="T")
+
+        record = verify.stable(sample, duration=0, name="Steady")
+        assert record["also_failed"] == ["7", ""]
+
 
 class TestThreadsInATry:
     def test_a_returned_check_made_on_another_thread_belongs_to_its_try(self, clock: FakeClock):
@@ -1615,6 +1662,68 @@ class TestValueChanged:
         assert "never changed" not in record["detail"]
         # The trace keeps the recorded values: snapshots, so text for a non-finite float.
         assert [entry[1] for entry in record["trace"]] == [repr(reading)] * 5
+
+    @pytest.mark.parametrize(
+        "reading", [Decimal("NaN"), Decimal("Infinity"), Decimal("-sNaN")], ids=str
+    )
+    def test_a_decimal_reading_never_finite_gets_no_unchanged_note(
+        self, clock: FakeClock, reading
+    ):
+        _, verify = _recording()
+        record = verify.eventually(
+            lambda: verify.less(reading, 40, name="T"), timeout=1, interval=0.25, name="Cools"
+        )
+        assert (record["passed"], record["tries"]) == (False, 5)
+        assert record["trace"][0][1] == repr(reading)
+        assert "never changed" not in record["detail"]
+
+    @pytest.mark.parametrize(
+        "value, noted",
+        [
+            ("np.float32(nan)", False),
+            ("numpy.float64(-inf)", False),
+            ("Decimal('NaN')", False),
+            ("np.float32(3.5)", True),
+            ("Decimal('3.10')", True),
+            ("nan!", True),
+        ],
+    )
+    def test_the_unchanged_note_knows_the_records_of_numbers_never_finite(self, value, noted):
+        record = {
+            "value_changed": False,
+            "tries": 3,
+            "trace": [[0.0, value, False]] * 3,
+            "child_checks": [],
+        }
+        assert bool(_sampling._unchanged(record)) is noted
+
+    def test_a_length_check_of_text_that_grows_past_its_preview_changed(
+        self, clock: FakeClock
+    ):
+        _, verify = _recording()
+        read = Reader(clock, ["=" * 300 + "." * n for n in range(5)])
+        record = verify.eventually(
+            lambda: verify.length(read(), 1000, name="Log"),
+            timeout=1,
+            interval=0.25,
+            name="Grows",
+        )
+        assert (record["passed"], record["tries"]) == (False, 5)
+        assert len({entry[1] for entry in record["trace"]}) == 1  # the same preview each time
+        assert record["value_changed"] is True
+        assert "never changed" not in record["detail"]
+
+        read = Reader(clock, ["=" * 300])  # read once: the same text, the same length
+        record = verify.eventually(
+            lambda: verify.length(read(), 1000, name="Log"),
+            timeout=1,
+            interval=0.25,
+            name="Grows",
+        )
+        assert record["value_changed"] is False
+        assert record["detail"].endswith(
+            "the value never changed in 5 tries: is it read inside the sample?"
+        )
 
 
 class TestTimes:
@@ -1755,4 +1864,22 @@ class TestSummaryUnits:
             "  ✓ Outer: 1 passed; margin 0.04V",
             "  ✓ Inner: 1 passed; margin 0.04V",
             "  ✓ V: 1 passed; 3.31V, margin 0.04V",
+        ])
+
+    def test_a_check_failed_by_other_checks_shows_no_margin(self, pytester: pytest.Pytester):
+        pytester.makeconftest(_FAKE_CLOCK_CONFTEST)
+        pytester.makepyfile("""
+            def test_hold(verify):
+                def sample():
+                    verify.is_true(False, name="Link")
+                    return verify.less(30, 40, name="T", units="C")
+                verify.stable(sample, duration=0.2, name="Steady")
+        """)
+        result = pytester.runpytest("--verify-summary=stats")
+        assert result.ret == pytest.ExitCode.TESTS_FAILED
+        result.stdout.fnmatch_lines([
+            "  ✗ Link: 1 of 1 failed (first: *::test_hold)",
+            # T passed, but Link failed that try: no margin inside the limit for a failure.
+            "  ✗ Steady: 1 of 1 failed (first: *::test_hold)",
+            "  ✓ T: 1 passed; 30C, margin 10C",
         ])

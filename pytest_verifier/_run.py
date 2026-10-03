@@ -51,7 +51,7 @@ from ._checks._sampling import Sampler, Try
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
 from ._location import NOWHERE, FunctionCode, Site, locate, raised_at
-from ._render import utf8_safe
+from ._render import safe_str, utf8_safe
 from ._settle import settle
 from ._verify import Sink, Verify
 
@@ -747,11 +747,13 @@ class _RecordingSampler(Sampler):
         return raised_at(traceback, self._run.rootdir)
 
     def failed_beside(self, check: Any, attempt: Try) -> List[str]:
-        return [
-            record.get("name")
-            for record in self._run.failed(attempt.scope.records)
-            if record is not check
-        ]
+        names = []
+        for record in self._run.failed(attempt.scope.records):
+            if record is not check:
+                # Text, as summaries name it: a hand-built check may have another name, or none.
+                name = record.get("name", "")
+                names.append(name if isinstance(name, str) else safe_str(name))
+        return names
 
     def drop(self, attempt: Try) -> None:
         scope = attempt.scope
