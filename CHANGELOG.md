@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a cell may list values (`hot|warm`). Every line is validated when the file is read, with
   `path:line` in the error, and each row's `source` reaches its record as `limit_source`. The
   `expected` of `equal`/`not_equal` and `needle` are compared as the measurement is (text
-  against text, a number against a number).
+  against text, a number against a number, a `Decimal` against a `Decimal`).
 - `with verify.raises(expected_exception, *, match=None, name) as raised:`, a soft
   `pytest.raises`: it records a `raises` check when the block ends. Nothing raised, or the
   expected type with a message `match` does not find, is a failed check and the test goes on;
@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `pytest.exit` (also quitting the debugger), `bdb.BdbQuit` and `unittest.SkipTest` raised in a
   lazy child, a guard condition or an `all_satisfy` factory go on instead of failing the
   composite.
-- `verify.fail(msg)` with an empty message is named `fail` and described `FAIL: (no message)`
+- `verify.fail(msg)` with an empty or blank message is named `fail` and described `FAIL: (no message)`
   instead of raising; an explicit empty `name` still raises.
 - A `str` enum member (or another `str` subclass) used as a name, a `fail` message or a guard
   label is stored as its text, not as its repr. A blank name raises `ValueError`.

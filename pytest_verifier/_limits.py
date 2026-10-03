@@ -575,7 +575,8 @@ def load_limits(
       ``approx`` or ``length``: numbers (``3.3``, ``-5``, ``0x1F``; not ``nan`` or ``inf``).
     - ``expected`` of ``equal``/``not_equal``, and ``needle``: compared as the measurement is.
       Against a ``str`` the cell is text (``1.10`` stays ``"1.10"``), against a number it is
-      a number, against a ``bool`` true/false; a cell that cannot be that fails the check.
+      a number (a ``Decimal`` or ``Fraction`` against one), against a ``bool`` true/false; a
+      cell that cannot be that fails the check.
     - ``inclusive``: true/false (also yes/no, 1/0, any case). ``units``, ``pattern``: text.
     - Selector columns, named in *select*: ``select={"corner": "hot"}`` keeps the lines whose
       ``corner`` cell is ``hot`` (a cell may list values: ``hot|cold``) or empty. A line that

@@ -241,7 +241,7 @@ LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "
   line names is an error.
 - Numeric cells must be numbers (`3,3` only in a `;` file). The `expected` of `equal`/
   `not_equal` and `needle` take the measurement's type when checked: `1.10` stays text against
-  a `str` reply and is a number against a number.
+  a `str` reply and is a number against a number (a `Decimal` against a `Decimal`).
 - Every line is checked when the file is read (errors name `path:line`), and each record gets
   `limit_source` (`"limits.csv:12"`). Save Excel files as "CSV UTF-8", or pass `encoding`.
 

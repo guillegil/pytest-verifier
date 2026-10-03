@@ -611,7 +611,7 @@ LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "
   overridden per corner. A selected value that no line names is an error.
 - Numeric columns must hold numbers (`3.3`, `-5`, `0x1F`). The `expected` of `equal` and
   `not_equal`, and `needle`, are compared as the measurement is: `1.10` stays text against a
-  `str` reply and becomes a number against a number.
+  `str` reply and becomes a number against a number (a `Decimal` against a `Decimal`).
 - Every line is checked when the file is read, and errors name the file and line. Each row gets
   `source`, such as `"limits.csv:3"`, which its record keeps as `limit_source`.
 
@@ -809,7 +809,7 @@ repeats (their report's outcome is `"rerun"`).
 - `pytest.exit`, `unittest.SkipTest` and `bdb.BdbQuit` (quitting the debugger) raised in a lazy
   child, a guard condition or an `all_satisfy` factory now go on, instead of failing the
   composite.
-- `verify.fail(msg)` with an empty message no longer raises: the check is named `fail`.
+- `verify.fail(msg)` with an empty or blank message no longer raises: the check is named `fail`.
 - A `str` enum member used as a name is stored as its text.
 - The reason of an xfailed test whose checks failed ends with `[N of M checks failed: ...]`.
 
