@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-03
+
 ### Added
 
 - An agent skill that teaches coding agents (Claude Code, Codex and others) to write tests with
@@ -310,7 +312,8 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/guillegil/pytest-verifier/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/guillegil/pytest-verifier/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/guillegil/pytest-verifier/compare/v0.5.0...v0.6.0

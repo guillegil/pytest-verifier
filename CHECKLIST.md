@@ -89,7 +89,7 @@ Scope: the agent skill and its installer, asked for by the user, plus the report
 - [x] ~~README, CHANGELOG, CLAUDE.md, roadmap page~~
 - [x] ~~Full test matrix, mypy, build (skill files in the wheel and the sdist), sdist tests against the wheel~~
 - [x] ~~Independent review and fixes~~ (installer, sections, outputs and exports; each fix with a test)
-- [ ] PR, CI green, merge, release v0.9.0 (PR #7; merge and release wait for the user)
+- [x] ~~PR, CI green, merge, release v0.9.0 to PyPI and GitHub~~ (PR #7)
 
 ## Bugs
 
@@ -208,15 +208,15 @@ Not implemented until we discuss them.
 - [x] ~~**FEAT-1** Record where each check was called~~ · done in 0.8.0
 - [ ] **FEAT-2** `verify.raises` and error-tolerant checks · idea, discuss
 - [ ] **FEAT-3** Strictness controls · partly done in 0.8.0 (fail-fast, `require`, first line); the warning level waits
-- [ ] **FEAT-4** Export results · built for 0.9.0 (PR #7), not released yet
+- [x] ~~**FEAT-4** Export results~~ · done in 0.9.0
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
 - [ ] **FEAT-6** `pytest.approx` interop · idea, discuss
 - [ ] **FEAT-7** Lab-grade number formatting · idea, discuss
-- [ ] **FEAT-8** `verify.section()` for grouping · built for 0.9.0 (PR #7), not released yet
+- [x] ~~**FEAT-8** `verify.section()` for grouping~~ · done in 0.9.0
 - [ ] **FEAT-9** Custom check types · idea, discuss
 - [ ] **FEAT-10** Limits tables · idea, discuss
 - [ ] **FEAT-11** `verify.eventually` and `verify.stable` · idea, discuss
-- [ ] **FEAT-12** Verbosity-aware CLI options and a session summary · built for 0.9.0 (PR #7), not released yet
+- [x] ~~**FEAT-12** Verbosity-aware CLI options and a session summary~~ · done in 0.9.0
 
 ## Ideas: developer experience, CI and releases
 
@@ -232,4 +232,4 @@ Not implemented until we discuss them.
 - [ ] **DX-8** A docs site, the spec in the repo, and a JSON Schema · idea, discuss
 - [ ] **DX-9** SemVer and changelog gates on pull requests · idea, discuss
 - [ ] **DX-10** A contributor on-ramp · idea, discuss
-- [ ] **DX-11** An agent skill and a command that installs it · built for 0.9.0 (PR #7), not released yet
+- [x] ~~**DX-11** An agent skill and a command that installs it~~ · done in 0.9.0
