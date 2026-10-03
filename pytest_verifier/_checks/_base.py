@@ -8,7 +8,20 @@ descriptor (``build``), comparing the user's values (``compare``), rendering the
 """
 from __future__ import annotations
 
-from typing import Any, Callable, ClassVar, Dict, List, Mapping, Optional, Tuple, TypeVar
+import math
+from fractions import Fraction
+from typing import (
+    Any,
+    Callable,
+    ClassVar,
+    Dict,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 from .._descriptors import is_descriptor
 from .._render import describe_error, escape, render_value, safe_repr, safe_str
@@ -46,6 +59,12 @@ class CheckType:
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         """The ``expected … got …`` clause (failed) or the compact restatement (passed)."""
         raise NotImplementedError
+
+    def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
+        """How far the value is inside its limit, in its units (negative: past it; ``0`` at
+        the limit), or ``None`` for a check without a numeric limit. Computed as the verdict
+        is: exactly, unless the check compares in floats. May raise."""
+        return None
 
 
 class CompositeType(CheckType):
@@ -96,6 +115,38 @@ def lookup(descriptor: Mapping[str, Any]) -> Optional[CheckType]:
         return REGISTRY.get(descriptor.get("check_type"))  # type: ignore[arg-type]
     except TypeError:  # an unhashable check_type in a hand-built descriptor
         return None
+
+
+def margin(descriptor: Mapping[str, Any]) -> Optional[float]:
+    """The margin of a check whose values are plain numbers (see :meth:`CheckType.margin`),
+    else ``None``. Never raises."""
+    check = lookup(descriptor)
+    if check is None:
+        return None
+    try:
+        result = check.margin(descriptor)
+        if result is None:
+            return None
+        number = float(result)  # an exact margin too large for a float: OverflowError
+    except Exception:
+        return None
+    return number if math.isfinite(number) else None
+
+
+def plain_number(value: Any) -> Union[int, float]:
+    """*value*, an ``int`` (not a ``bool``) or a finite ``float``; else raises ``TypeError``,
+    so a margin is only computed from numbers that read as such."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"not a plain number: {type(value).__name__}")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("not a finite number")
+    return value
+
+
+def exact_number(value: Any) -> Fraction:
+    """:func:`plain_number` as an exact :class:`~fractions.Fraction` (Python compares ``int``
+    and ``float`` exactly, so ordering margins are exact too)."""
+    return Fraction(plain_number(value))
 
 
 def child_checks(descriptor: Mapping[str, Any]) -> List[Any]:

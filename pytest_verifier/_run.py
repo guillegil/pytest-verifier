@@ -20,15 +20,20 @@ for an error of that child, and the check that stopped the test stays at the top
 
 This module's frames hide themselves from tracebacks of such errors (``__tracebackhide__``), so
 ``--pdb`` opens in the test.
+
+``verify.section`` blocks are kept in a context variable, so that each asyncio task and thread
+has its own: a check is in the sections of the code that records it.
 """
 from __future__ import annotations
 
+import contextvars
 import os
 import sys
 import threading
 from typing import (
     Any,
     Callable,
+    ContextManager,
     Dict,
     Iterable,
     List,
@@ -43,6 +48,7 @@ from ._checks import child_checks
 from ._descriptors import CheckDescriptor, loose_children, require_descriptor
 from ._exceptions import ChecksFailedError, hide_stop_frames
 from ._location import NOWHERE, FunctionCode, Site, locate
+from ._render import utf8_safe
 from ._settle import settle
 from ._verify import Sink, Verify
 
@@ -57,8 +63,27 @@ _FORKED = (
     "process, for example on a value the worker returns."
 )
 
+_SECTION_CLOSED = (
+    "pytest-verifier: this 'verify' fixture belongs to a test that has already finished, so a "
+    "section opened with it could hold no check. Request the 'verify' fixture in the test that "
+    "opens the section."
+)
+
+_SECTION_FORKED = (
+    "pytest-verifier: this section was opened in a child process (for example a multiprocessing "
+    "worker), where no check can reach the test's results. Make the checks in the test's own "
+    "process, for example on values the worker returns."
+)
+
 
 _NO_TEST = FunctionCode()
+
+#: The ``verify.section`` blocks the code running now is in: the key of their run, and an
+#: ``(owner, title)`` entry per block, outermost first. Keyed by run, so sections never carry
+#: over to another test. Each block leaves by removing its own entry (see :class:`_Section`).
+_SECTIONS: contextvars.ContextVar[Tuple[object, Tuple[Tuple[object, str], ...]]] = (
+    contextvars.ContextVar("pytest_verifier_sections", default=(None, ()))
+)
 
 
 class _Entry:
@@ -93,7 +118,7 @@ class Run:
         #: The test phase running now; recorded on every check.
         self.phase = "setup"
         #: Soft summaries waiting to be attached to the report of a phase that also errored.
-        self.sections: Dict[str, str] = {}
+        self.report_sections: Dict[str, str] = {}
         #: Checks judged at the end of each phase, waiting to be attached to its report.
         self.judged: Dict[str, List[CheckDescriptor]] = {}
         #: Where locations are relative to, and the code of the test function.
@@ -109,6 +134,13 @@ class Run:
         #: The errors :meth:`stop` raised, each with the check that made it stop.
         self._stops: List[Tuple[ChecksFailedError, CheckDescriptor]] = []
         self._entries: Dict[int, _Entry] = {}
+        #: Identifies this run's sections in :data:`_SECTIONS` without keeping the run alive.
+        self.key = object()
+
+    def section_path(self) -> Tuple[str, ...]:
+        """The titles of this run's sections the code running now is in, outermost first."""
+        key, entries = _SECTIONS.get()
+        return tuple(title for _, title in entries) if key is self.key else ()
 
     def known(self, descriptor: Any) -> Optional[Tuple[bool, CheckDescriptor]]:
         entry = self._entries.get(id(descriptor))
@@ -116,11 +148,11 @@ class Run:
             return None
         return entry.passed, entry.record
 
-    def ensure_open(self) -> None:
+    def ensure_open(self, closed: str = _CLOSED, forked: str = _FORKED) -> None:
         if self.closed:
-            raise RuntimeError(_CLOSED)
+            raise RuntimeError(closed)
         if os.getpid() != self.pid:
-            raise RuntimeError(_FORKED)
+            raise RuntimeError(forked)
 
     def locate(self) -> Site:
         """Where the check being recorded now was made."""
@@ -142,13 +174,18 @@ class Run:
             self.ensure_open()
             self.absorb(absorb)
             record["phase"] = self.phase
-            # A copy of another record brings that record's site; this one may have none.
+            # A copy of another record brings that record's site and section; this one may
+            # have none.
             record.pop("location", None)
             record.pop("called_from", None)
+            record.pop("section", None)
             if location is not None:
                 record["location"] = location
             if called_from is not None:
                 record["called_from"] = called_from
+            section = self.section_path()
+            if section:
+                record["section"] = list(section)
             self._entries[id(record)] = _Entry(record, passed)
             self.records.append(record)
 
@@ -161,7 +198,9 @@ class Run:
         itself is absorbed.
 
         A check that stopped the test stays at the top level too: the end of the phase must
-        judge it, and the summary names it as the check the test stopped at.
+        judge it, and the summary names it as the check the test stopped at. So does a check
+        an earlier phase judged (a teardown composite of checks made in the test body): it was
+        reported, and numbered, with that phase.
         """
         with self.lock:
             ids = set()
@@ -172,6 +211,7 @@ class Run:
                     entry is None
                     or entry.record is not child
                     or not entry.top_level
+                    or entry.judged
                     or id(child) in triggers
                 ):
                     continue
@@ -267,6 +307,42 @@ class Run:
         return None
 
 
+class _Section:
+    """A ``verify.section`` block: see :meth:`Verify.section`.
+
+    Reusable, also nested and by several tasks at once: entering adds an entry owned by this
+    object to the current context's sections, and leaving removes the innermost one, so each
+    context leaves only what it entered. The entry holds a bare owner object, not the run.
+    """
+
+    __slots__ = ("_run", "_title", "_owner")
+
+    def __init__(self, run: Run, title: str) -> None:
+        self._run = run
+        # Plain text: a str subclass (a str Enum member) could not be pickled or sent by xdist.
+        self._title = utf8_safe(str.__str__(title))
+        self._owner = object()
+
+    def __enter__(self) -> None:
+        run = self._run
+        run.ensure_open(_SECTION_CLOSED, _SECTION_FORKED)
+        key, entries = _SECTIONS.get()
+        if key is not run.key:
+            entries = ()
+        _SECTIONS.set((run.key, entries + ((self._owner, self._title),)))
+
+    def __exit__(self, *exc_info: Any) -> None:
+        key, entries = _SECTIONS.get()
+        if key is not self._run.key:
+            return
+        for index in range(len(entries) - 1, -1, -1):
+            if entries[index][0] is self._owner:
+                _SECTIONS.set((key, entries[:index] + entries[index + 1:]))
+                return
+        # Not entered in this context (an async fixture resumed in another task): nothing to
+        # leave here.
+
+
 def cause_of(exc: BaseException) -> Optional[BaseException]:
     """What *exc* is chained to, so that an error raised in its place keeps that chain."""
     if exc.__cause__ is not None or exc.__suppress_context__:
@@ -288,6 +364,9 @@ class Recorder(Sink):
 
     def hard(self) -> Sink:
         return self if self._hard else Recorder(self._run, hard=True)
+
+    def section(self, title: str) -> ContextManager[None]:
+        return _Section(self._run, title)
 
     def _enforce(self, record: CheckDescriptor, passed: bool) -> None:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
@@ -328,9 +407,9 @@ class Recorder(Sink):
         self._enforce(record, passed)
         return record
 
-    def record(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+    def record(self, descriptor: CheckDescriptor, call: str = "record()") -> CheckDescriptor:
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        require_descriptor(descriptor, "record() argument")
+        require_descriptor(descriptor, f"{call} argument")
         run = self._run
         run.ensure_open()
         hit = run.known(descriptor)

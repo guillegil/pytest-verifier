@@ -77,7 +77,14 @@ pytest_verifier/
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
-└── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal
+├── _exceptions.py           # ChecksFailedError, failure summary (passed cap), for_terminal,
+│                            #   label() (section › name), junit_property()
+├── _summary.py              # SessionSummary: --verify-summary lines, checks grouped by label
+├── _skill/                  # The agent skill (SKILL.md, package data) that the CLI installs
+├── _installer.py            # Shipped skill files, frontmatter, target folders, plan and
+│                            #   swap-in write; stale_skills() for the pytest header line
+├── _cli.py                  # `pytest-verifier` command (console script): skill install
+└── __main__.py              # `python -m pytest_verifier`
 ```
 
 The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
@@ -102,6 +109,7 @@ class CheckDescriptor(TypedDict, total=False):
     phase: str               # Fixture only: "setup", "call" or "teardown"
     location: str            # Fixture only: "path:line" that made it, rootdir-relative, "/"
     called_from: str         # Fixture only: test function line that led to it, if another
+    section: list[str]       # Fixture only: titles of the verify.section blocks, if any
     error: str               # Why the check could not be evaluated (it then fails)
     actual: Any              # Check-type-specific
     expected: Any            # Check-type-specific
@@ -125,7 +133,9 @@ class CheckDescriptor(TypedDict, total=False):
    - Record a copy with `passed`, `detail`, `phase`, `location` (first frame outside the
      package; `called_from` when that is not the test function and the test function is on the
      stack, unless the frame found is installed or outside code that runs the test, such as
-     pytest-bdd's generated test, not code in the test module) and JSON-safe snapshots of the
+     pytest-bdd's generated test, not code in the test module), `section` (the titles of the
+     `verify.section` blocks the recording code is in: a `ContextVar` keyed by the run, so
+     asyncio tasks inherit it and threads start outside it) and JSON-safe snapshots of the
      values
    - With `verify.require` or fail-fast (not in teardown or `TestCase` cleanup), a failed check raises
      `ChecksFailedError` right there; `verify.require(check)` on a failed check that is not
@@ -133,7 +143,8 @@ class CheckDescriptor(TypedDict, total=False):
      this package set `__tracebackhide__ = hide_stop_frames`, so `--pdb` opens in the test
    - A composite absorbs every recorded check passed to it as a child, by identity, whenever
      it was built (`dict(check)` keeps a copy standalone), except a check that stopped the
-     test; each evaluated child carries its own `passed`, unselected children carry none
+     test or that an earlier phase judged (it was reported and numbered there); each
+     evaluated child carries its own `passed`, unselected children carry none
    - A lazy child (a callable) is just called: the checks it records go to the top level, and
      the composite then absorbs the one it returned like an eager child. If building the
      composite raises (a usage error, or `pytest.skip` in a lazy child), the checks passed
@@ -156,7 +167,14 @@ class CheckDescriptor(TypedDict, total=False):
      else the test module), of the check the first line names; `-r` and `--tb=line` lines go
      through `for_terminal` while TerminalReporter prints them
    - The judged checks go to the `pytest_verify_results` hook and to that phase's report as
-     `report.verify_checks`
+     `report.verify_checks`; with `verify_junit_properties` (`none`/`failed`/`all`) also to
+     `item.user_properties` (`verify[k] label`, `passed: detail`), dropped at the next
+     attempt's setup; on the controller `_JunitAttempts` strips them from the reports of an
+     attempt pytest-rerunfailures repeats (16.6.1+ logs its teardown report) and warns about
+     an xunit2 report at session start. `--verify-json PATH` registers `_JsonLines` on the
+     controller only (path checked at configure, file emptied at session start), which writes
+     a line per check from `report.verify_checks` with its `attempt` (`_Attempts`, by node ID
+     and worker) and index (counted per attempt)
 
 3. **Reset:** Fresh run state per test attempt (reruns included). No state bleeds between tests.
 
@@ -178,6 +196,20 @@ CHANGELOG needs a dated `## [X.Y.Z] - YYYY-MM-DD` heading; the release and githu
 commit on main. No `skip-existing`: after a partial failure use "Re-run failed jobs" (same built
 files); an existing tag on the same commit and an existing release with the same files are
 accepted. Actions are pinned to commit SHAs. CI's package job runs the same build and tests.
+Before a release, bump `version` in pyproject.toml and `metadata.version` in the skill together.
+
+## Agent skill — keep it current
+
+`pytest_verifier/_skill/SKILL.md` teaches coding agents the public API; `pytest-verifier skill
+install` copies it into `.claude/skills/pytest-verifier/` and `.agents/skills/pytest-verifier/`
+(`--claude`, `--agents`/`--generic`, `--global` for the home folder, `--force`). Reinstalling
+replaces a pytest-verifier skill of any version (found by `name: pytest-verifier` in its
+frontmatter) and refuses anything else. Every change to user-visible behaviour updates the
+skill in the same PR, and every release sets its `metadata.version` to the new version.
+`tests/test_skill.py` fails when a public `Verify` method, a name in `__all__` or a
+`--verify-*` option or `verify_*` ini setting is missing from the skill, when its version is
+not the package's, or when an example does not parse. Keep it precise and lean: only what an
+agent needs to use the API correctly, each claim checked against the code.
 
 ## IDE Autocompletion — CRITICAL REQUIREMENT
 
@@ -192,7 +224,7 @@ Implementation requirements:
 - Docstrings on all public methods
 - Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (21 check functions, plus `record`)
+## Function Catalog (21 check functions, plus `record` and `section`)
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -236,7 +268,9 @@ Implementation requirements:
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg |
 
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
-`checks`; `checks.record()` raises `RuntimeError`. `verify.require` has every check method and is
+`checks`; `checks.record()` raises `RuntimeError`. `verify.section(title)` (fixture only) is a
+context manager whose recorded checks get its title in `section`; summaries show
+`3V3 › Vout`; `checks.section()` raises `RuntimeError`. `verify.require` has every check method and is
 callable like `record`; its failed checks stop the test. The methods of `checks.require`, and
 calling it, raise `RuntimeError`.
 
@@ -303,6 +337,16 @@ the same (`value_pair`); a failed `equal` whose values still render the same add
 first differ; NaN operands get a note. Truth labels (`is_true`/`is_false`) come from the
 verdict: a value is never tested twice. `render_detail` passes a judging error to the detail
 as `d["error"]`.
+
+Options read at configure (each also an ini setting of the same name; the option wins):
+`--verify-show-passed` (stash, default 10; `-vv` lists all), `--verify-ascii` (`_ASCII_TERMINAL`
+ContextVar, reset by a config cleanup, read when a report prints), `--verify-summary`
+(`_Summary` plugin on the controller, from `report.verify_checks`, counting an attempt at its
+teardown report unless one of its reports was a rerun; margins from `CheckType.margin`, which
+ordering checks, `between` and `approx` implement, computed as the verdict is: exact unless the
+check compares in floats), `--verify-json` and `verify_junit_properties` (see Fixture Behavior).
+Text in records goes through `utf8_safe` (lone surrogates escaped), and `escape` also escapes
+surrogates and U+FFFE/U+FFFF, so records encode as UTF-8 and junit reports stay well-formed.
 
 The summary text (`ChecksFailedError`'s message, the "Soft assertion failures" section) is
 always Unicode. Only the terminal gets another form: `plugin.pytest_runtest_logreport` makes a

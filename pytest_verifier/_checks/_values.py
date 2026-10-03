@@ -5,6 +5,7 @@ import numbers
 import operator
 import re
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any, Callable, ClassVar, Dict, Mapping, Optional, Tuple, Union
 
 from .._descriptors import (
@@ -26,7 +27,7 @@ from .._render import (
     safe_repr,
     safe_str,
 )
-from ._base import CheckType, register, value, value_pair
+from ._base import CheckType, exact_number, plain_number, register, value, value_pair
 
 #: Longest ``fail()`` message shown in a description or detail.
 _MESSAGE_LIMIT = 1000
@@ -291,6 +292,27 @@ class Approx(CheckType):
         note = _nan_note(_NAN_EQUALITY, d["actual"], d["expected"])
         return f"expected {target}, got {actual}{note}"
 
+    def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
+        """The tolerance left: the larger one given, less the distance to ``expected``. In
+        floats when one of the numbers is a float, as the verdict is, else exact."""
+        given = {
+            key: plain_number(d[key])
+            for key in ("actual", "expected", "abs_tol", "rel_tol")
+            if d.get(key) is not None
+        }
+        in_floats = any(isinstance(each, float) for each in given.values())
+        values: Dict[str, Any] = {
+            key: float(each) if in_floats else Fraction(each) for key, each in given.items()
+        }
+        distance = abs(values["actual"] - values["expected"])
+        tolerances = []
+        if "abs_tol" in values:
+            tolerances.append(values["abs_tol"])
+        if "rel_tol" in values:
+            tolerances.append(values["rel_tol"] * abs(values["expected"]))
+        result: Union[float, Fraction] = max(tolerances) - distance
+        return result
+
 
 # ---------------------------------------------------------------------------
 # Ordering & range
@@ -324,6 +346,8 @@ def _ordered(compare: Callable[[], Any], *operands: Any) -> Any:
 class _Ordering(CheckType):
     symbol: ClassVar[str]
     compare_with: ClassVar[Callable[[Any, Any], Any]]
+    #: ``1`` when the value must be above the threshold, ``-1`` when below.
+    side: ClassVar[int]
 
     @classmethod
     def _build(
@@ -353,11 +377,15 @@ class _Ordering(CheckType):
         note = _nan_note(_NAN_ORDERING, d["actual"], d["threshold"])
         return f"expected {self.symbol} {threshold}, got {actual}{note}"
 
+    def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
+        return (exact_number(d["actual"]) - exact_number(d["threshold"])) * self.side
+
 
 class Greater(_Ordering):
     check_type = "greater"
     symbol = ">"
     compare_with = operator.gt
+    side = 1
 
     @staticmethod
     def build(
@@ -370,6 +398,7 @@ class GreaterEqual(_Ordering):
     check_type = "greater_equal"
     symbol = ">="
     compare_with = operator.ge
+    side = 1
 
     @staticmethod
     def build(
@@ -382,6 +411,7 @@ class Less(_Ordering):
     check_type = "less"
     symbol = "<"
     compare_with = operator.lt
+    side = -1
 
     @staticmethod
     def build(
@@ -394,6 +424,7 @@ class LessEqual(_Ordering):
     check_type = "less_equal"
     symbol = "<="
     compare_with = operator.le
+    side = -1
 
     @staticmethod
     def build(
@@ -456,6 +487,11 @@ class Between(CheckType):
             return f"{actual} ∈ {bounds}"
         note = _nan_note(_NAN_ORDERING, d["actual"], d["low"], d["high"])
         return f"expected {bounds}, got {actual}{note}"
+
+    def margin(self, d: Mapping[str, Any]) -> Optional[Union[float, Fraction]]:
+        """The distance to the nearer bound."""
+        actual = exact_number(d["actual"])
+        return min(actual - exact_number(d["low"]), exact_number(d["high"]) - actual)
 
 
 # ---------------------------------------------------------------------------

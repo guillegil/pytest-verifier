@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-03
+
+### Added
+
+- An agent skill that teaches coding agents (Claude Code, Codex and others) to write tests with
+  pytest-verifier, shipped in the package, and the `pytest-verifier` command that installs it.
+  `pytest-verifier skill install` writes it to `.claude/skills/pytest-verifier/` and
+  `.agents/skills/pytest-verifier/` in the current folder: `--claude` or `--agents` (also
+  `--generic`) picks one of them, `--global` uses the home folder, and `--force` replaces a
+  folder there that the command did not install. Running it again updates the skill and says
+  from which version. `python -m pytest_verifier` runs the same command.
+- pytest's header says when the skill in the project's `.claude/skills` or `.agents/skills` is
+  for another version of pytest-verifier, and whether to update the skill or to upgrade
+  pytest-verifier.
+- `verify.section(title)`, a context manager that groups the checks recorded in its block.
+  Summaries name them after their sections (`✗ [3] 5V0 › Ripple …`), also in the first line,
+  and each record has their titles in a new `section` field (`["5V0"]`, outermost first).
+  Sections nest and follow `contextvars`: an asyncio task created in a section is in it, a
+  plain `threading.Thread` started in it is not. `checks.section()` raises `RuntimeError`.
+- `--verify-json PATH` writes every check to a JSON Lines file, one object per check with the
+  test's node ID, its attempt (more than one when pytest-rerunfailures repeats the test), the
+  phase that judged it, the report's outcome, its index in the summary and the recorded check.
+  It is written from the reports, so it works under pytest-xdist.
+- The `verify_junit_properties` setting (`none`, `failed` or `all`; default `none`) adds checks
+  to the junit XML report as `<property name="verify[3] 5V0 › Ripple" value="failed: …"/>`. A
+  rerun keeps only the last attempt's. With a junit family that does not allow properties
+  (pytest's default `xunit2`), a warning says to use `xunit1`.
+- `--verify-show-passed=N|all|none` (ini `verify_show_passed`, default 10) sets how many passed
+  checks a failure summary lists. `-vv` still lists them all.
+- `--verify-ascii` (ini `verify_ascii`) prints summaries in the terminal with ASCII markers and
+  escapes, as pytest-verifier already does on a terminal that cannot show Unicode. Reports
+  such as junitxml keep the Unicode text.
+- `--verify-summary=off|failed|all|stats` (ini `verify_summary`, default `off`) adds a terminal
+  section that counts each check name across the run, failed names first, with the first test
+  that failed it: `✗ 3V3 › Vout: 3 of 12 failed (first: tests/test_rails.py::test_rail[hot])`.
+  `stats` adds the range of numeric values and the smallest margin to a limit. It is built from
+  the reports, so it works under pytest-xdist, and a rerun test counts once.
+
+### Fixed
+
+- `verify.require(value)` with something that is not a check named `record()` in its error; it
+  now names `require()`.
+- A composite made in teardown no longer takes in checks that the test body made: they were
+  judged and numbered when the body ended, so they stay listed on their own. Before, the
+  teardown summary could give two checks the same `[k]`.
+- Recorded checks can always be written as UTF-8: text with lone surrogates, such as a file name
+  `os.listdir` could not decode, is kept as `\udce9` escapes. Such text stopped pytest-xdist
+  workers. A hand-built check whose key is not text gets the key's `repr`, so records stay
+  JSON-safe.
+- Summaries show lone surrogates and the noncharacters U+FFFE and U+FFFF as escapes, so they
+  print on any terminal and junit reports stay well-formed.
+
 ## [0.8.0] - 2026-10-02
 
 The first release on PyPI: `pip install pytest-verifier`. Failed checks now say where they were
@@ -260,7 +312,8 @@ existing tests may rely on. Those are listed under **Changed**.
 - Optional `pytest-reporter` integration via `item.stash` (auto-detected at session start).
 - Full type annotations and `py.typed` marker for IDE autocompletion (PEP 561).
 
-[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/guillegil/pytest-verifier/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/guillegil/pytest-verifier/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/guillegil/pytest-verifier/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/guillegil/pytest-verifier/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/guillegil/pytest-verifier/compare/v0.5.0...v0.6.0

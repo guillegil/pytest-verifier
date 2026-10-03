@@ -4,7 +4,7 @@ from __future__ import annotations
 import codecs
 import functools
 import re
-from typing import Any, Iterable, List, Mapping, Optional
+from typing import Any, Iterable, List, Mapping, Optional, Tuple
 
 import pytest
 
@@ -107,10 +107,34 @@ def _place(site: str) -> str:
     return shorten(text, _SITE_LIMIT)
 
 
-def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
+#: Between the titles of a check's sections and its name: ``3V3 › Vout``.
+SECTION_SEPARATOR = " › "
+
+
+def label(result: Mapping[str, Any]) -> str:
+    """The check's name, after the titles of the sections it was recorded in, if any."""
     name = render_text(result.get("name", ""))
+    section = result.get("section")
+    if not isinstance(section, (list, tuple)) or not section:
+        return name
+    return SECTION_SEPARATOR.join([*(render_text(title) for title in section), name])
+
+
+def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
     site = "" if passed else _site(result)
-    return f"  {marker} [{idx}] {name}{site}{summary_separator(result)}{_detail(result, passed)}"
+    detail = _detail(result, passed)
+    return f"  {marker} [{idx}] {label(result)}{site}{summary_separator(result)}{detail}"
+
+
+def junit_property(index: int, result: Mapping[str, Any]) -> Tuple[str, str]:
+    """The junit ``<property>`` of a judged check: ``("verify[3] 5V0 › Ripple", "failed:
+    expected < 20mV, got 27.0mV")``. Never raises."""
+    passed = result.get("passed") is True
+    try:
+        name, detail = label(result), _detail(result, passed)
+    except Exception as exc:
+        name, detail = "", f"<check could not be rendered: {describe_error(exc)}>"
+    return f"verify[{index}] {name}", f"{'passed' if passed else 'failed'}: {detail}"
 
 
 def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> str:
@@ -124,8 +148,9 @@ def _header(failed: List[Any], total: int, stopped_at: Optional[int] = None) -> 
         index, result = headline(failed, stopped_at)
         if index == stopped_at:
             header += f", stopped at [{index}]"
-        name = render_text(result.get("name", ""))
-        first = shorten(f"{name}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT)
+        first = shorten(
+            f"{label(result)}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT
+        )
     except Exception:
         return header
     more = f" (+{len(failed) - 1} more)" if len(failed) > 1 else ""
@@ -203,7 +228,8 @@ class ChecksFailedError(AssertionError, pytest.fail.Exception):  # type: ignore[
         start: Index of the first of them among all the checks of the test, so that checks
             raised after teardown keep the numbers ``get_check_results`` gives them.
         max_passed: List at most this many passed checks (all when ``None``). The plugin
-            lists 10 unless pytest runs with ``-vv``.
+            lists ``verify_show_passed`` (``--verify-show-passed``, 10 by default), all with
+            ``-vv``.
         stopped_at: Index (counted like *start*) of the failed check that stopped the test,
             if one did.
 

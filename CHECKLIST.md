@@ -4,16 +4,18 @@ Every item from [`bugs-0.3.1.md`](bugs-0.3.1.md) and [`improvements-and-ideas.md
 
 Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0). Improvements are taken only when they are small and touch the same code as a fix. Ideas and items marked *discuss* wait for a conversation.
 
-Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 (agreed with the user after 0.7.0).
+Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 (agreed with the user after 0.7.0). For 0.9.0 the user asked for an agent skill and a command that installs it (DX-11), and for the skill to stay current in every release.
 
 ## Release tasks
 
 Every release follows the same steps, written down before any code changes:
 
 1. Write the release's task list below and the plan in `.tasks.md`.
-2. Implement on `claude/project-thread-uyojpb`, with a test for every change.
+2. Implement on the release's branch, with a test for every change.
 3. Test everything: the suite on Python 3.9 to 3.13, pytest 7.0.1 with pluggy 1.2, `mypy --strict`, a wheel and sdist build with the sdist's tests run against the wheel, and the fuzz and performance scripts.
 4. Update README, CHANGELOG (Keep a Changelog), CLAUDE.md and this checklist; bump the version (SemVer).
+   Update the agent skill (`pytest_verifier/_skill/`) with every user-visible change, and set
+   its version to the new one (since 0.9.0; the tests fail when it lags).
 5. Independent review of the diff; fix every finding with a test, then re-run step 3.
 6. Open the PR, get CI green, merge (squash).
 7. Release: run the release workflow on the merge commit, then check the tag, the notes and the wheel and sdist on the release page.
@@ -69,6 +71,25 @@ Every release follows the same steps, written down before any code changes:
 - [x] ~~Repository renamed to `pytest-verifier` (by the owner); README, CHANGELOG and package metadata links updated~~
 - [x] ~~Trial upload to TestPyPI~~ (release.yml target testpypi from the branch: built, tested, uploaded with Trusted Publishing; metadata and links checked on TestPyPI)
 - [x] ~~PR, CI green, merge, release v0.8.0 to PyPI and GitHub~~ (PR #6)
+
+### 0.9.0 Agent skill and reporting
+
+Scope: the agent skill and its installer, asked for by the user, plus the reporting items
+(FEAT-8, FEAT-4, FEAT-12), which the user confirmed for 0.9.0.
+
+- [x] ~~Agent skill `pytest-verifier` in the package (`pytest_verifier/_skill/`), written with skill-creator, every claim checked against the code (DX-11)~~ (33 fact-check findings fixed)
+- [x] ~~Test prompts run with and without the skill, graded, reviewed, skill revised (DX-11)~~ (2 rounds, 7 tasks)
+- [x] ~~`pytest-verifier skill install` with `--claude`, `--agents` (`--generic`), `--global` and `--force`; `python -m pytest_verifier` too (DX-11)~~
+- [x] ~~Tests that keep the skill current: every public method, export and option named in it, its version equal to the package's, its examples compile (DX-11)~~
+- [x] ~~pytest's header says when a project's installed skill was made for another version (DX-11)~~
+- [x] ~~`verify.section()` to group checks: a `section` path on records, `3V3 › Vout` in summaries (FEAT-8)~~
+- [x] ~~Export checks to junit properties and a JSON Lines file (FEAT-4)~~
+- [x] ~~`--verify-show-passed`, `--verify-ascii` and a session summary (FEAT-12)~~
+- [x] ~~The skill covers every new API and option~~
+- [x] ~~README, CHANGELOG, CLAUDE.md, roadmap page~~
+- [x] ~~Full test matrix, mypy, build (skill files in the wheel and the sdist), sdist tests against the wheel~~
+- [x] ~~Independent review and fixes~~ (installer, sections, outputs and exports; each fix with a test)
+- [x] ~~PR, CI green, merge, release v0.9.0 to PyPI and GitHub~~ (PR #7)
 
 ## Bugs
 
@@ -187,15 +208,15 @@ Not implemented until we discuss them.
 - [x] ~~**FEAT-1** Record where each check was called~~ · done in 0.8.0
 - [ ] **FEAT-2** `verify.raises` and error-tolerant checks · idea, discuss
 - [ ] **FEAT-3** Strictness controls · partly done in 0.8.0 (fail-fast, `require`, first line); the warning level waits
-- [ ] **FEAT-4** Export results · idea, discuss
+- [x] ~~**FEAT-4** Export results~~ · done in 0.9.0
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
 - [ ] **FEAT-6** `pytest.approx` interop · idea, discuss
 - [ ] **FEAT-7** Lab-grade number formatting · idea, discuss
-- [ ] **FEAT-8** `verify.section()` for grouping · idea, discuss
+- [x] ~~**FEAT-8** `verify.section()` for grouping~~ · done in 0.9.0
 - [ ] **FEAT-9** Custom check types · idea, discuss
 - [ ] **FEAT-10** Limits tables · idea, discuss
 - [ ] **FEAT-11** `verify.eventually` and `verify.stable` · idea, discuss
-- [ ] **FEAT-12** Verbosity-aware CLI options and a session summary · idea, discuss
+- [x] ~~**FEAT-12** Verbosity-aware CLI options and a session summary~~ · done in 0.9.0
 
 ## Ideas: developer experience, CI and releases
 
@@ -211,3 +232,4 @@ Not implemented until we discuss them.
 - [ ] **DX-8** A docs site, the spec in the repo, and a JSON Schema · idea, discuss
 - [ ] **DX-9** SemVer and changelog gates on pull requests · idea, discuss
 - [ ] **DX-10** A contributor on-ramp · idea, discuss
+- [x] ~~**DX-11** An agent skill and a command that installs it~~ · done in 0.9.0

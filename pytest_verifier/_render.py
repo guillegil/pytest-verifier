@@ -56,7 +56,10 @@ _display.maxstring = _display.maxother = _display.maxlong = VALUE_LIMIT
 
 def _escapes() -> Dict[int, str]:
     named = {"\n": "\\n", "\r": "\\r", "\t": "\\t"}
-    codes = [*range(0x20), 0x7F, *range(0x80, 0xA0), 0x2028, 0x2029]
+    # Control characters and line separators; lone surrogates, which no stream can encode;
+    # and U+FFFE/U+FFFF, which XML (a junit report) does not allow.
+    codes = [*range(0x20), 0x7F, *range(0x80, 0xA0), 0x2028, 0x2029, *range(0xD800, 0xE000)]
+    codes += [0xFFFE, 0xFFFF]
     return {
         code: named.get(chr(code), f"\\x{code:02x}" if code < 0x100 else f"\\u{code:04x}")
         for code in codes
@@ -130,8 +133,22 @@ def bounded_format(value: object) -> str:
 
 def escape(text: str) -> str:
     """*text* on one line: line breaks and other control characters become escapes (``\\n``),
-    so user text can never start a new line of a summary."""
+    so user text can never start a new line of a summary. So do lone surrogates and the
+    noncharacters U+FFFE and U+FFFF, so the text can be written anywhere."""
     return text.translate(_ESCAPES)
+
+
+def utf8_safe(text: str) -> str:
+    """*text* with lone surrogates (``os.fsdecode`` makes them from undecodable file names) as
+    ``\\udcxx`` escapes, so it can be encoded as UTF-8: written to a file or sent by
+    pytest-xdist."""
+    if text.isascii():
+        return text
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return text.encode("utf-8", "backslashreplace").decode("utf-8")
+    return text
 
 
 def one_line(text: str) -> str:
@@ -247,7 +264,7 @@ def snapshot(value: Any, limit: int = _SNAPSHOT_NODE_LIMIT, text_limit: int = 0)
     try:
         return _snapshot(value, budget, 0, text_limit)
     except Exception:  # over budget, or a subclass whose __str__/__float__/__iter__ raises
-        text = bounded_repr(value)
+        text = utf8_safe(bounded_repr(value))
         return shorten(text, text_limit) if text_limit else text
 
 
@@ -260,7 +277,8 @@ def _snapshot(value: Any, budget: list[int], depth: int, text_limit: int) -> Any
     if isinstance(value, enum.Enum):
         return safe_repr(value)
     if isinstance(value, str):
-        return shorten(str(value), text_limit) if text_limit else str(value)
+        text = utf8_safe(str(value))
+        return shorten(text, text_limit) if text_limit else text
     if isinstance(value, int):
         return _snapshot_int(value)
     if isinstance(value, float):
@@ -273,12 +291,12 @@ def _snapshot(value: Any, budget: list[int], depth: int, text_limit: int) -> Any
         return [_snapshot(item, budget, depth + 1, text_limit) for item in value]
     if isinstance(value, dict) and all(isinstance(key, str) for key in value):
         return {
-            shorten(str(key), text_limit) if text_limit else str(key): _snapshot(
-                item, budget, depth + 1, text_limit
+            shorten(utf8_safe(str(key)), text_limit) if text_limit else utf8_safe(str(key)): (
+                _snapshot(item, budget, depth + 1, text_limit)
             )
             for key, item in value.items()
         }
-    text = bounded_repr(value)
+    text = utf8_safe(bounded_repr(value))
     return shorten(text, text_limit) if text_limit else text
 
 

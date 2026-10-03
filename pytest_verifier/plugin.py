@@ -20,7 +20,10 @@ does not raise its failures and skips: pytest records them on the item and repor
 afterwards, so the call phase reads that record too.
 
 The checks judged at the end of a phase are also passed to the ``pytest_verify_results`` hook
-and attached to that phase's report as ``report.verify_checks``.
+and attached to that phase's report as ``report.verify_checks``. With the
+``verify_junit_properties`` setting they also become ``user_properties`` that junitxml writes,
+and ``--verify-json`` writes them to a JSON Lines file, from the reports, so both work under
+pytest-xdist.
 
 A check made through ``verify.require``, or any check with ``--verify-fail-fast`` (except in
 teardown and a unittest ``TestCase``'s cleanup), raises ``ChecksFailedError`` as soon as it
@@ -33,22 +36,43 @@ teardown ends give an ``UnusedCheckWarning`` (see :mod:`pytest_verifier._unused`
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import functools
 import inspect
+import json
 import os
 import re
 import sys
 from types import CodeType
-from typing import Any, Dict, FrozenSet, Generator, Iterator, List, Optional, Sequence, Set
+from typing import (
+    IO,
+    Any,
+    Dict,
+    FrozenSet,
+    Generator,
+    Iterator,
+    List,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 import pytest
 
 from . import _unused
 from ._descriptors import CheckDescriptor
-from ._exceptions import ChecksFailedError, for_terminal, format_summary, headline
+from ._exceptions import (
+    ChecksFailedError,
+    for_terminal,
+    format_summary,
+    headline,
+    junit_property,
+)
 from ._location import FunctionCode, display_path, split
 from ._run import Run, cause_of, recording_verify
 from ._stash import check_results_key
+from ._summary import MODES, SessionSummary
 from ._verify import Verify
 
 _NOT_ACTIVE = (
@@ -61,6 +85,18 @@ _NOT_ACTIVE = (
 _run_key = pytest.StashKey[Run]()
 _tracker_key = pytest.StashKey[_unused.Tracker]()
 _paused_key = pytest.StashKey[bool]()
+#: Which checks become junit properties: ``"none"``, ``"failed"`` or ``"all"``.
+_junit_key = pytest.StashKey[str]()
+#: The ``user_properties`` entries the checks of the current attempt added.
+_properties_key = pytest.StashKey[List[Tuple[str, object]]]()
+#: How many passed checks a summary lists below ``-vv`` (all when ``None``).
+_show_passed_key = pytest.StashKey[Optional[int]]()
+
+#: Whether the terminal gets the ASCII form of summaries (``--verify-ascii``). Read when a
+#: report is printed, which may be outside any hook that has the config (``--pdb``).
+_ASCII_TERMINAL: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "pytest_verifier_ascii_terminal", default=False
+)
 
 
 _OLD_INSTALL = (
@@ -96,6 +132,36 @@ _FAIL_FAST_HELP = (
 )
 
 
+_JUNIT_CHOICES = ("none", "failed", "all")
+
+_JUNIT_HELP = (
+    "Write checks to the junit XML report (--junitxml) as <property> elements of their test: "
+    "none, failed (failed checks only) or all. Default: none."
+)
+
+_JSON_HELP = (
+    "Write every check to PATH as JSON Lines: one object per check, with the test's node ID, "
+    "the phase that judged it, the report's outcome, its index in the test and the check."
+)
+
+_SHOW_PASSED_HELP = (
+    "How many passed checks a failure summary lists: a number, all or none (default 10). "
+    "With -vv every passed check is listed."
+)
+
+_ASCII_HELP = (
+    "Print failure summaries in the terminal with ASCII markers (x, ok) and escapes for other "
+    "characters, as on a terminal that cannot show them. Reports such as junitxml keep the "
+    "Unicode text."
+)
+
+_SUMMARY_HELP = (
+    "Add a terminal section that groups the checks of every test by name: off (default), "
+    "failed (names with a failed check), all, or stats (all, with the range of numeric values "
+    "and the smallest margin to a limit)."
+)
+
+
 def pytest_addoption(parser: pytest.Parser) -> None:
     group = parser.getgroup("pytest-verifier", "soft assertions (pytest-verifier)")
     group.addoption(
@@ -105,14 +171,46 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         dest="verify_fail_fast",
         help=_FAIL_FAST_HELP + " Default: the verify_fail_fast ini setting (false).",
     )
+    group.addoption(
+        "--verify-show-passed",
+        action="store",
+        dest="verify_show_passed",
+        metavar="N|all|none",
+        default=None,
+        help=_SHOW_PASSED_HELP + " Overrides the verify_show_passed ini setting.",
+    )
+    group.addoption(
+        "--verify-ascii",
+        action="store_true",
+        default=None,
+        dest="verify_ascii",
+        help=_ASCII_HELP + " Default: the verify_ascii ini setting (false).",
+    )
+    group.addoption(
+        "--verify-summary",
+        action="store",
+        dest="verify_summary",
+        metavar="off|failed|all|stats",
+        default=None,
+        help=_SUMMARY_HELP + " Overrides the verify_summary ini setting.",
+    )
+    group.addoption(
+        "--verify-json",
+        action="store",
+        dest="verify_json",
+        metavar="PATH",
+        default=None,
+        help=_JSON_HELP,
+    )
     parser.addini("verify_fail_fast", _FAIL_FAST_HELP, type="bool", default=False)
+    parser.addini("verify_show_passed", _SHOW_PASSED_HELP, default="10")
+    parser.addini("verify_ascii", _ASCII_HELP, type="bool", default=False)
+    parser.addini("verify_summary", _SUMMARY_HELP, default="off")
+    parser.addini("verify_junit_properties", _JUNIT_HELP, default="none")
 
 
 def _fail_fast(config: pytest.Config) -> bool:
-    option = config.getoption("verify_fail_fast", None)
-    if option is not None:
-        return bool(option)
-    return bool(config.getini("verify_fail_fast"))
+    return bool(_setting(config, "verify_fail_fast"))
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -150,6 +248,7 @@ def _close_phase(
     run.judged[when] = pending
     checks: List[CheckDescriptor] = [dict(record) for record in pending]  # type: ignore[misc]
     item.ihook.pytest_verify_results(item=item, when=when, checks=checks, passed=passed)
+    _add_properties(item, start, pending)
     if passed:
         return None
     options = _summary_options(item.config)
@@ -168,8 +267,39 @@ def _close_phase(
     # Also when *exc* links to a stop: pytest may print it in the chain too, but only this
     # section shows the summary with every pytest (groups only from 7.2, 15 members at most)
     # and in the terminal's encoding.
-    run.sections[when] = format_summary(pending, start=start, stopped_at=stopped_at, **options)
+    run.report_sections[when] = format_summary(
+        pending, start=start, stopped_at=stopped_at, **options
+    )
     return None
+
+
+def _add_properties(item: pytest.Item, start: int, pending: List[CheckDescriptor]) -> None:
+    """Add the judged checks to the test's ``user_properties`` for junitxml, as
+    ``record_property`` does, when ``verify_junit_properties`` asks for them.
+
+    pytest copies the item's properties into each report it makes afterwards, and junitxml
+    writes the teardown report's, so the properties also reach an xdist controller.
+    """
+    which = item.config.stash.get(_junit_key, "none")
+    if which == "none":
+        return
+    added = item.stash.setdefault(_properties_key, [])
+    for index, record in enumerate(pending, start):
+        if which == "failed" and record.get("passed") is True:
+            continue
+        entry: Tuple[str, object] = junit_property(index, record)
+        item.user_properties.append(entry)
+        added.append(entry)
+
+
+def _drop_properties(item: pytest.Item) -> None:
+    """Take out the properties of an earlier attempt (pytest-rerunfailures reuses the item)."""
+    added = item.stash.get(_properties_key, None)
+    if not added:
+        return
+    del item.stash[_properties_key]
+    ids = {id(entry) for entry in added}
+    item.user_properties[:] = [entry for entry in item.user_properties if id(entry) not in ids]
 
 
 def _linked_stops(run: Run, exc: Optional[BaseException]) -> List[ChecksFailedError]:
@@ -199,8 +329,37 @@ _PASSED_SHOWN = 10
 def _summary_options(config: pytest.Config) -> Dict[str, Any]:
     """``max_passed`` for the summaries of this session."""
     verbosity = config.getoption("verbose", 0)
-    max_passed = None if isinstance(verbosity, int) and verbosity >= 2 else _PASSED_SHOWN
-    return {"max_passed": max_passed}
+    if isinstance(verbosity, int) and verbosity >= 2:
+        return {"max_passed": None}
+    return {"max_passed": config.stash.get(_show_passed_key, _PASSED_SHOWN)}
+
+
+def _setting(config: pytest.Config, name: str) -> Any:
+    """The command-line option *name*, else the ini setting of the same name."""
+    option = config.getoption(name, None)
+    return config.getini(name) if option is None else option
+
+
+def _show_passed(config: pytest.Config) -> Optional[int]:
+    value = str(_setting(config, "verify_show_passed")).strip()
+    if value == "all":
+        return None
+    if value == "none":
+        return 0
+    if re.fullmatch(r"[0-9]+", value):
+        return int(value)
+    raise pytest.UsageError(
+        f"verify_show_passed (--verify-show-passed) must be a number, all or none, not {value!r}"
+    )
+
+
+def _summary_mode(config: pytest.Config) -> str:
+    value = str(_setting(config, "verify_summary")).strip()
+    if value not in MODES:
+        raise pytest.UsageError(
+            f"verify_summary (--verify-summary) must be off, failed, all or stats, not {value!r}"
+        )
+    return value
 
 
 def _is_skip(exc: BaseException) -> bool:
@@ -428,6 +587,7 @@ def _run_phase(item: pytest.Item, when: str) -> Generator[None, Any, Any]:
 def pytest_runtest_setup(item: pytest.Item) -> Generator[None, Any, Any]:
     """Start a fresh run for every attempt (pytest-rerunfailures reuses the item)."""
     _finish_tracking(item, warn=False)  # left over by an attempt that did not reach teardown
+    _drop_properties(item)
     config = item.config
     run = Run(
         str(config.rootpath),
@@ -552,6 +712,266 @@ def pytest_configure(config: pytest.Config) -> None:
     manager = config.pluginmanager
     if manager.is_blocked("pytest_verifier") and manager.get_plugin("pytest_verifier") is None:
         config.issue_config_time_warning(pytest.PytestConfigWarning(_NOT_BLOCKED), stacklevel=2)
+    junit = config.stash[_junit_key] = _junit_setting(config)
+    config.stash[_show_passed_key] = _show_passed(config)
+    mode = _summary_mode(config)
+    ascii_only = _ascii_setting(config)
+    worker = hasattr(config, "workerinput")  # an xdist controller writes and prints
+    path = config.getoption("verify_json", None)
+    if path and not worker:
+        manager.register(_JsonLines(_json_path(path)), _JSON_PLUGIN)
+    if mode != "off" and not worker:
+        manager.register(_Summary(SessionSummary(mode)), _SUMMARY_PLUGIN)
+    if junit != "none" and not worker:
+        manager.register(_JunitAttempts(), _JUNIT_PLUGIN)
+    token = _ASCII_TERMINAL.set(ascii_only)
+    config.add_cleanup(functools.partial(_reset, _ASCII_TERMINAL, token))
+
+
+def _ascii_setting(config: pytest.Config) -> bool:
+    try:
+        return bool(_setting(config, "verify_ascii"))
+    except ValueError as exc:  # getini of a bool setting: "invalid truth value 'maybe'"
+        raise pytest.UsageError(f"verify_ascii must be true or false: {exc}") from exc
+
+
+def _reset(variable: contextvars.ContextVar[Any], token: contextvars.Token[Any]) -> None:
+    with contextlib.suppress(ValueError):  # cleaned up in another context
+        variable.reset(token)
+
+
+def _junit_setting(config: pytest.Config) -> str:
+    value = str(config.getini("verify_junit_properties")).strip()
+    if value not in _JUNIT_CHOICES:
+        raise pytest.UsageError(
+            f"verify_junit_properties must be none, failed or all, not {value!r}"
+        )
+    return value
+
+
+#: The junit families whose schema allows properties on a test case.
+_JUNIT_FAMILIES = ("xunit1", "legacy")
+
+_JSON_PLUGIN = "pytest_verifier_json"
+_JUNIT_PLUGIN = "pytest_verifier_junit"
+
+
+def _json_path(path: str) -> str:
+    """The ``--verify-json`` file, as ``--junitxml`` takes its path (``~`` and ``$VARS``
+    expanded, relative to the folder pytest was started in), checked to be writable: its
+    folders are created, but the file is emptied only when the session starts, so
+    ``pytest --help`` keeps the last results."""
+    path = os.path.normpath(os.path.abspath(os.path.expanduser(os.path.expandvars(path))))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8"):
+            pass
+    except OSError as exc:
+        raise pytest.UsageError(f"--verify-json: cannot write {path}: {exc}") from exc
+    return path
+
+
+class _Attempts:
+    """Each test's current attempt, as its reports arrive (on an xdist controller too): a new
+    one starts at each setup report, and pytest-rerunfailures repeats an attempt after a report
+    with the outcome ``"rerun"``. Tests are keyed by node ID and xdist worker, as one test runs
+    on each worker with ``--dist each``."""
+
+    def __init__(self) -> None:
+        #: ``[attempt number, whether it is repeated]`` by test.
+        self._tests: Dict[Tuple[str, Any], List[Any]] = {}
+
+    def see(self, report: pytest.TestReport) -> Tuple[Tuple[str, Any], int, bool]:
+        """``(test, attempt number from 1, whether this attempt is repeated)`` for *report*."""
+        key = (report.nodeid, getattr(report, "node", None))
+        state = self._tests.setdefault(key, [0, False])
+        if report.when == "setup" or state[0] == 0:
+            state[0] += 1
+            state[1] = False
+        outcome: str = report.outcome
+        if outcome == "rerun":
+            state[1] = True
+        return key, state[0], state[1]
+
+
+#: A junit property this plugin added: ``verify[3] 5V0 › Ripple``.
+_OUR_PROPERTY = re.compile(r"verify\[\d+\] ")
+
+
+class _JunitAttempts:
+    """``verify_junit_properties`` with pytest-rerunfailures: junitxml writes a test case for
+    each attempt whose teardown report it gets (pytest-rerunfailures 16.6.1 and later log the
+    teardown of a repeated attempt too). Take this plugin's properties out of the reports of a
+    repeated attempt, so only the last attempt's checks are in the report."""
+
+    def __init__(self) -> None:
+        self._attempts = _Attempts()
+
+    @pytest.hookimpl(tryfirst=True)  # before junitxml reads the report
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        _, _, repeated = self._attempts.see(report)
+        if repeated and report.user_properties:
+            report.user_properties = [
+                entry
+                for entry in report.user_properties
+                if not (isinstance(entry[0], str) and _OUR_PROPERTY.match(entry[0]))
+            ]
+
+    def pytest_sessionstart(self, session: pytest.Session) -> None:
+        """Warn when the junit report's family does not allow properties. Checked when the
+        session starts, as a conftest may turn the report on in its ``pytest_configure``."""
+        config = session.config
+        if not config.getoption("xmlpath", None):
+            return
+        family = str(config.getini("junit_family"))
+        if family not in _JUNIT_FAMILIES:
+            config.issue_config_time_warning(
+                pytest.PytestConfigWarning(
+                    f"verify_junit_properties writes <property> elements, which junit_family "
+                    f"{family!r} does not allow: tools that validate the report against its "
+                    f"schema reject it. Set junit_family = xunit1 for them."
+                ),
+                stacklevel=2,
+            )
+
+
+_SUMMARY_PLUGIN = "pytest_verifier_summary"
+
+
+class _Summary:
+    """``--verify-summary``: collects the checks of every report, then prints the section."""
+
+    def __init__(self, summary: SessionSummary) -> None:
+        self._summary = summary
+        self._attempts = _Attempts()
+        #: The checks of each test's current attempt, counted when it ends without a rerun.
+        self._pending: Dict[Tuple[str, Any], List[Any]] = {}
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        key, _, repeated = self._attempts.see(report)
+        if report.when == "setup":
+            self._pending[key] = []
+        pending = self._pending.setdefault(key, [])
+        pending.extend(getattr(report, "verify_checks", None) or [])
+        if report.when == "teardown":
+            del self._pending[key]
+            if not repeated:  # pytest-rerunfailures runs the test again: only the last counts
+                self._summary.add(report.nodeid, pending)
+
+    def pytest_terminal_summary(self, terminalreporter: Any) -> None:
+        for (nodeid, _), pending in self._pending.items():  # attempts without a teardown
+            self._summary.add(nodeid, pending)
+        self._pending.clear()
+        lines = self._summary.lines()
+        if not lines:
+            return
+        encoding = _terminal_encoding(terminalreporter._tw)
+        terminalreporter.write_sep("=", "pytest-verifier: checks by name")
+        for line in lines:
+            terminalreporter.write_line(for_terminal(line, encoding))
+
+
+def _terminal_encoding(tw: Any) -> Optional[str]:
+    """The encoding summaries are adapted to when *tw* prints them: ``"ascii"`` with
+    ``--verify-ascii``, else its stream's. ``None`` for a writer without an encoding, such
+    as the one that renders a report as text for junitxml: reports keep the Unicode text."""
+    encoding = getattr(getattr(tw, "_file", None), "encoding", None)
+    if not isinstance(encoding, str):
+        return None
+    return "ascii" if _ASCII_TERMINAL.get() else encoding
+
+
+class _JsonLines:
+    """``--verify-json``: one JSON object per judged check, from the reports, so it works on an
+    xdist controller too. Each line holds the test's node ID, its attempt (from 1; more than
+    one when pytest-rerunfailures repeats it), the phase that judged the check (``when``), the
+    report's outcome, the check's index in the test, as summaries number it, and the check."""
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._file: Optional[IO[str]] = None
+        self._attempts = _Attempts()
+        #: Checks written so far in each test's current attempt.
+        self._counts: Dict[Tuple[str, Any], int] = {}
+
+    def pytest_sessionstart(self) -> None:
+        # Lone surrogates cannot reach a record (snapshots escape them); the error handler is
+        # a last guard, as one line must never stop the run.
+        self._file = open(
+            self._path, "w", encoding="utf-8", errors="backslashreplace", buffering=1
+        )
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if self._file is None:
+            return
+        key, attempt, _ = self._attempts.see(report)
+        if report.when == "setup":
+            self._counts[key] = 0
+        index = self._counts.get(key, 0)
+        for check in getattr(report, "verify_checks", None) or []:
+            line = {
+                "nodeid": report.nodeid,
+                "attempt": attempt,
+                "when": report.when,
+                "outcome": report.outcome,
+                "index": index,
+                "check": check,
+            }
+            self._file.write(_json_line(line))
+            index += 1
+        self._counts[key] = index
+
+    def pytest_unconfigure(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+
+#: Characters JSON leaves as they are but ``str.splitlines()`` splits on.
+_LINE_SEPARATORS = str.maketrans({"\x85": "\\u0085", "\u2028": "\\u2028", "\u2029": "\\u2029"})
+
+
+def _json_line(line: Dict[str, Any]) -> str:
+    """*line* as one line of JSON. A check that ``json`` cannot write as it is (a hand-built
+    record with a key that is not text) is written with its keys as text."""
+    try:
+        text = json.dumps(line, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        text = json.dumps(_text_keys(line), ensure_ascii=False, default=str)
+    return text.translate(_LINE_SEPARATORS) + "\n"
+
+
+def _text_keys(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _text_keys(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_text_keys(item) for item in value]
+    return value
+
+
+def pytest_report_header(config: pytest.Config) -> List[str]:
+    """Say when the project's agent skill was installed by another pytest-verifier version."""
+    from ._installer import AGENTS_SKILLS, compare_versions, stale_skills
+
+    root = config.rootpath
+    # The command installs in the current folder: name the rootdir when pytest ran elsewhere.
+    where = "" if config.invocation_params.dir == root else f" (run it in {root})"
+    lines = []
+    for label, found, version in stale_skills(root):
+        flag = "--agents" if label.startswith(AGENTS_SKILLS[0]) else "--claude"
+        command = f"pytest-verifier skill install {flag}"
+        if found and version and compare_versions(found, version) == 1:
+            lines.append(
+                f"pytest-verifier {version}: the agent skill in {label} is for {found}, a newer "
+                f"pytest-verifier; upgrade pytest-verifier, or match the skill to {version} "
+                f"with: {command}{where}"
+            )
+        else:
+            lines.append(
+                f"pytest-verifier {version}: the agent skill in {label} is for "
+                f"{found or 'another version'}; update it with: {command}{where}"
+            )
+    return lines
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
@@ -577,7 +997,7 @@ def _decorate_report(
     if checks:
         # JSON-safe, so it survives the serialization of reports (pytest-xdist).
         report.verify_checks = checks  # type: ignore[attr-defined]
-    section = run.sections.pop(call.when, None)
+    section = run.report_sections.pop(call.when, None)
     if section is not None and report.failed:
         longrepr = report.longrepr
         if hasattr(longrepr, "addsection"):
@@ -620,8 +1040,8 @@ def _print_for_terminal(longrepr: Any) -> None:
         return
 
     def toterminal(tw: Any) -> None:
-        encoding = getattr(getattr(tw, "_file", None), "encoding", None)
-        if not isinstance(encoding, str):
+        encoding = _terminal_encoding(tw)
+        if encoding is None:
             original(tw)
             return
         with _summaries_for(longrepr, encoding):
@@ -712,8 +1132,8 @@ def _printing_crash_lines(terminalreporter: Any, method: Any) -> Any:
 
 def _crash_lines_for_terminal(terminalreporter: Any) -> List[Any]:
     """Adapt the crash messages of soft failures; returns ``(crash, original message)`` pairs."""
-    encoding = getattr(getattr(terminalreporter._tw, "_file", None), "encoding", None)
-    if not isinstance(encoding, str):
+    encoding = _terminal_encoding(terminalreporter._tw)
+    if encoding is None:
         return []
     saved = []
     for key in ("failed", "error"):

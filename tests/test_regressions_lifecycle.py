@@ -285,6 +285,18 @@ _RERUN_CONFTEST = """
         return True
 """
 
+#: pytest-rerunfailures from 16.6.1: the reports after the one marked ``rerun`` (the attempt's
+#: teardown) are logged too, a failed one marked ``rerun`` as well.
+_RERUN_CONFTEST_LOGS_TEARDOWN = _RERUN_CONFTEST.replace(
+    """                    rerun = True
+                    break
+""",
+    """                    rerun = True
+                    continue
+""",
+)
+assert _RERUN_CONFTEST_LOGS_TEARDOWN != _RERUN_CONFTEST
+
 
 def test_m7_stash_holds_only_the_last_rerun_attempt(pytester):
     """A flaky test fails its soft check on attempt 1 and passes on attempt 2. The recorded

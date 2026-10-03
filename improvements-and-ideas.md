@@ -594,3 +594,15 @@ The lockfile contains only pytest. Add dependency groups (`test`, `lint`, `docs`
 configuration with 100-character lines, a pre-commit config, a `noxfile.py` or justfile,
 `CONTRIBUTING.md`, issue and PR templates, and Dependabot for GitHub Actions. *Effort S, impact
 medium, patch.*
+
+#### DX-11. An agent skill and a command that installs it
+
+Coding agents (Claude Code, Codex and others that read `.agents/skills/`) write many of the tests
+that use the `verify` fixture. Ship an agent skill inside the package that teaches them the
+API precisely: every check, its pass rule and its traps, composites and lazy children,
+`verify.require` and fail-fast, `checks` with `verify.record()`, and how to read a failure. Add a
+`pytest-verifier skill install` command that copies the skill of the installed version into
+`.claude/skills/` and `.agents/skills/` (`--claude`, `--agents`, `--global` for the home
+folder). Tests keep the skill in step with the code: every public method, export and option must
+appear in it, and its version must match the package. *Effort M, impact high, minor.* Asked for
+by the owner on 2026-10-02 for 0.9.0.

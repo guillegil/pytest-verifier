@@ -45,6 +45,29 @@ If any check fails, the test continues running. When the test body ends, all fai
 reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
 the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check).
 
+## Agent Skill
+
+pytest-verifier ships an [Agent Skill](https://agentskills.io) that teaches coding agents, such
+as Claude Code and Codex, to write tests with it: every `verify` method and when it passes,
+composite checks, `verify.require`, helpers, and how to read a failure. Install it into your
+project:
+
+```bash
+pytest-verifier skill install            # .claude/skills/ and .agents/skills/
+pytest-verifier skill install --claude   # only .claude/skills/ (Claude Code)
+pytest-verifier skill install --agents   # only .agents/skills/ (Codex and others; --generic works too)
+pytest-verifier skill install --global   # in your home folder instead
+```
+
+The skill goes into a `pytest-verifier` folder there; commit it to share it with your team. It
+describes the installed version of pytest-verifier, so run the command again after upgrading
+(from the project's root folder, and with `--global` for the skill in your home folder): it
+replaces the skill it installed before and says what it updated. When the skill in a project's
+`.claude/skills` or `.agents/skills` is for another version, pytest's header says so, and
+whether to update the skill or to upgrade pytest-verifier. A `pytest-verifier` folder that the
+command did not install, such as a skill you wrote under that name, is left alone unless you
+add `--force`. `python -m pytest_verifier skill install` does the same as the command.
+
 ## Failure Output
 
 When one or more checks fail, the test is reported as **failed** with a summary. Its first line
@@ -84,11 +107,42 @@ How values read in the summary:
 - Each check stays on one line. Line breaks and other control characters in names and values
   are escaped (`\n`).
 - At most 10 passed checks are listed, followed by `✓ … N more passed checks`. Run pytest with
-  `-vv` to list them all. Every check is still recorded (see
+  `-vv` to list them all, or set how many with `--verify-show-passed=N` (`all`, or `none`).
+  Every check is still recorded (see
   [Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
 - On a terminal that cannot show `✗` and `✓`, such as a Windows CI log, they print as `x` and
   `ok`, and any other character the terminal cannot show is escaped (`\u2014`). Only the
-  terminal output changes: reports such as junitxml keep the summary as it is.
+  terminal output changes: reports such as junitxml keep the summary as it is. For a log that
+  shows Unicode wrongly although the terminal claims to support it, `--verify-ascii` forces
+  this form.
+
+### Output options
+
+| Option | ini setting | Default | What it does |
+|---|---|---|---|
+| `--verify-show-passed=N\|all\|none` | `verify_show_passed` | `10` | How many passed checks a failure summary lists; `-vv` lists them all |
+| `--verify-ascii` | `verify_ascii` | `false` | ASCII markers and escapes in the terminal, as on a terminal that cannot show Unicode |
+| `--verify-summary=off\|failed\|all\|stats` | `verify_summary` | `off` | A section that counts each check name across the whole run |
+| `--verify-json=PATH` | | | Every check to a JSON Lines file (see [Exporting Results](https://github.com/guillegil/pytest-verifier#exporting-results)) |
+| | `verify_junit_properties` | `none` | Checks as junit `<property>` elements: `none`, `failed` or `all` |
+| `--verify-fail-fast` | `verify_fail_fast` | `false` | Stop each test at its first failed check (see below) |
+
+An option on the command line wins over its ini setting. `--verify-summary` adds a section
+after the failures that groups the checks of every test by name, with their section titles,
+including the checks inside composites. Names with a failed check come first; `failed` lists
+only those, and `stats` adds the range of numeric values and the smallest margin, how close the
+nearest value came to its limit (negative when it was past it; `0` at the limit itself, which
+fails `greater`, `less` and an exclusive `between`):
+
+```text
+======================= pytest-verifier: checks by name ========================
+  ✗ 3V3 › Vout: 1 of 2 failed (first: tests/test_rails.py::test_rail[hot]); 3.31V to 3.36V, margin -0.01V
+  ✓ Current: 2 passed; 0.2A to 0.45A, margin 0.05A
+```
+
+Margins come from `approx` (the tolerance left), `between` (the distance to the nearer bound)
+and the ordering checks (the distance to the threshold), for values that are plain numbers. A
+test that pytest-rerunfailures runs again counts once, with its last attempt.
 
 ### When failures are raised
 
@@ -108,8 +162,9 @@ How values read in the summary:
   returned result, e.g. `if not check["passed"]: breakpoint()`, or make the check required
   (`verify.require`, or `--verify-fail-fast` for every check): then `--pdb` opens in the test,
   at the line of the failed check.
-- Rerun filters match exceptions by name, so use `--only-rerun ChecksFailedError` with
-  pytest-rerunfailures.
+- With pytest-rerunfailures, rerun failed checks with `--only-rerun "checks failed"`.
+  `--only-rerun ChecksFailedError` needs pytest-rerunfailures 15.1: older versions match the
+  failure's message, which for failed checks does not name the exception.
 
 ### Stopping a test at a failed check
 
@@ -256,6 +311,40 @@ whose checks stop the test when they fail (see
 
 Most checks read like their table entry — `verify.equal(status, 200, name="Status")`.
 The ones below take a little more setup.
+
+### `section` — group checks under a title
+
+When the same checks run for several rails, channels or units, put each group in a section.
+Every check recorded in the `with` block is named after the section in reports:
+
+```python
+RAILS = {"3V3": 3.3, "5V0": 5.0}
+
+def test_rails(verify, dut):
+    for rail, nominal in RAILS.items():
+        with verify.section(rail):
+            verify.approx(dut.vout(rail), nominal, rel_tol=0.02, name="Vout", units="V")
+            verify.less(dut.ripple_mv(rail), 20, name="Ripple", units="mV")
+```
+
+```text
+1 of 4 checks failed: 5V0 › Ripple — expected < 20mV, got 27.0mV
+
+  ✗ [3] 5V0 › Ripple (tests/test_rails.py:7) — expected < 20mV, got 27.0mV
+
+  ✓ [0] 3V3 › Vout — 3.31V == 3.3V ± 2%
+  ✓ [1] 3V3 › Ripple — 12.0mV < 20mV
+  ✓ [2] 5V0 › Vout — 4.98V == 5.0V ± 2%
+```
+
+Sections nest, and each recorded check keeps their titles, outermost first, in its `section`
+field (`["5V0"]`). A check is in the sections of the code that records it:
+`verify.record(check)` gives a check built elsewhere the section of that call. Sections follow
+`contextvars`: an asyncio task created in a section is in it, and so is a thread that runs in
+a copy of the context (`asyncio.to_thread`), but not a plain `threading.Thread` (except on
+free-threaded Python 3.14, where threads inherit the context). A section opened around a
+fixture's `yield` also covers the test body, except for an async fixture whose plugin runs its
+setup and the test in different tasks (pytest-asyncio before 0.25).
 
 ### `conditional` — pick one branch by a switch value
 
@@ -466,6 +555,71 @@ def test_rails(verify):
 
 Calling `checks.record()` raises `RuntimeError`, because only the fixture records checks.
 
+## Exporting Results
+
+Two options write the checks to files, also under pytest-xdist.
+
+`--verify-json PATH` writes every check as one line of JSON (JSON Lines), with the test it
+belongs to:
+
+```bash
+pytest --verify-json results/checks.jsonl
+```
+
+Each line is one object; this is the failed `Ripple` check of the [`section`
+example](https://github.com/guillegil/pytest-verifier#section--group-checks-under-a-title),
+formatted:
+
+```json
+{
+    "nodeid": "tests/test_rails.py::test_rails",
+    "attempt": 1,
+    "when": "call",
+    "outcome": "failed",
+    "index": 3,
+    "check": {
+        "check_type": "less",
+        "name": "Ripple",
+        "description": "Verify 'Ripple' < 20mV",
+        "actual": 27.0,
+        "threshold": 20,
+        "units": "mV",
+        "passed": false,
+        "detail": "expected < 20mV, got 27.0mV",
+        "phase": "call",
+        "location": "tests/test_rails.py:7",
+        "section": ["5V0"]
+    }
+}
+```
+
+`attempt` counts the runs of the test from 1: pytest-rerunfailures repeats a failed test in a
+new attempt, so keep the lines of each test's last attempt. `when` is the test phase that judged
+the check, `outcome` that phase's outcome (`"rerun"` for the report that made
+pytest-rerunfailures repeat the test), `index` the check's `[k]` in the summary, and `check` the
+recorded check (see
+[Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)).
+The path works like `--junitxml`'s: relative to where pytest runs, with `~` and environment
+variables expanded, and folders created. The file is replaced when the tests start.
+
+`verify_junit_properties` adds checks to the junit XML report (`--junitxml`) as properties of
+their test case: `none` (the default), `failed` or `all`. With pytest-rerunfailures, only the
+last attempt's checks are added.
+
+```toml
+[tool.pytest.ini_options]
+verify_junit_properties = "failed"
+junit_family = "xunit1"
+```
+
+```xml
+<property name="verify[3] 5V0 › Ripple" value="failed: expected &lt; 20mV, got 27.0mV"/>
+```
+
+pytest's default junit family, `xunit2`, does not allow properties in its schema, so
+pytest-verifier warns when it is used; tools that validate the report need `xunit1`, as with
+pytest's own `record_property`.
+
 ## Reading Results from Another Plugin
 
 Reporters and other plugins read a test's checks with `get_check_results(item)`:
@@ -478,10 +632,12 @@ def pytest_runtest_makereport(item, call):
         print(check["name"], check["passed"], check["detail"])
 ```
 
-It returns a copy of the checks the test recorded, in order. Each one is a plain dict with
+It returns a new list of the checks the test recorded, in order. The checks are the recorded
+ones, not copies, so treat them as read-only. Each one is a plain dict with
 `passed`, `detail`, `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
 it) and `location` (`"tests/test_psu.py:3"`, where it was made, relative to the rootdir). When
-a helper made the check, `called_from` holds the line of the test function that led to it. Each
+a helper made the check, `called_from` holds the line of the test function that led to it, and
+a check made in a `verify.section` has the titles in `section` (`["3V3", "Load"]`). Each
 check holds JSON-safe copies of the checked values taken when the check was made, so
 `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
@@ -502,7 +658,9 @@ def pytest_verify_results(item, when, checks, passed):
 ```
 
 The same checks are on that phase's test report as `report.verify_checks`. They are JSON-safe,
-so they also reach the main process under pytest-xdist.
+so they also reach the main process under pytest-xdist. Unlike `get_check_results`, the hook
+and `report.verify_checks` also deliver the checks of attempts that pytest-rerunfailures
+repeats (their report's outcome is `"rerun"`).
 
 ## Upgrading from 0.7
 
