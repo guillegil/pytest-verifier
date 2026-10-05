@@ -4,7 +4,7 @@ Every item from [`bugs-0.3.1.md`](bugs-0.3.1.md) and [`improvements-and-ideas.md
 
 Order of work: all bugs first (0.4.0), then architecture and refactoring (0.5.0). Improvements are taken only when they are small and touch the same code as a fix. Ideas and items marked *discuss* wait for a conversation.
 
-Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 (agreed with the user after 0.7.0). For 0.9.0 the user asked for an agent skill and a command that installs it (DX-11), and for the skill to stay current in every release.
+Since 2026-10-01: the rename to `pytest-verifier` (0.6.0), then every remaining improvement (0.7.0). Ideas (FEAT-*, DX-*) wait for a conversation after that. After 0.7.0 the user chose to publish to PyPI with 0.8.0, which also carries FEAT-1 and FEAT-3 (agreed with the user after 0.7.0). For 0.9.0 the user asked for an agent skill and a command that installs it (DX-11), and for the skill to stay current in every release. For 0.10.0 the user asked for the lab features (FEAT-10, FEAT-2, FEAT-11), then a hunt for bugs and corner cases.
 
 ## Release tasks
 
@@ -108,11 +108,11 @@ reasons for each choice, is in `.tasks.md`.
 - [x] ~~Imperative `pytest.xfail()` after a failed check stays XFAIL; its reason names the failed checks~~
 - [ ] A subtest whose checks failed is reported as failed: deferred, it needs explicit subtest marks and changes `--maxfail` and junit counts (an opt-in setting for a later release)
 - [x] ~~`pytest.exit`, `bdb.BdbQuit` and `unittest.SkipTest` go through lazy children, conditions, factories, sampling and `verify.raises`~~ (found by the design review)
-- [ ] The skill covers every new API and option; version 0.10.0
-- [ ] README, CHANGELOG, CLAUDE.md, roadmap page
-- [ ] Full test matrix, mypy, build, sdist tests against the wheel
+- [x] ~~The skill covers every new API and option; version 0.10.0~~
+- [x] ~~README, CHANGELOG, CLAUDE.md, roadmap page~~
+- [x] ~~Full test matrix, mypy, build, sdist tests against the wheel~~ (2140 tests on Python 3.9 to 3.13 and pytest 7.0.1)
 - [x] ~~Bug and corner-case hunt over the release; every confirmed finding fixed with a test~~ (45 findings, 42 confirmed; limits: exact CSV limits for `Decimal`/`Fraction`, re-readable needles, hints for thousands separators, BOMs and `columns=` targets; raises blocks: dropped with their try, or with a sample, lazy child or factory that raised, reported only when the phase ended without an exception (with phase, section, place, creation order), no teardown crash, a returned block reported once with a fitting hint, required-block stops wait only when the try or composite took the exception, no chained context on a stop, failing `__notes__`; sampling: a try passes only when every check it made passes (`also_failed`), returned thread checks join their try, "never changed" compares whole values and lengths, async samples, margins with units; `verify.record` copies stay on their own; the verbose XFAIL line follows `--verify-ascii`)
-- [ ] PR, CI green, merge, release v0.10.0 to PyPI and GitHub
+- [x] ~~PR, CI green, merge, release v0.10.0 to PyPI and GitHub~~ (PR #8)
 
 ## Bugs
 
@@ -229,7 +229,7 @@ reasons for each choice, is in `.tasks.md`.
 Not implemented until we discuss them.
 
 - [x] ~~**FEAT-1** Record where each check was called~~ · done in 0.8.0
-- [ ] **FEAT-2** `verify.raises` and error-tolerant checks · idea, discuss
+- [ ] **FEAT-2** `verify.raises` and error-tolerant checks · partly done in 0.10.0 (soft `verify.raises`); the `verify_errors = record | raise` setting waits
 - [ ] **FEAT-3** Strictness controls · partly done in 0.8.0 (fail-fast, `require`, first line); the warning level waits
 - [x] ~~**FEAT-4** Export results~~ · done in 0.9.0
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
@@ -237,8 +237,8 @@ Not implemented until we discuss them.
 - [ ] **FEAT-7** Lab-grade number formatting · idea, discuss
 - [x] ~~**FEAT-8** `verify.section()` for grouping~~ · done in 0.9.0
 - [ ] **FEAT-9** Custom check types · idea, discuss
-- [ ] **FEAT-10** Limits tables · idea, discuss
-- [ ] **FEAT-11** `verify.eventually` and `verify.stable` · idea, discuss
+- [x] ~~**FEAT-10** Limits tables~~ · done in 0.10.0
+- [x] ~~**FEAT-11** `verify.eventually` and `verify.stable`~~ · done in 0.10.0
 - [x] ~~**FEAT-12** Verbosity-aware CLI options and a session summary~~ · done in 0.9.0
 
 ## Ideas: developer experience, CI and releases
