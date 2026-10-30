@@ -1,5 +1,5 @@
-"""Output options: ``--verify-show-passed``, ``--verify-ascii`` and ``--verify-summary``, and
-the margins the summary shows."""
+"""Output options: ``--verify-show-passed``, ``--verify-ascii`` and ``--verify-summary``, the
+margins the summary shows, and settings of the wrong type in a native TOML configuration."""
 from __future__ import annotations
 
 import pytest
@@ -9,12 +9,37 @@ from pytest_verifier._checks import margin
 from pytest_verifier._run import Run, recording_verify
 from pytest_verifier._summary import SessionSummary
 
+#: pytest's major version: native TOML configuration (``[tool.pytest]``) arrived in pytest 9.
+PYTEST_MAJOR = int(pytest.__version__.split(".")[0])
+
 _MANY = """
     def test_many(verify):
         for i in range(4):
             verify.equal(i, i, name=f"p{i}")
         verify.fail("boom")
 """
+
+
+@pytest.mark.skipif(PYTEST_MAJOR < 9, reason="native TOML configuration arrived in pytest 9")
+@pytest.mark.parametrize(
+    "line, error",
+    [
+        ('verify_ascii = "maybe"', "verify_ascii must be true or false: *got str: 'maybe'"),
+        ("verify_fail_fast = 1", "verify_fail_fast must be true or false: *got int: 1"),
+        ("verify_show_passed = 5", "*'verify_show_passed' expects a string, got int: 5"),
+        ("verify_summary = 3", "*'verify_summary' expects a string, got int: 3"),
+        ("verify_junit_properties = true", "*'verify_junit_properties' expects a string, *"),
+    ],
+)
+def test_a_toml_value_of_the_wrong_type_is_a_usage_error(
+    pytester: pytest.Pytester, line: str, error: str
+):
+    """pytest 9.0 and 9.1 raise a ``TypeError`` for it, which was an INTERNALERROR."""
+    pytester.makepyprojecttoml(f"[tool.pytest]\n{line}\n")
+    pytester.makepyfile(_MANY)
+    result = pytester.runpytest()
+    assert result.ret == pytest.ExitCode.USAGE_ERROR
+    result.stderr.fnmatch_lines([f"ERROR: {error}"])
 
 
 class TestShowPassed:
