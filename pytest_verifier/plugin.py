@@ -93,8 +93,6 @@ _junit_key = pytest.StashKey[str]()
 _properties_key = pytest.StashKey[List[Tuple[str, object]]]()
 #: How many passed checks a summary lists below ``-vv`` (all when ``None``).
 _show_passed_key = pytest.StashKey[Optional[int]]()
-#: Whether every check stops its test when it fails (``--verify-fail-fast``).
-_fail_fast_key = pytest.StashKey[bool]()
 
 #: Whether the terminal gets the ASCII form of summaries (``--verify-ascii``). Read when a
 #: report is printed, which may be outside any hook that has the config (``--pdb``).
@@ -219,10 +217,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def _fail_fast(config: pytest.Config) -> bool:
-    """Read once, at configure, so that an invalid ini value stops the session there."""
-    if _fail_fast_key not in config.stash:
-        config.stash[_fail_fast_key] = _flag(config, "verify_fail_fast")
-    return config.stash[_fail_fast_key]
+    """Read at each test's setup, so that a conftest can still set the option after configure;
+    configure reads it first, so that an invalid ini value stops the session there."""
+    return _flag(config, "verify_fail_fast")
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -747,7 +744,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[_show_passed_key] = _show_passed(config)
     mode = _summary_mode(config)
     ascii_only = _flag(config, "verify_ascii")
-    _fail_fast(config)
+    _fail_fast(config)  # only to check it: getini keeps the value it read
     worker = hasattr(config, "workerinput")  # an xdist controller writes and prints
     path = config.getoption("verify_json", None)
     if path and not worker:

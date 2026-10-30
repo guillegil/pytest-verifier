@@ -912,6 +912,16 @@ class TestFailFast:
         )
         result.stdout.no_fnmatch_line("*test_first*")
 
+    def test_a_conftest_can_turn_it_on_after_configure(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            def pytest_configure(config):
+                config.option.verify_fail_fast = True
+            """
+        )
+        pytester.makepyfile(self._TEST)
+        _run(pytester).stdout.fnmatch_lines(["1 of 2 checks failed, stopped at ?1?: first *"])
+
     def test_eager_and_lazy_children(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """
