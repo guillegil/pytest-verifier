@@ -37,10 +37,11 @@ Issues = "https://github.com/guillegil/pytest-verifier/issues"
 [project.scripts]
 pytest-verifier = "pytest_verifier._cli:main"
 
-# The entry point names an importable module, so `-p pytest_verifier` and
-# `-p no:pytest_verifier` work. The package loads `pytest_verifier.plugin`.
+# The entry point's name is an importable module, so `-p pytest_verifier` and
+# `-p no:pytest_verifier` work. Its value is a small module that loads `pytest_verifier.plugin`
+# and shows editors the `verify` fixture (see pytest_verifier/_entry.py).
 [project.entry-points.pytest11]
-pytest_verifier = "pytest_verifier"
+pytest_verifier = "pytest_verifier._entry"
 
 [tool.setuptools.packages.find]
 # Only pytest_verifier: the pytest_verify name belongs to another project on PyPI.

@@ -80,6 +80,8 @@ pytest_verifier/
 │                            #   ours() (this package's frames, by module name)
 ├── plugin.py                # The pytest plugin: verify fixture, runtest hook wrappers that
 │                            #   raise ChecksFailedError, report.verify_checks
+├── _entry.py                # What the entry point names: pytest_plugins, and the fixture
+│                            #   imported under TYPE_CHECKING for jedi
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
@@ -93,9 +95,14 @@ pytest_verifier/
 └── __main__.py              # `python -m pytest_verifier`
 ```
 
-The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
-module, so `-p pytest_verifier` and `-p no:pytest_verifier` work, and the package loads
-`pytest_verifier.plugin` through `pytest_plugins`.
+The pytest11 entry point is `pytest_verifier = "pytest_verifier._entry"`: its name is an
+importable module, so `-p pytest_verifier` and `-p no:pytest_verifier` work. `_entry` and the
+package (for `pytest_plugins = ["pytest_verifier"]`) load `pytest_verifier.plugin` through
+`pytest_plugins`. `_entry` exists for editors: jedi looks for a plugin's fixtures in the module
+its entry point names (a decorated def, or a one-name `from ... import`, here under
+`TYPE_CHECKING` so the plugin is not imported before pytest registers it), and in the package
+`verify` is the deprecated alias. PyCharm and Pylance never read entry points; users annotate
+`verify: Verify` (README, "Editor completion and type checking"; `tests/test_editors.py`).
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
 `detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,

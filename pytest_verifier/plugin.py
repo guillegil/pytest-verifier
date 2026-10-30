@@ -1,8 +1,10 @@
 """The pytest plugin: the ``verify`` fixture and the hooks that turn failed checks into a failed
 test.
 
-pytest loads it through the ``pytest_verifier`` entry point (the package lists this module in
-``pytest_plugins``), or with ``-p pytest_verifier`` when plugin autoloading is disabled.
+pytest loads it through the ``pytest_verifier`` entry point, whose module
+(:mod:`pytest_verifier._entry`) lists this one in ``pytest_plugins``, or with
+``-p pytest_verifier`` when plugin autoloading is disabled. The package lists it too, for a
+conftest with ``pytest_plugins = ["pytest_verifier"]``.
 
 Each attempt to run a test item (pytest-rerunfailures runs the same item several times) gets a
 fresh :class:`~pytest_verifier._run.Run`, created when its setup starts. Checks are judged when

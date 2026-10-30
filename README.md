@@ -45,6 +45,42 @@ If any check fails, the test continues running. When the test body ends, all fai
 reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
 the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check).
 
+### Editor completion and type checking
+
+Annotate the fixture to get completion on `verify.` in any editor, and to have mypy or pyright
+check your calls:
+
+```python
+from pytest_verifier import Verify
+
+
+def test_power_supply(verify: Verify):
+    verify.approx(measured_voltage, 3.3, abs_tol=0.05, name="Vout", units="V")
+```
+
+Without the annotation, the editor has to find the fixture's definition from the parameter name,
+and editors look in different places:
+
+- PyCharm looks in the test file, its imports and `conftest.py` files, not in installed plugins
+  ([PY-72784](https://youtrack.jetbrains.com/issue/PY-72784)).
+- VS Code with Pylance documents the same places.
+- Editors that use jedi (VS Code's Jedi mode, Spyder, python-lsp-server, jedi-language-server)
+  find it in the installed plugin, when they run in the environment that has pytest-verifier.
+
+To have PyCharm and jedi find it without annotations, list the plugin module in your top-level
+`conftest.py`:
+
+```python
+pytest_plugins = ["pytest_verifier.plugin"]
+```
+
+Name the module, not the package `pytest_verifier`: editors do not follow the package to it.
+pytest then loads the plugin under that name, so `-p no:pytest_verifier` no longer turns it off
+(pytest warns, and `-p no:pytest_verifier.plugin` does).
+
+`verify.require` is a `pytest_verifier.Require`, a `Verify` that stops the test at a failed
+check: annotate a helper's parameter with it when the helper gets `verify.require`.
+
 ## Agent Skill
 
 pytest-verifier ships an [Agent Skill](https://agentskills.io) that teaches coding agents, such

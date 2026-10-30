@@ -25,7 +25,9 @@ def test_3v3_rail(verify, psu):
 
 - **Request the fixture.** Write `def test_x(verify):`; nothing is imported. `from
   pytest_verifier import verify` is a deprecated name for the `checks` builder, whose checks
-  are never judged: a test written with it passes whatever the values.
+  are never judged: a test written with it passes whatever the values. Where tests are
+  annotated, write `verify: Verify` (`from pytest_verifier import Verify`): PyCharm, Pylance,
+  mypy and pyright do not get the fixture's type from the installed plugin.
 - **Measured value first, then keywords.** Pass the measured value, then the expected value
   or limit, positionally (`equal(measured, expected)`, `greater(measured, limit)`): the report
   reads `expected <second>, got <first>`. Everything else is keyword-only: `name=`, `units=`,
