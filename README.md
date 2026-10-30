@@ -63,9 +63,11 @@ and editors look in different places:
 
 - PyCharm looks in the test file, its imports and `conftest.py` files, not in installed plugins
   ([PY-72784](https://youtrack.jetbrains.com/issue/PY-72784)).
-- VS Code with Pylance documents the same places.
-- Editors that use jedi (VS Code's Jedi mode, Spyder, python-lsp-server, jedi-language-server)
-  find it in the installed plugin, when they run in the environment that has pytest-verifier.
+- Pylance (VS Code) documents the test file, fixtures imported into it and `conftest.py` files,
+  not installed plugins.
+- Editors that use jedi 0.19 or later (VS Code's Jedi mode, Spyder, python-lsp-server,
+  jedi-language-server) find it in the installed plugin, when jedi runs in the environment that
+  has pytest-verifier.
 
 To have PyCharm and jedi find it without annotations, list the plugin module in your top-level
 `conftest.py`:
@@ -76,7 +78,7 @@ pytest_plugins = ["pytest_verifier.plugin"]
 
 Name the module, not the package `pytest_verifier`: editors do not follow the package to it.
 pytest then loads the plugin under that name, so `-p no:pytest_verifier` no longer turns it off
-(pytest warns, and `-p no:pytest_verifier.plugin` does).
+(pytest-verifier warns; use `-p no:pytest_verifier.plugin`).
 
 `verify.require` is a `pytest_verifier.Require`, a `Verify` that stops the test at a failed
 check: annotate a helper's parameter with it when the helper gets `verify.require`.
@@ -937,7 +939,7 @@ pytest stops with a message that says so, because the two cannot be loaded toget
 | `from pytest_verify import verify` | `from pytest_verifier import checks` |
 | `from pytest_verify import get_check_results` (and the other names) | `from pytest_verifier import get_check_results` |
 | `-p pytest_verify._fixture`, `pytest_plugins = ["pytest_verify._fixture"]` | `-p pytest_verifier`, `pytest_plugins = ["pytest_verifier"]` |
-| `from pytest_verify._fixture import verify` in a conftest | `pytest_plugins = ["pytest_verifier"]` |
+| `from pytest_verify._fixture import verify` in a conftest | `pytest_plugins = ["pytest_verifier.plugin"]` (see [Editor completion and type checking](https://github.com/guillegil/pytest-verifier#editor-completion-and-type-checking)) |
 | `-p no:verify` | `-p no:pytest_verifier` |
 
 `pytest_verifier.verify` still works as an alias of `checks` and shows a `DeprecationWarning`.

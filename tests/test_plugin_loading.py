@@ -179,4 +179,6 @@ def test_blocking_the_package_name_does_not_stop_the_plugin_module(
     pytester.makepyfile(_FAILING_TEST)
     result = _run(pytester, "-p", "no:pytest_verifier")
     result.assert_outcomes(failed=1)
-    result.stdout.fnmatch_lines(["*'-p no:pytest_verifier' did not turn the plugin off*"])
+    result.stdout.fnmatch_lines(
+        ["*'-p no:pytest_verifier' did not turn the plugin off*use '-p no:pytest_verifier.plugin'."]
+    )

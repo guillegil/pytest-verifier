@@ -711,8 +711,7 @@ def pytest_load_initial_conftests(early_config: pytest.Config) -> Generator[None
 
 _NOT_BLOCKED = (
     "'-p no:pytest_verifier' did not turn the plugin off, because a conftest loads it as "
-    "'pytest_verifier.plugin'. List 'pytest_verifier' in pytest_plugins instead, or use "
-    "'-p no:pytest_verifier.plugin'."
+    "'pytest_verifier.plugin': use '-p no:pytest_verifier.plugin'."
 )
 
 

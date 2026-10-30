@@ -10,24 +10,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - README section "Editor completion and type checking": annotate the fixture,
-  `def test_x(verify: Verify)`, to get completion on `verify.` in every editor. PyCharm and
-  Pylance do not look for fixtures in installed plugins, so without the annotation they show
-  nothing; listing `pytest_verifier.plugin` in the top-level conftest's `pytest_plugins` is the
-  alternative for PyCharm. The agent skill says the same.
+  `def test_x(verify: Verify)`, to get completion on `verify.` in every editor. PyCharm does not
+  look for fixtures in installed plugins, and Pylance documents only the test file, its imports
+  and conftest files; listing `pytest_verifier.plugin` in the top-level conftest's
+  `pytest_plugins` is the alternative for PyCharm. The agent skill mentions the annotation.
 
 ### Changed
 
 - The `pytest_verifier` entry point names a new module, `pytest_verifier._entry`, instead of the
-  package. It loads `pytest_verifier.plugin` the same way, so `config.pluginmanager.get_plugin(
-  "pytest_verifier")` now returns that module. `-p pytest_verifier`, `-p no:pytest_verifier`
+  package, and that module loads `pytest_verifier.plugin` as the package did.
+  `config.pluginmanager.get_plugin("pytest_verifier")` now returns `pytest_verifier._entry`, not
+  the package: import `pytest_verifier` for its API. `-p pytest_verifier`, `-p no:pytest_verifier`
   and conftests that list `pytest_verifier` or `pytest_verifier.plugin` work as before.
+- When a conftest lists `pytest_verifier.plugin`, the warning that `-p no:pytest_verifier` did not
+  turn the plugin off says to use `-p no:pytest_verifier.plugin`, and no longer suggests listing
+  `pytest_verifier`, which editors do not follow to the fixture.
 
 ### Fixed
 
-- Editors that use jedi (VS Code's Jedi mode, Spyder, python-lsp-server, jedi-language-server)
-  complete `verify.` in a test that does not annotate the fixture. jedi looks for a plugin's
-  fixtures in the module its entry point names, which was the package, where `verify` is the
-  deprecated alias of `checks`.
+- Editors that use jedi 0.19 or later (VS Code's Jedi mode, Spyder, python-lsp-server,
+  jedi-language-server) complete `verify.` in a test that does not annotate the fixture, when jedi
+  runs in the environment where pytest-verifier is installed. jedi looks for a plugin's fixtures
+  in the module its entry point names, which was the package, where `verify` is the deprecated
+  alias of `checks`. Elsewhere, annotate the fixture or list `pytest_verifier.plugin` in a
+  conftest.
 
 ## [0.10.0] - 2026-10-03
 
