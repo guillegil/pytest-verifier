@@ -403,8 +403,13 @@ ContextVar, reset by a config cleanup, read when a report prints), `--verify-sum
 teardown report unless one of its reports was a rerun; margins from `CheckType.margin`, which
 ordering checks, `between` and `approx` implement, computed as the verdict is: exact unless the
 check compares in floats; units from `CheckType.units` (a sampling check: its kept child's), and
-no margin when other checks failed a kept try whose check passed), `--verify-json` and
-`verify_junit_properties` (see Fixture Behavior).
+no margin when other checks failed a kept try whose check passed), `--verify-json`,
+`verify_junit_properties` (see Fixture Behavior); `--verify-fail-fast` is checked there too,
+but read at each test's setup, so a conftest may set `config.option.verify_fail_fast` later.
+Ini values go through `_ini`, which makes a value pytest cannot convert a `UsageError` on every
+pytest (9.2 does so itself; before, a bad bool raised `ValueError`, and 9.0/9.1 a `TypeError`
+for a native TOML value of the wrong type); `_flag` reads the bool settings, as "`<name>` must
+be true or false: …".
 Text in records goes through `utf8_safe` (lone surrogates escaped), and `escape` also escapes
 surrogates and U+FFFE/U+FFFF, so records encode as UTF-8 and junit reports stay well-formed.
 

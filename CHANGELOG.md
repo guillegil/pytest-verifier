@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- An invalid `verify_ascii` value (`maybe`) is again reported as
+  `verify_ascii must be true or false: invalid truth value 'maybe'` on pytest 9.2, which now
+  rejects it with a message of its own that did not name the setting.
+- An invalid `verify_fail_fast` value is a usage error before any test runs, like an invalid
+  value of the other settings, instead of an error in the setup and teardown of every test.
+- On pytest 9.0 and 9.1, a value of the wrong type in a native TOML configuration
+  (`[tool.pytest]`, such as `verify_summary = 3` or `verify_ascii = "maybe"`) is a usage error
+  that names the setting, as on pytest 9.2, instead of an INTERNALERROR.
 - Editors that use jedi 0.19 or later (VS Code's Jedi mode, Spyder, python-lsp-server,
   jedi-language-server) complete `verify.` in a test that does not annotate the fixture, when jedi
   runs in the environment where pytest-verifier is installed. jedi looks for a plugin's fixtures
