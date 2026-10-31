@@ -80,6 +80,8 @@ pytest_verifier/
 │                            #   ours() (this package's frames, by module name)
 ├── plugin.py                # The pytest plugin: verify fixture, runtest hook wrappers that
 │                            #   raise ChecksFailedError, report.verify_checks
+├── _entry.py                # What the entry point names: pytest_plugins, and the fixture
+│                            #   imported under TYPE_CHECKING for jedi
 ├── _unused.py               # UnusedCheckWarning: checks built in a test body, never used
 ├── _hookspecs.py            # pytest_verify_results hookspec
 ├── _stash.py                # check_results_key (read through get_check_results)
@@ -93,9 +95,15 @@ pytest_verifier/
 └── __main__.py              # `python -m pytest_verifier`
 ```
 
-The pytest11 entry point is `pytest_verifier = "pytest_verifier"`: its name is an importable
-module, so `-p pytest_verifier` and `-p no:pytest_verifier` work, and the package loads
-`pytest_verifier.plugin` through `pytest_plugins`.
+The pytest11 entry point is `pytest_verifier = "pytest_verifier._entry"`: its name is the
+package's, so `-p pytest_verifier`, `-p no:pytest_verifier` and `pytest_plugins =
+["pytest_verifier"]` all name the plugin. `_entry` and the package load `pytest_verifier.plugin`
+through `pytest_plugins`. `_entry` exists for editors: jedi looks for a plugin's fixtures in the module
+its entry point names (a decorated def, or a one-name `from ... import`, here under
+`TYPE_CHECKING` so the plugin is not imported before pytest registers it), and in the package
+`verify` is the deprecated alias. PyCharm does not read entry points (PY-72784) and Pylance does
+not document it; users annotate `verify: Verify` (README, "Editor completion and type checking";
+`tests/test_editors.py`).
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
 `detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,
@@ -223,7 +231,8 @@ wheel (pytest 7.0.1 and newest), then tags, uploads to PyPI (Trusted Publishing,
 CHANGELOG needs a dated `## [X.Y.Z] - YYYY-MM-DD` heading; the release and github targets need a
 commit on main. No `skip-existing`: after a partial failure use "Re-run failed jobs" (same built
 files); an existing tag on the same commit and an existing release with the same files are
-accepted. Actions are pinned to commit SHAs. CI's package job runs the same build and tests.
+accepted. Actions are pinned to commit SHAs. CI's package job runs the same build and tests, with jedi installed for
+`tests/test_editors.py`.
 Before a release, bump `version` in pyproject.toml and `metadata.version` in the skill together.
 
 ## Agent skill — keep it current

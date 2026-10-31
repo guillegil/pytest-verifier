@@ -80,12 +80,13 @@ jobs:
       - name: Check the metadata PyPI will show
         run: uvx twine check --strict dist/*
 
-      # The same steps as the release build, so a pull request finds what would break it.
+      # The same steps as the release build, so a pull request finds what would break it, plus
+      # jedi for tests/test_editors.py, which checks what an editor finds in the installed wheel.
       - name: Run the sdist's tests against the wheel, oldest and newest pytest
         run: |
           mkdir sdist
           tar xzf dist/*.tar.gz -C sdist --strip-components=1
-          for setup in "3.10 pytest==7.0.1 pluggy==1.2.0" "3.12 pytest"; do
+          for setup in "3.10 pytest==7.0.1 pluggy==1.2.0" "3.12 pytest jedi"; do
             set -- $setup
             python="$1"; shift
             rm -rf sdist/.venv

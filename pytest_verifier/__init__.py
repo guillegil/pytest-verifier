@@ -31,7 +31,8 @@ from ._stash import check_results_key
 from ._unused import UnusedCheckWarning
 from ._verify import Raises, Require, Verify
 
-#: The pytest plugin. The ``pytest_verifier`` entry point names this package, which loads it.
+#: The pytest plugin, for ``pytest_plugins = ["pytest_verifier"]`` and ``-p pytest_verifier``
+#: without the entry point. The entry point names ``._entry``, which loads it too.
 pytest_plugins = ["pytest_verifier.plugin"]
 
 __all__ = [
