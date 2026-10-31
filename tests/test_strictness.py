@@ -901,6 +901,27 @@ class TestFailFast:
         result = _run(pytester, "--help")
         result.stdout.fnmatch_lines(["*--verify-fail-fast*", "*verify_fail_fast*"])
 
+    @pytest.mark.parametrize("value", ["maybe", "yes please"])
+    def test_an_invalid_value_is_a_usage_error(self, pytester: pytest.Pytester, value: str) -> None:
+        """Before any test runs, not an error in the setup and teardown of each test."""
+        pytester.makepyfile(self._TEST)
+        result = _run(pytester, "-o", f"verify_fail_fast={value}")
+        assert result.ret == pytest.ExitCode.USAGE_ERROR
+        result.stderr.fnmatch_lines(
+            [f"ERROR: verify_fail_fast must be true or false: invalid truth value '{value}'"]
+        )
+        result.stdout.no_fnmatch_line("*test_first*")
+
+    def test_a_conftest_can_turn_it_on_after_configure(self, pytester: pytest.Pytester) -> None:
+        pytester.makeconftest(
+            """
+            def pytest_configure(config):
+                config.option.verify_fail_fast = True
+            """
+        )
+        pytester.makepyfile(self._TEST)
+        _run(pytester).stdout.fnmatch_lines(["1 of 2 checks failed, stopped at ?1?: first *"])
+
     def test_eager_and_lazy_children(self, pytester: pytest.Pytester) -> None:
         pytester.makepyfile(
             """

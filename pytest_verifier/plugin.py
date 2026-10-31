@@ -217,7 +217,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def _fail_fast(config: pytest.Config) -> bool:
-    return bool(_setting(config, "verify_fail_fast"))
+    """Read at each test's setup, so that a conftest can still set the option after configure;
+    configure reads it first, so that an invalid ini value stops the session there."""
+    return _flag(config, "verify_fail_fast")
 
 
 def pytest_addhooks(pluginmanager: pytest.PytestPluginManager) -> None:
@@ -345,7 +347,25 @@ def _summary_options(config: pytest.Config) -> Dict[str, Any]:
 def _setting(config: pytest.Config, name: str) -> Any:
     """The command-line option *name*, else the ini setting of the same name."""
     option = config.getoption(name, None)
-    return config.getini(name) if option is None else option
+    return _ini(config, name) if option is None else option
+
+
+def _ini(config: pytest.Config, name: str) -> Any:
+    """The ini setting *name*. A value pytest cannot convert is a usage error, as pytest 9.2
+    makes it: before, a bool raised ``ValueError`` ("invalid truth value 'maybe'"), and a
+    native TOML value of the wrong type a ``TypeError`` (pytest 9.0 and 9.1)."""
+    try:
+        return config.getini(name)
+    except (TypeError, ValueError) as exc:
+        raise pytest.UsageError(str(exc)) from exc
+
+
+def _flag(config: pytest.Config, name: str) -> bool:
+    """The bool setting *name*: its flag, else its ini setting."""
+    try:
+        return bool(_setting(config, name))
+    except pytest.UsageError as exc:
+        raise pytest.UsageError(f"{name} must be true or false: {exc}") from exc
 
 
 def _show_passed(config: pytest.Config) -> Optional[int]:
@@ -723,7 +743,8 @@ def pytest_configure(config: pytest.Config) -> None:
     junit = config.stash[_junit_key] = _junit_setting(config)
     config.stash[_show_passed_key] = _show_passed(config)
     mode = _summary_mode(config)
-    ascii_only = _ascii_setting(config)
+    ascii_only = _flag(config, "verify_ascii")
+    _fail_fast(config)  # only to check it: getini keeps the value it read
     worker = hasattr(config, "workerinput")  # an xdist controller writes and prints
     path = config.getoption("verify_json", None)
     if path and not worker:
@@ -737,20 +758,13 @@ def pytest_configure(config: pytest.Config) -> None:
     config.add_cleanup(functools.partial(_reset, _CONFIG, _CONFIG.set(config)))
 
 
-def _ascii_setting(config: pytest.Config) -> bool:
-    try:
-        return bool(_setting(config, "verify_ascii"))
-    except ValueError as exc:  # getini of a bool setting: "invalid truth value 'maybe'"
-        raise pytest.UsageError(f"verify_ascii must be true or false: {exc}") from exc
-
-
 def _reset(variable: contextvars.ContextVar[Any], token: contextvars.Token[Any]) -> None:
     with contextlib.suppress(ValueError):  # cleaned up in another context
         variable.reset(token)
 
 
 def _junit_setting(config: pytest.Config) -> str:
-    value = str(config.getini("verify_junit_properties")).strip()
+    value = str(_ini(config, "verify_junit_properties")).strip()
     if value not in _JUNIT_CHOICES:
         raise pytest.UsageError(
             f"verify_junit_properties must be none, failed or all, not {value!r}"
