@@ -75,6 +75,8 @@ pytest_verifier/
 │                            #   when hard or fail-fast; try scopes for sampling; raises blocks
 │                            #   (`_Block`), calls of user code (`_Call`))
 ├── _limits.py               # verify.limits (parse_row, Row, limit_checks) and load_limits (CSV)
+├── _source.py               # Default names: source text of the value argument at the call
+│                            #   (co_positions on 3.11+, else the call on the line), cached
 ├── _location.py             # Where a recorded check was made: location, called_from;
 │                            #   FunctionCode (test code by identity, or file and name),
 │                            #   ours() (this package's frames, by module name)
@@ -119,7 +121,9 @@ every registered type has them.
 # CheckDescriptor — returned by every verify.* call
 class CheckDescriptor(TypedDict, total=False):
     check_type: str          # Required: "approx", "equal", "between", etc.
-    name: str                # Required: human-readable label
+    name: str                # Always present: given, or the value's source text (auto_name)
+    note: str                # Only when note= was given (stripped, non-blank)
+    auto_name: bool          # True only when name was derived from the source
     description: str         # Required: pre-formatted verification statement
     passed: bool             # Present only when returned from fixture (evaluated)
     detail: str              # Fixture only: rendered "expected … got …" clause
@@ -263,42 +267,45 @@ Implementation requirements:
 
 ## Function Catalog (24 check functions, plus `limits`, `record` and `section`)
 
+Every method that takes `name=` also takes `note=None` (composites, sampling, `fail` and
+`raises` included); the tables list it on the value checks, whose `name` is optional.
+
 ### Equality & Approximation
 | Function | check_type | Key fields |
 |----------|-----------|------------|
-| `verify.equal(actual, expected, *, name, units=None)` | `"equal"` | actual, expected |
-| `verify.not_equal(actual, expected, *, name, units=None)` | `"not_equal"` | actual, expected |
-| `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | `"approx"` | actual, expected, abs_tol, rel_tol |
+| `verify.equal(actual, expected, *, name=None, units=None, note=None)` | `"equal"` | actual, expected |
+| `verify.not_equal(actual, expected, *, name=None, units=None, note=None)` | `"not_equal"` | actual, expected |
+| `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name=None, units=None, note=None)` | `"approx"` | actual, expected, abs_tol, rel_tol |
 
 ### Ordering & Range
 | Function | check_type | Key fields |
 |----------|-----------|------------|
-| `verify.greater(actual, threshold, *, name, units=None)` | `"greater"` | actual, threshold |
-| `verify.greater_equal(actual, threshold, *, name, units=None)` | `"greater_equal"` | actual, threshold |
-| `verify.less(actual, threshold, *, name, units=None)` | `"less"` | actual, threshold |
-| `verify.less_equal(actual, threshold, *, name, units=None)` | `"less_equal"` | actual, threshold |
-| `verify.between(actual, low, high, *, inclusive=True, name, units=None)` | `"between"` | actual, low, high, inclusive |
+| `verify.greater(actual, threshold, *, name=None, units=None, note=None)` | `"greater"` | actual, threshold |
+| `verify.greater_equal(actual, threshold, *, name=None, units=None, note=None)` | `"greater_equal"` | actual, threshold |
+| `verify.less(actual, threshold, *, name=None, units=None, note=None)` | `"less"` | actual, threshold |
+| `verify.less_equal(actual, threshold, *, name=None, units=None, note=None)` | `"less_equal"` | actual, threshold |
+| `verify.between(actual, low, high, *, inclusive=True, name=None, units=None, note=None)` | `"between"` | actual, low, high, inclusive |
 
 ### Boolean & Identity
 | Function | check_type |
 |----------|-----------|
-| `verify.is_true(actual, *, name)` | `"true"` |
-| `verify.is_false(actual, *, name)` | `"false"` |
-| `verify.is_none(actual, *, name)` | `"is_none"` |
-| `verify.is_not_none(actual, *, name)` | `"is_not_none"` |
+| `verify.is_true(actual, *, name=None, note=None)` | `"true"` |
+| `verify.is_false(actual, *, name=None, note=None)` | `"false"` |
+| `verify.is_none(actual, *, name=None, note=None)` | `"is_none"` |
+| `verify.is_not_none(actual, *, name=None, note=None)` | `"is_not_none"` |
 
 ### String & Container
 | Function | check_type |
 |----------|-----------|
-| `verify.contains(haystack: Container \| Iterable, needle, *, name)` | `"contains"` |
-| `verify.not_contains(haystack: Container \| Iterable, needle, *, name)` | `"not_contains"` |
-| `verify.matches(actual, pattern: str \| re.Pattern, *, name)` | `"matches"` |
+| `verify.contains(haystack: Container \| Iterable, needle, *, name=None, note=None)` | `"contains"` |
+| `verify.not_contains(haystack: Container \| Iterable, needle, *, name=None, note=None)` | `"not_contains"` |
+| `verify.matches(actual, pattern: str \| re.Pattern, *, name=None, note=None)` | `"matches"` |
 
 ### Type / Collection / Conditional
 | Function | check_type | Notes |
 |----------|-----------|-------|
-| `verify.is_instance(actual, expected_type, *, name)` | `"is_instance"` | Store type as string in descriptor |
-| `verify.length(actual: Sized, expected, *, name)` | `"length"` | Stores `actual_length` in descriptor; a record keeps a preview of `actual` (100 nodes, text cut at 240) |
+| `verify.is_instance(actual, expected_type, *, name=None, note=None)` | `"is_instance"` | Store type as string in descriptor |
+| `verify.length(actual: Sized, expected, *, name=None, note=None)` | `"length"` | Stores `actual_length` in descriptor; a record keeps a preview of `actual` (100 nodes, text cut at 240) |
 | `verify.all_satisfy(items: Iterable[T], descriptor_factory: Callable[[T], ...], *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored |
 | `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated; a case/default may be a callable, called only if selected |
 | `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated; checks, default and conditions may be callables |
@@ -457,7 +464,8 @@ while it is logged).
 ## Common Pitfalls
 
 - **Don't forget `py.typed` marker.** Without it, mypy/Pylance won't recognize the package as typed.
-- **`name` is required on all checks** (except `fail` where it defaults to `msg`). Raise `TypeError` if missing.
+- **`name` is optional only on the checks of one value** (the 17 leaf checks with an `actual`/`haystack`): when omitted it is the source text of that argument at the call (`_source.subject_text`, `auto_name: True`; `"value"` without source, or when no call of the method itself is at the site, as for `map(verify.is_true, xs)` or a bound method/`partial` factory; both lookups compare `_called_name` to the method). `fail` defaults it to `msg`; composites, sampling checks and `raises` still raise `TypeError` without it. `name` must be a `str` when given.
+- **`note` is free text, never judged.** Every method that takes `name=` takes `note=` (`require_note`: `str` or `None`, stripped, blank dropped; `annotate` stores it). Summaries add ` (note)` after the detail through `note_suffix`.
 - **`approx` needs at least one tolerance.** Raise `ValueError` if neither `abs_tol` nor `rel_tol` provided.
 - **`all_satisfy` callable is invoked at call time.** The resulting `child_checks` list is stored, not the callable.
 - **Lazy children are stored as built.** A `conditional`/`guard` callable that was selected is replaced by the check it returned; one that was not is stored as `None`, and so is a guard condition that was not called.

@@ -120,9 +120,22 @@ def label(result: Mapping[str, Any]) -> str:
     return SECTION_SEPARATOR.join([*(render_text(title) for title in section), name])
 
 
+#: Longest note a summary line shows.
+_NOTE_LIMIT = 200
+
+
+def note_suffix(result: Mapping[str, Any]) -> str:
+    """`` (note)`` after a check's detail, from its ``note``; ``""`` without one. One line,
+    escaped and bounded like a name."""
+    note = result.get("note")
+    if not isinstance(note, str) or not note.strip():
+        return ""
+    return f" ({render_text(note.strip(), _NOTE_LIMIT)})"
+
+
 def _line(marker: str, idx: int, result: Mapping[str, Any], passed: bool) -> str:
     site = "" if passed else _site(result)
-    detail = _detail(result, passed)
+    detail = _detail(result, passed) + note_suffix(result)
     return f"  {marker} [{idx}] {label(result)}{site}{summary_separator(result)}{detail}"
 
 
@@ -131,7 +144,7 @@ def junit_property(index: int, result: Mapping[str, Any]) -> Tuple[str, str]:
     expected < 20mV, got 27.0mV")``. Never raises."""
     passed = result.get("passed") is True
     try:
-        name, detail = label(result), _detail(result, passed)
+        name, detail = label(result), _detail(result, passed) + note_suffix(result)
     except Exception as exc:
         name, detail = "", f"<check could not be rendered: {describe_error(exc)}>"
     return f"verify[{index}] {name}", f"{'passed' if passed else 'failed'}: {detail}"
@@ -148,9 +161,8 @@ def failure_header(failed: List[Any], total: int, stopped_at: Optional[int] = No
         index, result = headline(failed, stopped_at)
         if index == stopped_at:
             header += f", stopped at [{index}]"
-        first = shorten(
-            f"{label(result)}{summary_separator(result)}{_detail(result, False)}", _HEADER_LIMIT
-        )
+        detail = _detail(result, False) + note_suffix(result)
+        first = shorten(f"{label(result)}{summary_separator(result)}{detail}", _HEADER_LIMIT)
     except Exception:
         return header
     more = f" (+{len(failed) - 1} more)" if len(failed) > 1 else ""
