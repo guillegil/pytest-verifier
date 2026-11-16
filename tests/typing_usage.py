@@ -114,6 +114,15 @@ def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
     assert helper.get("passed") is True
     recorded: List[CheckDescriptor] = get_check_results(request.node)
     assert [r["name"] for r in recorded][-2:] == ["Status", "Helper"]
+    # Without name= a check on a value is named by the value's source text; note= explains it.
+    status = 200
+    named = fixture.equal(status, 200, note="the server answered")
+    assert named["name"] == "status"
+    note: str | None = named.get("note")
+    auto: bool | None = named.get("auto_name")
+    assert note == "the server answered" and auto is True
+    fixture.require.is_not_none(status, note="needed by the next checks")
+    recorded = get_check_results(request.node)[:-2]
     phase: str | None = recorded[-1].get("phase")
     assert phase == "call"
     location: str | None = recorded[-1].get("location")
@@ -250,7 +259,8 @@ def _by_name(text: str) -> CheckDescriptor:
 
 def misuse() -> None:
     """Never called: each line must stay a type error."""
-    checks.equal(1, 1)  # type: ignore[call-arg]
+    checks.equal(1, 1, note=3)  # type: ignore[arg-type]
+    checks.all_satisfy([1], lambda n: checks.equal(n, 1))  # type: ignore[call-arg]
     checks.approx(1.0, 1.0, abs_tol="0.1", name="Tol")  # type: ignore[arg-type]
     checks.greater(1, 0, "positional name")  # type: ignore[call-arg]
     checks.guard(branches=[(True, checks.is_true(True, name="T"))], name="G")  # type: ignore[list-item]
@@ -260,7 +270,7 @@ def misuse() -> None:
     checks.contains(5, 1, name="In")  # type: ignore[arg-type]
     checks.all_satisfy([1, 2], _by_name, name="Names")  # type: ignore[arg-type]
     checks.require("not a check")  # type: ignore[arg-type]
-    checks.require.equal(1, 1)  # type: ignore[call-arg]
+    checks.require.equal(1, 1, name=3)  # type: ignore[arg-type]
     checks.section(["3V3"])  # type: ignore[arg-type]
     checks.eventually(checks.less(1, 2, name="T"), timeout=1, name="E")  # type: ignore[arg-type]
     checks.stable(lambda: checks.fail("x"), duration="2", name="S")  # type: ignore[arg-type]

@@ -32,10 +32,22 @@ def test_3v3_rail(verify, psu):
 - **Measured value first, then keywords.** Pass the measured value, then the expected value
   or limit, positionally (`equal(measured, expected)`, `greater(measured, limit)`): the report
   reads `expected <second>, got <first>`. Everything else is keyword-only: `name=`, `units=`,
-  `abs_tol=`, `rel_tol=`, `inclusive=`. `name` is required on every check except `fail` and
-  must be a `str`. Make names specific and unique within the test (`f"{rail} ripple"`, or
+  `abs_tol=`, `rel_tol=`, `inclusive=`, `note=`. `name` must be a `str` when given. The checks
+  of one value (the table below, except `fail`) may leave it out: the name is then the source
+  text of the value (`verify.equal(dat.txfe, 1)` is named `dat.txfe`; `value` without source,
+  as in `exec`, or when the method is passed to other code, as in `map(verify.is_true, xs)` or
+  an `all_satisfy` factory: give those `name=` or use a lambda). `all_satisfy`, `conditional`, `guard`, `raises`, `eventually` and `stable`
+  require it. Make names specific and unique within the test (`f"{rail} ripple"`, or
   `"Ripple"` in a `verify.section(rail)`, not a bare `"ripple"` in a loop): the report
-  identifies checks by name.
+  identifies checks by name, and a derived name is the same on every pass of a loop.
+- **`note=` explains a check.** Every method that takes `name=` takes `note=` (a `str`,
+  stripped; blank is dropped). Summaries print it after the detail, records keep it as `note`,
+  and a derived name sets `auto_name: True` on the record:
+
+  ```python
+  verify.equal(dat.tx8e, 1, note="at least 8 empty positions")
+  # 1 of 1 checks failed: dat.tx8e — expected 1, got 0 (at least 8 empty positions)
+  ```
 - **Soft checks never raise.** Do not `assert verify.equal(...)` or write `if verify.equal(...)`
   (the returned dict is always truthy), and do not wrap checks in `try`/`except` or
   `pytest.raises`: nothing is raised until the test body ends (to check that code raises, use
@@ -51,8 +63,9 @@ def test_3v3_rail(verify, psu):
   hold). `rel_tol` is a fraction of `abs(expected)`: 0.02 is 2%, and `rel_tol=2` silently
   accepts ±200%. When `expected` can be 0 use `abs_tol`. Leave headroom:
   `approx(3.35, 3.3, abs_tol=0.05)` fails by float rounding.
-- **Call mistakes raise; bad values fail.** A missing or positional `name`, `approx` without a
-  tolerance, a negative or NaN tolerance, `between` with `low > high`, or an `is_instance` type
+- **Call mistakes raise; bad values fail.** A positional `name`, a `note` that is not a `str`,
+  a composite's missing `name`, `approx` without a tolerance, a negative or NaN tolerance,
+  `between` with `low > high`, or an `is_instance` type
   that is not a class, tuple or union (`list[int]`, `None`) raises at the call and stops the
   test; inside an `all_satisfy` factory or a lazy child it fails the composite instead, with
   the error in its detail. A check whose comparison raises (`None > 3`, an ambiguous numpy
@@ -70,17 +83,17 @@ The same methods exist on `verify`, on `verify.require` and on the `checks` buil
 
 | Call | Passes when | Watch out |
 |---|---|---|
-| `equal(actual, expected, *, name, units=None)` | `actual == expected` | Python equality: `1 == 1.0 == True`. Not for floats |
-| `not_equal(actual, expected, *, name, units=None)` | `actual != expected` | Passes for NaN |
-| `approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | equal, or `abs(a - e) <= abs_tol`, or `<= rel_tol * abs(e)` | Needs a tolerance. Numbers only, no lists. Exact only when the values and the tolerances are all `int`/`Decimal`/`Fraction` (not `Decimal` with `Fraction`): a `float` anywhere, `abs_tol=0.05` included, compares in floats |
-| `greater(actual, threshold, *, name, units=None)` | `actual > threshold` | Also `greater_equal` (`>=`), `less` (`<`), `less_equal` (`<=`) |
-| `between(actual, low, high, *, inclusive=True, name, units=None)` | `low <= actual <= high` | `inclusive=False` excludes both bounds |
-| `is_true(actual, *, name)`, `is_false(...)` | `bool(actual)` is `True` / `False` | Truthiness: `is_true("0")`, `is_true("False")` and an uncalled method pass |
-| `is_none(actual, *, name)`, `is_not_none(...)` | `actual is None` / `is not None` | `0`, `""` and `False` are not `None` |
-| `contains(haystack, needle, *, name)`, `not_contains(...)` | `needle in haystack` | Haystack first. Text: substring; dict: keys only; list: whole items, so `not_contains(lines, "error")` misses `"error: x"` (join the lines). A generator is consumed |
-| `matches(actual, pattern, *, name)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or start the pattern with `(?i)`. `actual` must be text |
-| `is_instance(actual, expected_type, *, name)` | `isinstance(actual, expected_type)` | Class, tuple or union (`Optional[int]`, or `int \| None` from Python 3.10). `list[int]`, `Literal[...]` and `None` raise `TypeError`: use `list`, `type(None)` |
-| `length(actual, expected, *, name)` | `len(actual) == expected` | Pass a sized value (`list(gen)`) and an `int` |
+| `equal(actual, expected, *, name=None, units=None)` | `actual == expected` | Python equality: `1 == 1.0 == True`. Not for floats |
+| `not_equal(actual, expected, *, name=None, units=None)` | `actual != expected` | Passes for NaN |
+| `approx(actual, expected, *, abs_tol=None, rel_tol=None, name=None, units=None)` | equal, or `abs(a - e) <= abs_tol`, or `<= rel_tol * abs(e)` | Needs a tolerance. Numbers only, no lists. Exact only when the values and the tolerances are all `int`/`Decimal`/`Fraction` (not `Decimal` with `Fraction`): a `float` anywhere, `abs_tol=0.05` included, compares in floats |
+| `greater(actual, threshold, *, name=None, units=None)` | `actual > threshold` | Also `greater_equal` (`>=`), `less` (`<`), `less_equal` (`<=`) |
+| `between(actual, low, high, *, inclusive=True, name=None, units=None)` | `low <= actual <= high` | `inclusive=False` excludes both bounds |
+| `is_true(actual, *, name=None)`, `is_false(...)` | `bool(actual)` is `True` / `False` | Truthiness: `is_true("0")`, `is_true("False")` and an uncalled method pass |
+| `is_none(actual, *, name=None)`, `is_not_none(...)` | `actual is None` / `is not None` | `0`, `""` and `False` are not `None` |
+| `contains(haystack, needle, *, name=None)`, `not_contains(...)` | `needle in haystack` | Haystack first. Text: substring; dict: keys only; list: whole items, so `not_contains(lines, "error")` misses `"error: x"` (join the lines). A generator is consumed |
+| `matches(actual, pattern, *, name=None)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or start the pattern with `(?i)`. `actual` must be text |
+| `is_instance(actual, expected_type, *, name=None)` | `isinstance(actual, expected_type)` | Class, tuple or union (`Optional[int]`, or `int \| None` from Python 3.10). `list[int]`, `Literal[...]` and `None` raise `TypeError`: use `list`, `type(None)` |
+| `length(actual, expected, *, name=None)` | `len(actual) == expected` | Pass a sized value (`list(gen)`) and an `int` |
 | `fail(msg, *, name=None)` | never | `name` defaults to `msg` |
 
 ## Composite checks

@@ -508,17 +508,23 @@ class TestSampleErrors:
         assert record["tries"] == 1
         assert "missing 1 required positional argument: 'value'" in record["error"]
 
-    def test_a_check_without_a_name_ends_the_check_at_once(self, clock: FakeClock):
+    def test_a_check_with_an_invalid_note_ends_the_check_at_once(self, clock: FakeClock):
         _, verify = _recording()
         record = verify.eventually(
-            lambda: verify.equal(1, 1), timeout=5, name="Cool"  # type: ignore[call-arg]
+            lambda: verify.equal(1, 1, note=3), timeout=5, name="Cool"  # type: ignore[arg-type]
         )
         assert record["tries"] == 1
         assert re.match(
-            r"sample raised TypeError: (Verify\.)?equal\(\) missing 1 required keyword-only "
-            r"argument: 'name'",
+            r"sample raised TypeError: equal\(\) note must be a str or None, got int",
             record["error"],
         )
+
+    def test_a_check_without_a_name_is_named_by_its_value(self, clock: FakeClock):
+        _, verify = _recording()
+        reading = 1
+        record = verify.eventually(lambda: verify.equal(reading, 1), timeout=5, name="Cool")
+        assert record["passed"] is True
+        assert record["child_checks"][0]["name"] == "reading"
 
 
 # ---------------------------------------------------------------------------

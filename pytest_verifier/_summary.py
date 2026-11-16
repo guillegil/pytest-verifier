@@ -2,16 +2,17 @@
 
 It is built from the checks on the reports (``report.verify_checks``), so an xdist controller
 sees the checks of every worker. Each label (the name, after the titles of its sections) gets
-one line, the checks nested in composites included. With ``stats``, a line also shows the range
-of the numeric values and the smallest margin (see :func:`~pytest_verifier._checks.margin`).
+one line, the checks nested in composites included, with their note when they all have the
+same one. With ``stats``, a line also shows the range of the numeric values and the smallest
+margin (see :func:`~pytest_verifier._checks.margin`).
 """
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
 
 from ._checks import child_checks, margin, units
-from ._exceptions import label
+from ._exceptions import label, note_suffix
 from ._render import escape, render_value, units_text
 
 #: The values of ``--verify-summary``.
@@ -21,7 +22,7 @@ MODES = ("off", "failed", "all", "stats")
 class _Group:
     """The checks of one label."""
 
-    __slots__ = ("count", "failed", "first_failure", "low", "high", "margin", "units")
+    __slots__ = ("count", "failed", "first_failure", "low", "high", "margin", "units", "notes")
 
     def __init__(self) -> None:
         self.count = 0
@@ -33,6 +34,8 @@ class _Group:
         self.high: Optional[float] = None
         self.margin: Optional[float] = None
         self.units: Optional[str] = None
+        #: The `` (note)`` of each check, shown when they all have the same.
+        self.notes: Set[str] = set()
 
     def measure(self, check: Mapping[str, Any]) -> None:
         actual = check.get("actual")
@@ -79,6 +82,7 @@ class SessionSummary:
         if isinstance(passed, bool):  # children a composite did not select have no verdict
             group = self._groups.setdefault(label(check), _Group())
             group.count += 1
+            group.notes.add(note_suffix(check))
             if not passed:
                 group.failed += 1
                 if group.first_failure is None:
@@ -102,6 +106,8 @@ class SessionSummary:
             shown = failed + [(name, g) for name, g in self._groups.items() if not g.failed]
         lines = []
         for name, group in shown:
+            if len(group.notes) == 1:
+                name += next(iter(group.notes))
             if group.failed:
                 line = (
                     f"  ✗ {name}: {group.failed} of {group.count} failed "

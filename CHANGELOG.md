@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `note=` on every check method that takes `name=` (`verify`, `verify.require` and `checks`):
+  free text that explains the check. It is stripped (a blank note is dropped), must be a `str`
+  (`TypeError` otherwise), and is stored as the descriptor's `note`. Failure summaries, the
+  "Soft assertion failures" section, the `-r` line, junit properties (`verify_junit_properties`)
+  and `--verify-summary` (when every check of a name has the same note) show it after the
+  check's detail: `dat.tx8e — expected 1, got 0 (at least 8 empty positions)`. Records,
+  `report.verify_checks` and `--verify-json` lines carry it.
+- A record whose name was derived from the source (see Changed) has `auto_name: True`, so
+  readers such as stepdoc and pytest-reporter can write the check as code.
 - README section "Editor completion and type checking": annotate the fixture,
   `def test_x(verify: Verify)`, to get completion on `verify.` in every editor. PyCharm does not
   look for fixtures in installed plugins, and Pylance documents only the test file, its imports
@@ -17,6 +26,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `name=` is optional on the checks of one value (`equal`, `not_equal`, `approx`, `greater`,
+  `greater_equal`, `less`, `less_equal`, `between`, `is_true`, `is_false`, `is_none`,
+  `is_not_none`, `contains`, `not_contains`, `matches`, `is_instance`, `length`). Without it the
+  check is named by the source text of its value, the first argument or `actual=`/`haystack=`:
+  `verify.equal(dat.txfe, 1)` is named `dat.txfe`. The call is found once per call site (by the
+  instruction's position on Python 3.11+, by its line on 3.9 and 3.10) and never raises: without
+  source, or for a method called through other code (`map(verify.is_true, flags)`, a bound
+  method or `functools.partial` as an `all_satisfy` factory), the name is `value`. These calls raised `TypeError` before; composite and sampling
+  checks, `raises` and `fail` keep their name rules.
 - The `pytest_verifier` entry point names a new module, `pytest_verifier._entry`, instead of the
   package, and that module loads `pytest_verifier.plugin` as the package did.
   `config.pluginmanager.get_plugin("pytest_verifier")` now returns `pytest_verifier._entry`, not

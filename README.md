@@ -45,6 +45,41 @@ If any check fails, the test continues running. When the test body ends, all fai
 reported together in a single `ChecksFailedError`. To stop a test at a check whose failure makes
 the rest meaningless, see [Stopping a test at a failed check](https://github.com/guillegil/pytest-verifier#stopping-a-test-at-a-failed-check).
 
+### Names and notes
+
+A check of one value needs no `name`: it is named by the source text of the value, as written in
+the call. `note=` explains a check; summaries show it after the check's detail:
+
+```python
+def test_cmd_fifo_at_startup(verify, tb):
+    dat = tb.dev.block.esmi3_32dat
+    verify.equal(dat.txfe, 1)                                     # named "dat.txfe"
+    verify.equal(dat.tx8e, 1, note="at least 8 empty positions")  # named "dat.tx8e"
+    verify.equal(tb.dev.block.esmi3_ctl.tx, 0, name="FIFO not full")
+```
+
+```text
+1 of 3 checks failed: dat.tx8e — expected 1, got 0 (at least 8 empty positions)
+
+  ✗ [1] dat.tx8e (test_fifo.py:4) — expected 1, got 0 (at least 8 empty positions)
+
+  ✓ [0] dat.txfe — 1 == 1
+  ✓ [2] FIFO not full — 0 == 0
+```
+
+- The default name is the call's first argument, or its `actual=` (`haystack=` for `contains` and
+  `not_contains`), on one line and cut at 120 characters. It is found once per call site (a check
+  in a loop costs about a microsecond more than one with `name=`). Without source, as in `exec`'d
+  code, the name is `value`; so it is on Python 3.9 and 3.10 for two checks of the same method on
+  one line with different values. A check method called through other code, such as
+  `map(verify.is_true, flags)` or a bound method or `functools.partial` given to `all_satisfy`,
+  has no call of its own in the source and is named `value` too. Give `name=` when a stable label matters, for example for
+  `--verify-summary` or `verify_junit_properties`.
+- Composite and sampling checks (`all_satisfy`, `conditional`, `guard`, `eventually`, `stable`),
+  `raises` and `fail` keep their name rules, and take `note=` too.
+- A note is stripped; a blank one is dropped. Records keep it as `note`, and a derived name sets
+  `auto_name: True`, so other plugins (pytest-reporter, stepdoc) can show the check as code.
+
 ### Editor completion and type checking
 
 Annotate the fixture to get completion on `verify.` in any editor, and to have mypy or pyright
@@ -285,19 +320,23 @@ with text on their own terms, such as a `semver.Version` against `"1.9.0"`, work
 The same happens when a comparison returns something whose truth value is ambiguous, such as a
 numpy array. Reduce it first: `verify.is_true((a == b).all(), name="Arrays equal")`.
 
-Mistakes in how a check is called raise right away, like any Python error: a missing or
-non-string `name`, a negative tolerance, `between` with `low` above `high`, or a malformed
-`guard` branch.
+Mistakes in how a check is called raise right away, like any Python error: a non-string `name`
+or `note`, a missing `name` on a composite, sampling or `raises` check, a negative tolerance,
+`between` with `low` above `high`, or a malformed `guard` branch.
 
 ## Check Functions
+
+Every check that takes `name` also takes `note=None` (see
+[Names and notes](https://github.com/guillegil/pytest-verifier#names-and-notes)). On the checks of
+one value, `name` is optional: it defaults to the source text of that value.
 
 ### Equality & Approximation
 
 | Function | Description |
 |----------|-------------|
-| `verify.equal(actual, expected, *, name, units=None)` | `actual == expected` |
-| `verify.not_equal(actual, expected, *, name, units=None)` | `actual != expected` |
-| `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name, units=None)` | Approximate equality (at least one tolerance required) |
+| `verify.equal(actual, expected, *, name=None, units=None)` | `actual == expected` |
+| `verify.not_equal(actual, expected, *, name=None, units=None)` | `actual != expected` |
+| `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name=None, units=None)` | Approximate equality (at least one tolerance required) |
 
 With `units="%"`, the tolerance says whether it is absolute or relative: `50% ± 1% (abs)`.
 
@@ -305,11 +344,11 @@ With `units="%"`, the tolerance says whether it is absolute or relative: `50% ±
 
 | Function | Description |
 |----------|-------------|
-| `verify.greater(actual, threshold, *, name, units=None)` | `actual > threshold` |
-| `verify.greater_equal(actual, threshold, *, name, units=None)` | `actual >= threshold` |
-| `verify.less(actual, threshold, *, name, units=None)` | `actual < threshold` |
-| `verify.less_equal(actual, threshold, *, name, units=None)` | `actual <= threshold` |
-| `verify.between(actual, low, high, *, inclusive=True, name, units=None)` | Value within range |
+| `verify.greater(actual, threshold, *, name=None, units=None)` | `actual > threshold` |
+| `verify.greater_equal(actual, threshold, *, name=None, units=None)` | `actual >= threshold` |
+| `verify.less(actual, threshold, *, name=None, units=None)` | `actual < threshold` |
+| `verify.less_equal(actual, threshold, *, name=None, units=None)` | `actual <= threshold` |
+| `verify.between(actual, low, high, *, inclusive=True, name=None, units=None)` | Value within range |
 
 These compare numbers, or other values that order themselves such as version tuples and dates.
 Text compared with text fails (see
@@ -319,25 +358,25 @@ Text compared with text fails (see
 
 | Function | Description |
 |----------|-------------|
-| `verify.is_true(actual, *, name)` | `bool(actual) is True` |
-| `verify.is_false(actual, *, name)` | `bool(actual) is False` |
-| `verify.is_none(actual, *, name)` | `actual is None` |
-| `verify.is_not_none(actual, *, name)` | `actual is not None` |
+| `verify.is_true(actual, *, name=None)` | `bool(actual) is True` |
+| `verify.is_false(actual, *, name=None)` | `bool(actual) is False` |
+| `verify.is_none(actual, *, name=None)` | `actual is None` |
+| `verify.is_not_none(actual, *, name=None)` | `actual is not None` |
 
 ### String & Container
 
 | Function | Description |
 |----------|-------------|
-| `verify.contains(haystack, needle, *, name)` | `needle in haystack` |
-| `verify.not_contains(haystack, needle, *, name)` | `needle not in haystack` |
-| `verify.matches(actual, pattern, *, name)` | Regex search matches; `pattern` can be a string or compiled with `re.compile` |
+| `verify.contains(haystack, needle, *, name=None)` | `needle in haystack` |
+| `verify.not_contains(haystack, needle, *, name=None)` | `needle not in haystack` |
+| `verify.matches(actual, pattern, *, name=None)` | Regex search matches; `pattern` can be a string or compiled with `re.compile` |
 
 ### Type, Collection & Conditional
 
 | Function | Description |
 |----------|-------------|
-| `verify.is_instance(actual, expected_type, *, name)` | `isinstance(actual, expected_type)` |
-| `verify.length(actual, expected, *, name)` | `len(actual) == expected` |
+| `verify.is_instance(actual, expected_type, *, name=None)` | `isinstance(actual, expected_type)` |
+| `verify.length(actual, expected, *, name=None)` | `len(actual) == expected` |
 | `verify.all_satisfy(items, descriptor_factory, *, name)` | All items pass factory check |
 | `verify.conditional(switch_value, *, cases, default=None, name)` | Check the case selected by a switch value |
 | `verify.guard(branches, *, default=None, name)` | Check the first branch whose condition is true |

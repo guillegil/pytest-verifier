@@ -46,7 +46,17 @@ class CheckDescriptor(_CheckIdentity, total=False):
     ``"teardown"``), where they were made (``location``, and ``called_from`` when a helper made
     them), the titles of the ``verify.section`` blocks they were made in (``section``), and
     JSON-safe snapshots of the checked values.
+
+    ``note`` holds the text given as ``note=`` (stripped; absent when none or blank), and
+    ``auto_name`` is ``True`` when no ``name=`` was given and ``name`` is the source text of
+    the checked value (absent otherwise).
     """
+
+    # --- set when built, if given ---
+    #: Free text that explains the check, shown after its detail in summaries.
+    note: str
+    #: ``True`` when ``name`` was derived from the source text of the checked value.
+    auto_name: bool
 
     # --- set when recorded (fixture path) ---
     passed: bool
@@ -143,6 +153,26 @@ def require_name(name: object, check: str) -> str:
     if not text.strip():
         raise ValueError(f"{check}() name must not be empty: the report identifies checks by name")
     return text
+
+
+def require_note(note: object, check: str) -> Optional[str]:
+    """*note* as stored: stripped plain text, or ``None`` when not given or blank."""
+    if note is None:
+        return None
+    if not isinstance(note, str):
+        raise TypeError(f"{check}() note must be a str or None, got {type(note).__name__}")
+    text = plain_text(note).strip()
+    return text or None
+
+
+def annotate(descriptor: CheckDescriptor, note: Optional[str], auto_name: bool) -> CheckDescriptor:
+    """*descriptor* with its ``note`` (from :func:`require_note`) and ``auto_name`` flag, each
+    only when there is one."""
+    if note is not None:
+        descriptor["note"] = note
+    if auto_name:
+        descriptor["auto_name"] = True
+    return descriptor
 
 
 def plain_text(text: str) -> str:

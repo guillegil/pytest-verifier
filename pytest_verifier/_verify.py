@@ -60,12 +60,20 @@ from ._checks import (
 )
 from ._checks._raises import exception_classes, expected_instance, handles
 from ._checks._sampling import EVENTUALLY, STABLE, Sampler
-from ._descriptors import CheckDescriptor, Child, ClassInfo, loose_children
+from ._descriptors import (
+    CheckDescriptor,
+    Child,
+    ClassInfo,
+    annotate,
+    loose_children,
+    require_note,
+)
 from ._evaluator import evaluate as _evaluate
 from ._limits import limit_checks
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
 from ._settle import settle
+from ._source import subject_text
 
 #: The type of the items an ``all_satisfy`` factory receives.
 _Item = TypeVar("_Item")
@@ -94,6 +102,18 @@ _REQUIRE_NEEDS_FIXTURE = (
     "checks.require cannot stop a test: pytest_verifier.checks only builds checks. Request the "
     "'verify' fixture in the test and use verify.require on it."
 )
+
+
+def _labels(
+    name: Optional[str], note: Optional[str], method: str, parameter: str = "actual"
+) -> Tuple[Any, Optional[str], bool]:
+    """``(name, note, auto_name)`` of a check on a value: the *name* given, else the source
+    text of the value argument *parameter* at the user's call of ``verify.<method>()``; the
+    *note* checked and stripped."""
+    note = require_note(note, method)
+    if name is None:
+        return subject_text(method, parameter), note, True
+    return name, note, False
 
 
 class Sink:
@@ -254,38 +274,62 @@ class Verify:
     # ------------------------------------------------------------------
 
     def equal(
-        self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        expected: Any,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* equals *expected*.
 
         Args:
             actual: The value under test.
             expected: The expected value.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix (e.g. ``"V"``, ``"A"``).
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(EQUAL.build(actual, expected, name=name, units=units))
+        name, note, auto = _labels(name, note, "equal")
+        return self._sink.check(
+            annotate(EQUAL.build(actual, expected, name=name, units=units), note, auto)
+        )
 
     def not_equal(
-        self, actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        expected: Any,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* does not equal *expected*.
 
         Args:
             actual: The value under test.
             expected: The value that *actual* must differ from.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(NOT_EQUAL.build(actual, expected, name=name, units=units))
+        name, note, auto = _labels(name, note, "not_equal")
+        return self._sink.check(
+            annotate(NOT_EQUAL.build(actual, expected, name=name, units=units), note, auto)
+        )
 
     def approx(
         self,
@@ -294,8 +338,9 @@ class Verify:
         *,
         abs_tol: Optional[float] = None,
         rel_tol: Optional[float] = None,
-        name: str,
+        name: Optional[str] = None,
         units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is approximately equal to *expected*.
 
@@ -306,8 +351,11 @@ class Verify:
             expected: The expected value.
             abs_tol: Absolute tolerance.
             rel_tol: Relative tolerance (fraction, e.g. 0.01 = 1%).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -316,8 +364,15 @@ class Verify:
             ValueError: If neither *abs_tol* nor *rel_tol* is provided.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        name, note, auto = _labels(name, note, "approx")
         return self._sink.check(
-            APPROX.build(actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units)
+            annotate(
+                APPROX.build(
+                    actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units
+                ),
+                note,
+                auto,
+            )
         )
 
     # ------------------------------------------------------------------
@@ -325,72 +380,120 @@ class Verify:
     # ------------------------------------------------------------------
 
     def greater(
-        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        threshold: float,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* > *threshold*.
 
         Args:
             actual: The value under test.
             threshold: The lower bound (exclusive).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(GREATER.build(actual, threshold, name=name, units=units))
+        name, note, auto = _labels(name, note, "greater")
+        return self._sink.check(
+            annotate(GREATER.build(actual, threshold, name=name, units=units), note, auto)
+        )
 
     def greater_equal(
-        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        threshold: float,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* >= *threshold*.
 
         Args:
             actual: The value under test.
             threshold: The lower bound (inclusive).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(GREATER_EQUAL.build(actual, threshold, name=name, units=units))
+        name, note, auto = _labels(name, note, "greater_equal")
+        return self._sink.check(
+            annotate(GREATER_EQUAL.build(actual, threshold, name=name, units=units), note, auto)
+        )
 
     def less(
-        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        threshold: float,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* < *threshold*.
 
         Args:
             actual: The value under test.
             threshold: The upper bound (exclusive).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(LESS.build(actual, threshold, name=name, units=units))
+        name, note, auto = _labels(name, note, "less")
+        return self._sink.check(
+            annotate(LESS.build(actual, threshold, name=name, units=units), note, auto)
+        )
 
     def less_equal(
-        self, actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        self,
+        actual: Any,
+        threshold: float,
+        *,
+        name: Optional[str] = None,
+        units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* <= *threshold*.
 
         Args:
             actual: The value under test.
             threshold: The upper bound (inclusive).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(LESS_EQUAL.build(actual, threshold, name=name, units=units))
+        name, note, auto = _labels(name, note, "less_equal")
+        return self._sink.check(
+            annotate(LESS_EQUAL.build(actual, threshold, name=name, units=units), note, auto)
+        )
 
     def between(
         self,
@@ -399,8 +502,9 @@ class Verify:
         high: float,
         *,
         inclusive: bool = True,
-        name: str,
+        name: Optional[str] = None,
         units: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is between *low* and *high*.
 
@@ -409,111 +513,184 @@ class Verify:
             low: Lower bound.
             high: Upper bound.
             inclusive: If ``True`` (default), bounds are inclusive.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
             units: Optional unit suffix.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        name, note, auto = _labels(name, note, "between")
         return self._sink.check(
-            BETWEEN.build(actual, low, high, inclusive=inclusive, name=name, units=units)
+            annotate(
+                BETWEEN.build(actual, low, high, inclusive=inclusive, name=name, units=units),
+                note,
+                auto,
+            )
         )
 
     # ------------------------------------------------------------------
     # Boolean & identity
     # ------------------------------------------------------------------
 
-    def is_true(self, actual: Any, *, name: str) -> CheckDescriptor:
+    def is_true(
+        self,
+        actual: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that ``bool(actual)`` is ``True``.
 
         Args:
             actual: The value under test.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(IS_TRUE.build(actual, name=name))
+        name, note, auto = _labels(name, note, "is_true")
+        return self._sink.check(annotate(IS_TRUE.build(actual, name=name), note, auto))
 
-    def is_false(self, actual: Any, *, name: str) -> CheckDescriptor:
+    def is_false(
+        self,
+        actual: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that ``bool(actual)`` is ``False``.
 
         Args:
             actual: The value under test.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(IS_FALSE.build(actual, name=name))
+        name, note, auto = _labels(name, note, "is_false")
+        return self._sink.check(annotate(IS_FALSE.build(actual, name=name), note, auto))
 
-    def is_none(self, actual: Any, *, name: str) -> CheckDescriptor:
+    def is_none(
+        self,
+        actual: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that *actual* is ``None``.
 
         Args:
             actual: The value under test.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(IS_NONE.build(actual, name=name))
+        name, note, auto = _labels(name, note, "is_none")
+        return self._sink.check(annotate(IS_NONE.build(actual, name=name), note, auto))
 
-    def is_not_none(self, actual: Any, *, name: str) -> CheckDescriptor:
+    def is_not_none(
+        self,
+        actual: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that *actual* is not ``None``.
 
         Args:
             actual: The value under test.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(IS_NOT_NONE.build(actual, name=name))
+        name, note, auto = _labels(name, note, "is_not_none")
+        return self._sink.check(annotate(IS_NOT_NONE.build(actual, name=name), note, auto))
 
     # ------------------------------------------------------------------
     # String & container
     # ------------------------------------------------------------------
 
     def contains(
-        self, haystack: Union[Container[Any], Iterable[Any]], needle: Any, *, name: str
+        self,
+        haystack: Union[Container[Any], Iterable[Any]],
+        needle: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *needle* is in *haystack*.
 
         Args:
             haystack: The container to search.
             needle: The item to search for.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *haystack* at the call, such as ``reply.lines``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(CONTAINS.build(haystack, needle, name=name))
+        name, note, auto = _labels(name, note, "contains", "haystack")
+        return self._sink.check(annotate(CONTAINS.build(haystack, needle, name=name), note, auto))
 
     def not_contains(
-        self, haystack: Union[Container[Any], Iterable[Any]], needle: Any, *, name: str
+        self,
+        haystack: Union[Container[Any], Iterable[Any]],
+        needle: Any,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *needle* is **not** in *haystack*.
 
         Args:
             haystack: The container to search.
             needle: The item to search for.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *haystack* at the call, such as ``reply.lines``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(NOT_CONTAINS.build(haystack, needle, name=name))
+        name, note, auto = _labels(name, note, "not_contains", "haystack")
+        return self._sink.check(
+            annotate(NOT_CONTAINS.build(haystack, needle, name=name), note, auto)
+        )
 
     def matches(
-        self, actual: Any, pattern: Union[str, "re.Pattern[str]"], *, name: str
+        self,
+        actual: Any,
+        pattern: Union[str, "re.Pattern[str]"],
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that *actual* matches the regular-expression *pattern*.
 
@@ -521,19 +698,30 @@ class Verify:
             actual: The string to test.
             pattern: A regex pattern (searched with ``re.search``), as a string or compiled
                 with ``re.compile``. A compiled pattern is stored as its source and ``flags``.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(MATCHES.build(actual, pattern, name=name))
+        name, note, auto = _labels(name, note, "matches")
+        return self._sink.check(annotate(MATCHES.build(actual, pattern, name=name), note, auto))
 
     # ------------------------------------------------------------------
     # Type / collection / conditional
     # ------------------------------------------------------------------
 
-    def is_instance(self, actual: Any, expected_type: ClassInfo, *, name: str) -> CheckDescriptor:
+    def is_instance(
+        self,
+        actual: Any,
+        expected_type: ClassInfo,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that *actual* is an instance of *expected_type*.
 
         Same as ``isinstance(actual, expected_type)``, computed when the check is built. The
@@ -544,7 +732,10 @@ class Verify:
             actual: The value under test.
             expected_type: A class, a tuple of classes, or a union such as ``Optional[int]``
                 (``int | None`` from Python 3.10).
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -553,21 +744,35 @@ class Verify:
             TypeError: If *expected_type* is not something ``isinstance`` accepts.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(IS_INSTANCE.build(actual, expected_type, name=name))
+        name, note, auto = _labels(name, note, "is_instance")
+        return self._sink.check(
+            annotate(IS_INSTANCE.build(actual, expected_type, name=name), note, auto)
+        )
 
-    def length(self, actual: Sized, expected: int, *, name: str) -> CheckDescriptor:
+    def length(
+        self,
+        actual: Sized,
+        expected: int,
+        *,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+    ) -> CheckDescriptor:
         """Check that ``len(actual)`` equals *expected*.
 
         Args:
             actual: The sized object under test.
             expected: The expected length.
-            name: Human-readable label for the check.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(LENGTH.build(actual, expected, name=name))
+        name, note, auto = _labels(name, note, "length")
+        return self._sink.check(annotate(LENGTH.build(actual, expected, name=name), note, auto))
 
     def all_satisfy(
         self,
@@ -575,6 +780,7 @@ class Verify:
         descriptor_factory: Callable[[_Item], CheckDescriptor],
         *,
         name: str,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that every item in *items* satisfies *descriptor_factory*.
 
@@ -589,13 +795,17 @@ class Verify:
             descriptor_factory: A callable that receives one item and returns
                 a :class:`CheckDescriptor`.
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        note = require_note(note, "all_satisfy")
         return self._sink.composite(
-            lambda: ALL_SATISFY.build(items, descriptor_factory, name=name), ()
+            lambda: annotate(ALL_SATISFY.build(items, descriptor_factory, name=name), note, False),
+            (),
         )
 
     def conditional(
@@ -605,6 +815,7 @@ class Verify:
         cases: Mapping[Any, Child],
         default: Optional[Child] = None,
         name: str,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Conditionally evaluate a check based on *switch_value*.
 
@@ -626,13 +837,20 @@ class Verify:
                 ``ValueError``.
             default: Fallback check (or callable) when no case matches.
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        note = require_note(note, "conditional")
         return self._sink.composite(
-            lambda: CONDITIONAL.build(switch_value, cases=cases, default=default, name=name),
+            lambda: annotate(
+                CONDITIONAL.build(switch_value, cases=cases, default=default, name=name),
+                note,
+                False,
+            ),
             (cases, default),
         )
 
@@ -642,6 +860,7 @@ class Verify:
         *,
         default: Optional[Child] = None,
         name: str,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Evaluate an ordered if/elif/else chain of guarded checks.
 
@@ -659,13 +878,16 @@ class Verify:
             branches: Ordered ``(condition, label, check)`` tuples.
             default: Fallback check (or callable) when no condition is truthy.
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        note = require_note(note, "guard")
         return self._sink.composite(
-            lambda: GUARD.build(branches, default=default, name=name),
+            lambda: annotate(GUARD.build(branches, default=default, name=name), note, False),
             (branches, default),
         )
 
@@ -676,6 +898,7 @@ class Verify:
         timeout: Union[float, datetime.timedelta],
         interval: Union[float, datetime.timedelta] = 0.1,
         name: str,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that a check passes within *timeout* seconds, trying it again until it does.
 
@@ -716,6 +939,8 @@ class Verify:
             timeout: How long to keep trying, in seconds or a ``timedelta`` (0: try once).
             interval: Seconds from the start of one try to the next (more than 0).
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -727,9 +952,14 @@ class Verify:
                 not finite.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        note = require_note(note, "eventually")
         return self._sink.sampling(
-            lambda sampler: EVENTUALLY.build(
-                sample, timeout=timeout, interval=interval, name=name, sampler=sampler
+            lambda sampler: annotate(
+                EVENTUALLY.build(
+                    sample, timeout=timeout, interval=interval, name=name, sampler=sampler
+                ),
+                note,
+                False,
             ),
             (sample,),
         )
@@ -741,6 +971,7 @@ class Verify:
         duration: Union[float, datetime.timedelta],
         interval: Union[float, datetime.timedelta] = 0.1,
         name: str,
+        note: Optional[str] = None,
     ) -> CheckDescriptor:
         """Check that a check keeps passing for *duration* seconds, trying it again and again.
 
@@ -770,6 +1001,8 @@ class Verify:
                 once).
             interval: Seconds from the start of one try to the next (more than 0).
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -781,9 +1014,14 @@ class Verify:
                 not finite.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        note = require_note(note, "stable")
         return self._sink.sampling(
-            lambda sampler: STABLE.build(
-                sample, duration=duration, interval=interval, name=name, sampler=sampler
+            lambda sampler: annotate(
+                STABLE.build(
+                    sample, duration=duration, interval=interval, name=name, sampler=sampler
+                ),
+                note,
+                False,
             ),
             (sample,),
         )
@@ -861,6 +1099,7 @@ class Verify:
         *,
         match: Optional[Union[str, "re.Pattern[str]"]] = None,
         name: str,
+        note: Optional[str] = None,
     ) -> Raises[_E]:
         """Check that a ``with`` block raises *expected_exception*, without stopping the test.
 
@@ -892,6 +1131,8 @@ class Verify:
             match: A regular expression (a string or a compiled pattern) that the message
                 (``str()`` of the exception, and its notes) must contain; not empty.
             name: Human-readable label for the check.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`Raises` context manager; ``raised.check`` is the check once the block
@@ -904,20 +1145,25 @@ class Verify:
             RuntimeError: When called on ``pytest_verifier.checks``: only the fixture can
                 record a block's check.
         """
-        return Raises(self._sink, expected_exception, match=match, name=name)
+        return Raises(self._sink, expected_exception, match=match, name=name, note=note)
 
-    def fail(self, msg: str, *, name: Optional[str] = None) -> CheckDescriptor:
+    def fail(
+        self, msg: str, *, name: Optional[str] = None, note: Optional[str] = None
+    ) -> CheckDescriptor:
         """Unconditionally failing check.
 
         Args:
             msg: Failure message.
             name: Optional label (defaults to *msg*).
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        return self._sink.check(FAIL.build(msg, name=name))
+        note = require_note(note, "fail")
+        return self._sink.check(annotate(FAIL.build(msg, name=name), note, False))
 
     def record(self, check: CheckDescriptor) -> CheckDescriptor:
         """Record a check that was built elsewhere, for example by a helper that uses
@@ -1051,8 +1297,10 @@ class Raises(Generic[_E]):
         *,
         match: Optional[Union[str, "re.Pattern[str]"]] = None,
         name: str,
+        note: Optional[str] = None,
     ) -> None:
         RAISES.build(None, expected_exception, match=match, name=name)  # usage errors raise now
+        self._note = require_note(note, "raises")
         self._expected = exception_classes(expected_exception)
         self._arguments: Tuple[Any, Any, str] = (expected_exception, match, name)
         self._sink = sink
@@ -1107,8 +1355,10 @@ class Raises(Generic[_E]):
             self.value = exc  # type: ignore[assignment]
         expected_exception, match, name = self._arguments
         where = None if exc is None else self._sink.origin(exc.__traceback__)
-        descriptor = RAISES.build(
-            exc, expected_exception, match=match, name=name, raised_at=where
+        descriptor = annotate(
+            RAISES.build(exc, expected_exception, match=match, name=name, raised_at=where),
+            self._note,
+            False,
         )
         # Only what the code under test did is soft: nothing raised, or the expected type with
         # another message. Any other exception goes on, with its traceback, after the check;
@@ -1133,7 +1383,9 @@ class Raises(Generic[_E]):
             return None
         self._entered = True  # reported once
         expected_exception, match, name = self._arguments
-        descriptor = RAISES.build(None, expected_exception, match=match, name=name)
+        descriptor = annotate(
+            RAISES.build(None, expected_exception, match=match, name=name), self._note, False
+        )
         descriptor["error"] = (
             "verify.raises() was never used in a with statement: write "
             "`with verify.raises(...):` around the code that must raise"

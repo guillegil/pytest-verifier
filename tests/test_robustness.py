@@ -40,7 +40,7 @@ class TestUsageErrors:
     @pytest.mark.parametrize(
         "call",
         [
-            lambda: mverify.equal(1, 1, name=None),
+            lambda: mverify.equal(1, 1, name=7),
             lambda: mverify.greater(1, 0, name=3),
             lambda: mverify.is_true(True, name=b"bytes"),
             lambda: mverify.all_satisfy([], lambda x: x, name=None),
