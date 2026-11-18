@@ -49,6 +49,19 @@ def module_api() -> None:
     checks.length([1, 2, 3], 3, name="Items")
     checks.fail("not implemented")
 
+    # Operand names: how the values are spelled, when the code does not say (after a getattr).
+    channel, wdata = 3, 243
+    stored = checks.equal(
+        240, wdata, actual_name=f"tb.dev.map.block.reg{channel}.F", expected_name="wdata"
+    )
+    spelled: str | None = stored.get("actual_name")
+    symbolic: str | None = stored.get("actual_name_symbolic")
+    assert spelled == stored["name"] == "tb.dev.map.block.reg3.F"
+    assert symbolic == "tb.dev.map.block.reg<channel>.F"
+    assert stored.get("expected_name") == "wdata" and "expected_name_symbolic" not in stored
+    checks.less(1, 2, name="Level", actual_name="fifo.level", expected_name=f"depth[{channel}]")
+    checks.contains(["OK"], "OK", actual_name="reply.lines")
+
     # is_instance takes what isinstance() takes: a class or a tuple of classes.
     checks.is_instance({}, dict, name="Payload")
     checks.is_instance(1.5, (int, float), name="Number")
@@ -260,6 +273,10 @@ def _by_name(text: str) -> CheckDescriptor:
 def misuse() -> None:
     """Never called: each line must stay a type error."""
     checks.equal(1, 1, note=3)  # type: ignore[arg-type]
+    checks.equal(1, 1, actual_name=3)  # type: ignore[arg-type]
+    checks.length("ab", 2, expected_name=b"depth")  # type: ignore[arg-type]
+    checks.between(1, 0, 2, name="B", expected_name="limits")  # type: ignore[call-arg]
+    checks.fail("boom", actual_name="reg")  # type: ignore[call-arg]
     checks.all_satisfy([1], lambda n: checks.equal(n, 1))  # type: ignore[call-arg]
     checks.approx(1.0, 1.0, abs_tol="0.1", name="Tol")  # type: ignore[arg-type]
     checks.greater(1, 0, "positional name")  # type: ignore[call-arg]

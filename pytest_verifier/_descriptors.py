@@ -48,15 +48,32 @@ class CheckDescriptor(_CheckIdentity, total=False):
     JSON-safe snapshots of the checked values.
 
     ``note`` holds the text given as ``note=`` (stripped; absent when none or blank), and
-    ``auto_name`` is ``True`` when no ``name=`` was given and ``name`` is the source text of
-    the checked value (absent otherwise).
+    ``name`` is the text given as ``name=``, else the ``actual_name``, else the source text
+    of the checked value. ``auto_name`` is ``True`` in the last two cases: the name is how
+    the value is spelled, not a label (absent otherwise).
+
+    ``actual_name`` and ``expected_name`` hold how the test spelled the operands
+    (``actual_name=``, ``expected_name=``), with this run's values:
+    ``tb.dev.map.block.reg3.F``. ``actual_name_symbolic`` and ``expected_name_symbolic`` hold
+    the same text with each interpolation as ``<expression>``
+    (``tb.dev.map.block.reg<channel>.F``), only when that is known and differs. All four are
+    absent when not given.
     """
 
     # --- set when built, if given ---
     #: Free text that explains the check, shown after its detail in summaries.
     note: str
-    #: ``True`` when ``name`` was derived from the source text of the checked value.
+    #: ``True`` when no ``name=`` was given: ``name`` is the ``actual_name``, or else the
+    #: source text of the checked value.
     auto_name: bool
+    #: How the test spelled the checked value, with this run's values.
+    actual_name: str
+    #: The same with each interpolation as ``<expression>``, when known and different.
+    actual_name_symbolic: str
+    #: How the test spelled the expected value or threshold, with this run's values.
+    expected_name: str
+    #: The same with each interpolation as ``<expression>``, when known and different.
+    expected_name_symbolic: str
 
     # --- set when recorded (fixture path) ---
     passed: bool

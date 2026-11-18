@@ -9,6 +9,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Operand names: `actual_name=` on every check of one value and `expected_name=` on the checks
+  with one compared value (`equal`, `not_equal`, `approx`, `greater`, `greater_equal`, `less`,
+  `less_equal`, `length`), on `verify`, `verify.require` and `checks`. They say how the operands
+  are spelled when the code does not, as after a `getattr`:
+  `verify.equal(block_reg_f, wdata, actual_name=f"tb.dev.map.block.reg{channel}.F",
+  expected_name="wdata")`. Each takes a `str` or, on Python 3.14+, a template string
+  (`t"...reg{channel}.F"`); it is stripped, `None` or blank text counts as not given, and
+  anything else raises `TypeError`.
+  - The descriptor keeps the text with this run's values as `actual_name` / `expected_name`
+    (`tb.dev.map.block.reg3.F`) and, when it is known and differs, with each interpolation as
+    `<expression>` as `actual_name_symbolic` / `expected_name_symbolic`
+    (`tb.dev.map.block.reg<channel>.F`). A template string carries both forms. For a `str`
+    the symbolic form is read from the source of the call when the argument is an f-string
+    there (once per call site, like the default name; format specs and conversions left out),
+    and kept only when the f-string's literal parts occur in order in the text received. The
+    expressions are never evaluated again. A check called indirectly (an alias, a
+    `functools.partial`) has no symbolic form, also beside a direct call on the same line. The
+    fields of a template string are formatted as an f-string formats them: a wrong format spec
+    raises at the call.
+  - Without `name=`, `actual_name` names the check and the record has `auto_name: True`; with
+    `name=` it is only stored. `expected_name` is shown before the expected value in the
+    description and the detail: `Verify 'Stored word' == wdata (243)`,
+    `expected wdata (243), got 240`.
+  - Records, `report.verify_checks`, `get_check_results` and `--verify-json` lines carry the
+    fields. `between`, `contains`, `not_contains`, `matches` and `is_instance` take
+    `actual_name=` only; composite and sampling checks, `raises`, `fail` and `limits` take
+    neither.
 - `note=` on every check method that takes `name=` (`verify`, `verify.require` and `checks`):
   free text that explains the check. It is stripped (a blank note is dropped), must be a `str`
   (`TypeError` otherwise), and is stored as the descriptor's `note`. Failure summaries, the
@@ -26,6 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- CI runs the test suite on Python 3.14 too (the template-string path of the operand names
+  runs only there), and the package metadata lists Python 3.14.
 - `name=` is optional on the checks of one value (`equal`, `not_equal`, `approx`, `greater`,
   `greater_equal`, `less`, `less_equal`, `between`, `is_true`, `is_false`, `is_none`,
   `is_not_none`, `contains`, `not_contains`, `matches`, `is_instance`, `length`). Without it the

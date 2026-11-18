@@ -29,7 +29,7 @@ from typing import (
 import pytest
 
 from .._descriptors import is_descriptor
-from .._render import describe_error, escape, render_value, safe_repr, safe_str
+from .._render import describe_error, escape, render_text, render_value, safe_repr, safe_str
 
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
 Verdict = Tuple[bool, Optional[str]]
@@ -318,6 +318,15 @@ def value_pair(actual: object, expected: object, units: Optional[str]) -> Tuple[
         shown_actual = f"{shown_actual} ({type(actual).__name__})"
         shown_expected = f"{shown_expected} ({type(expected).__name__})"
     return shown_actual, shown_expected
+
+
+def named(label: object, shown: str) -> str:
+    """*shown*, a rendered operand, after the name the test gave it (``expected_name=``):
+    ``wdata (243)``. *shown* alone without a name (or with one that is not text, in a
+    hand-built descriptor). Never raises."""
+    if not isinstance(label, str) or not label.strip():
+        return shown
+    return f"{render_text(label.strip())} ({shown})"
 
 
 def render_detail(result: Mapping[str, Any], passed: bool, error: Optional[str] = None) -> str:

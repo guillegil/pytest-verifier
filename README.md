@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/pytest-verifier)](https://pypi.org/project/pytest-verifier/)
 [![CI](https://github.com/guillegil/pytest-verifier/actions/workflows/ci.yml/badge.svg)](https://github.com/guillegil/pytest-verifier/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-blue)](https://github.com/guillegil/pytest-verifier)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue)](https://github.com/guillegil/pytest-verifier)
 [![pytest](https://img.shields.io/badge/pytest-7%2B-0a9edc)](https://docs.pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](https://github.com/guillegil/pytest-verifier/blob/main/LICENSE)
 
@@ -79,6 +79,66 @@ def test_cmd_fifo_at_startup(verify, tb):
   `raises` and `fail` keep their name rules, and take `note=` too.
 - A note is stripped; a blank one is dropped. Records keep it as `note`, and a derived name sets
   `auto_name: True`, so other plugins (pytest-reporter, stepdoc) can show the check as code.
+
+### Operand names
+
+When the code that reads a value does not say what it is, as after a `getattr`, say how the
+operands are spelled with `actual_name=` and `expected_name=`:
+
+```python
+def test_register_readback(verify, tb, channel, wdata):
+    block_reg_f = getattr(tb.dev.map.block, f"reg{channel}").F
+    verify.equal(block_reg_f, wdata,
+                 actual_name=f"tb.dev.map.block.reg{channel}.F",
+                 expected_name="wdata")
+```
+
+```text
+1 of 1 checks failed: tb.dev.map.block.reg3.F — expected wdata (243), got 240
+```
+
+The check's record keeps each name in two forms, so a report can show this run's values or the
+test as it is written:
+
+| Field | Example | |
+|-------|---------|---|
+| `actual_name`, `expected_name` | `tb.dev.map.block.reg3.F` | the text, with this run's values |
+| `actual_name_symbolic`, `expected_name_symbolic` | `tb.dev.map.block.reg<channel>.F` | each `{...}` as `<expression>`; only when known and different |
+
+- **Where they go.** `actual_name=` is on every check of one value (it names the haystack of
+  `contains` and `not_contains`). `expected_name=` is on the checks with one compared value:
+  `equal`, `not_equal`, `approx` (the expected value), `greater`, `greater_equal`, `less`,
+  `less_equal` (the threshold) and `length`. `between`, `contains`, `not_contains`, `matches`
+  and `is_instance` do not take `expected_name=`; composite and sampling checks, `raises`,
+  `fail` and `limits` take neither.
+- **The name of the check.** Without `name=`, `actual_name` is the check's name (and the
+  record has `auto_name: True`, as for a name taken from the source). With `name=`, the name
+  stays the label and `actual_name` is only stored. `expected_name` is shown before the
+  expected value in the description and the detail: `Verify 'Stored word' == wdata (243)`,
+  `expected wdata (243), got 240`.
+- **The symbolic form of a string.** It is read from the source of the call, once per call
+  site, when the argument is written there as an f-string: a format spec and a conversion are
+  left out (`{channel:02d}` is `<channel>`), and `{x=}` reads `x=<x>`. A plain string, a
+  variable, a helper that passes the text on, or code without source has no symbolic form. It
+  is also dropped when the f-string found cannot have made the text received. A check called
+  indirectly (through an alias such as `soft = verify.equal`, or a `functools.partial`) has no
+  symbolic form, also when a direct call stands on the same line. Python 3.9 and 3.10 cannot
+  tell the calls of one line apart, so there the symbolic form is left out for two checks of
+  the same method on one line that are spelled differently, and when another call on the line
+  passes `actual_name=`, `expected_name=` or `**kwargs`.
+  The expressions are read, never evaluated again.
+- **Template strings (Python 3.14+).** Both arguments also take a
+  [t-string](https://docs.python.org/3/library/string.templatelib.html), which carries both
+  forms itself: no source is read, and it works through variables and helpers. Its fields
+  are formatted as an f-string formats them, so a wrong format spec (`t"reg{channel:zz}"`)
+  raises at the call, as the f-string does.
+
+  ```python
+  verify.equal(block_reg_f, wdata, actual_name=t"tb.dev.map.block.reg{channel}.F")
+  ```
+
+- A name is stripped; `None` or a blank one counts as not given. Anything that is not a `str`
+  (or a template string) raises `TypeError`.
 
 ### Editor completion and type checking
 
@@ -328,7 +388,9 @@ or `note`, a missing `name` on a composite, sampling or `raises` check, a negati
 
 Every check that takes `name` also takes `note=None` (see
 [Names and notes](https://github.com/guillegil/pytest-verifier#names-and-notes)). On the checks of
-one value, `name` is optional: it defaults to the source text of that value.
+one value, `name` is optional: it defaults to the source text of that value. Those checks also
+take `actual_name=`, and the ones with one compared value `expected_name=` (see
+[Operand names](https://github.com/guillegil/pytest-verifier#operand-names)).
 
 ### Equality & Approximation
 
@@ -890,7 +952,10 @@ ones, not copies, so treat them as read-only. Each one is a plain dict with
 `passed`, `detail`, `phase` (`"setup"`, `"call"` or `"teardown"`, the test phase that made
 it) and `location` (`"tests/test_psu.py:3"`, where it was made, relative to the rootdir). When
 a helper made the check, `called_from` holds the line of the test function that led to it, and
-a check made in a `verify.section` has the titles in `section` (`["3V3", "Load"]`). Each
+a check made in a `verify.section` has the titles in `section` (`["3V3", "Load"]`). A check
+made with [operand names](https://github.com/guillegil/pytest-verifier#operand-names) has
+`actual_name`, `expected_name` and, when known, `actual_name_symbolic` and
+`expected_name_symbolic`. Each
 check holds JSON-safe copies of the checked values taken when the check was made, so
 `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
@@ -998,7 +1063,7 @@ Type-check with `uv run --with mypy mypy` (strict mode, configured in `pyproject
 
 CI runs on every push to `main` and every pull request targeting `main`
 (see [`.github/workflows/ci.yml`](https://github.com/guillegil/pytest-verifier/blob/main/.github/workflows/ci.yml)). It runs the test suite on
-Python 3.9–3.13 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
+Python 3.9–3.14 and on the oldest supported pytest (7.0) and pluggy (1.2). It also runs
 `mypy --strict` and the tests of the built sdist.
 
 To release, bump `version` in `pyproject.toml`, move the `[Unreleased]` CHANGELOG entries under

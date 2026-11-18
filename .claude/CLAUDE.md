@@ -76,7 +76,12 @@ pytest_verifier/
 │                            #   (`_Block`), calls of user code (`_Call`))
 ├── _limits.py               # verify.limits (parse_row, Row, limit_checks) and load_limits (CSV)
 ├── _source.py               # Default names: source text of the value argument at the call
-│                            #   (co_positions on 3.11+, else the call on the line), cached
+│                            #   (co_positions on 3.11+, else the call on the line), cached;
+│                            #   spellings(): the f-string parts of the call's actual_name= /
+│                            #   expected_name= (same lookup, `_locate`; own cache)
+├── _operands.py             # Operand names: OperandName (str, or Template on 3.14+, guarded
+│                            #   by sys.version_info), spell() -> Spelling (concrete and
+│                            #   symbolic text), template rendering, the f-string safeguard
 ├── _location.py             # Where a recorded check was made: location, called_from;
 │                            #   FunctionCode (test code by identity, or file and name),
 │                            #   ours() (this package's frames, by module name)
@@ -121,9 +126,15 @@ every registered type has them.
 # CheckDescriptor — returned by every verify.* call
 class CheckDescriptor(TypedDict, total=False):
     check_type: str          # Required: "approx", "equal", "between", etc.
-    name: str                # Always present: given, or the value's source text (auto_name)
+    name: str                # Always present: given, else actual_name, else the value's
+                             #   source text (auto_name in the last two cases)
     note: str                # Only when note= was given (stripped, non-blank)
-    auto_name: bool          # True only when name was derived from the source
+    auto_name: bool          # True only when name was derived from the source or is actual_name
+    actual_name: str         # Only when actual_name= was given: the text with this run's values
+    actual_name_symbolic: str    # ... with each interpolation as <expression>; only when known
+                                 #   and different from actual_name
+    expected_name: str       # Only when expected_name= was given (stored by the check type)
+    expected_name_symbolic: str  # As actual_name_symbolic
     description: str         # Required: pre-formatted verification statement
     passed: bool             # Present only when returned from fixture (evaluated)
     detail: str              # Fixture only: rendered "expected … got …" clause
@@ -269,6 +280,13 @@ Implementation requirements:
 
 Every method that takes `name=` also takes `note=None` (composites, sampling, `fail` and
 `raises` included); the tables list it on the value checks, whose `name` is optional.
+
+The 17 value checks also take `actual_name=None`, and the 8 with one compared operand (`equal`,
+`not_equal`, `approx`, `greater`, `greater_equal`, `less`, `less_equal`, `length`) take
+`expected_name=None` (both `Optional[OperandName]`, keyword-only, after `note`; not listed in
+the tables). `between`, `contains`, `not_contains`, `matches` and `is_instance` have no single
+compared operand to name and take `actual_name=` only; composites, sampling, `raises`, `fail`
+and `limits` take neither.
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -464,7 +482,29 @@ while it is logged).
 ## Common Pitfalls
 
 - **Don't forget `py.typed` marker.** Without it, mypy/Pylance won't recognize the package as typed.
-- **`name` is optional only on the checks of one value** (the 17 leaf checks with an `actual`/`haystack`): when omitted it is the source text of that argument at the call (`_source.subject_text`, `auto_name: True`; `"value"` without source, or when no call of the method itself is at the site, as for `map(verify.is_true, xs)` or a bound method/`partial` factory; both lookups compare `_called_name` to the method). `fail` defaults it to `msg`; composites, sampling checks and `raises` still raise `TypeError` without it. `name` must be a `str` when given.
+- **`name` is optional only on the checks of one value** (the 17 leaf checks with an `actual`/`haystack`): when omitted it is the concrete `actual_name` if one was given, else the source text of that argument at the call (both with `auto_name: True`; `_source.subject_text`; `"value"` without source, or when no call of the method itself is at the site, as for `map(verify.is_true, xs)` or a bound method/`partial` factory; both lookups compare `_called_name` to the method). `fail` defaults it to `msg`; composites, sampling checks and `raises` still raise `TypeError` without it. `name` must be a `str` when given.
+- **Operand names are text about the operands, never judged.** `_verify._labels` validates them
+  with `_operands.spell` (a `str`, or a `string.templatelib.Template` on 3.14+; stripped; `None`
+  or blank is not given; else `TypeError`) only when one is given, so a check without them
+  pays nothing. The concrete text is stored as `actual_name`/`expected_name`; the symbolic text
+  (`reg<channel>.F`) as `*_symbolic`, only when known and different: from the template's
+  `Interpolation.expression`s, or for a `str` from `_source.spellings(method)`, the parts of
+  the f-string (`ast.JoinedStr`; format spec and conversion dropped, `{x=}` is `x=<x>`) written
+  as that keyword in the call of the method (found like the default name, cached per code
+  object and instruction, never raises; nothing for a literal, a variable, `**kwargs`, an
+  indirect call or no source). The call read must provably be the one running
+  (`_locate(proven=True)`): with instruction positions, a call that is not a call of the
+  method gives nothing, also when a call of the method is on its line; on the line path
+  `_by_line` gives nothing when another call spanning the line passes an operand name or
+  `**kwargs` (`_may_spell`). The default name keeps its line fallback. `symbolic_text` keeps it only when the literal parts occur in
+  order (first at the start, last at the end) in the text received. Template interpolations
+  are formatted as an f-string would, and an error there (a wrong format spec, a raising
+  `__format__`) propagates from the call as from the f-string: a usage error.
+  Without `name=`, `actual_name` is the name and sets `auto_name` (the name is how the value
+  is spelled); with `name=` it is data only. `expected_name` is passed to the type's `build`,
+  which stores it and shows it through `_checks._base.named`: `wdata (243)` wherever the
+  expected value is rendered (description and detail; a hand-built field that is not text is
+  ignored). Names are stored as given and bounded where shown (`render_text`), like `name`.
 - **`note` is free text, never judged.** Every method that takes `name=` takes `note=` (`require_note`: `str` or `None`, stripped, blank dropped; `annotate` stores it). Summaries add ` (note)` after the detail through `note_suffix`.
 - **`approx` needs at least one tolerance.** Raise `ValueError` if neither `abs_tol` nor `rel_tol` provided.
 - **`all_satisfy` callable is invoked at call time.** The resulting `child_checks` list is stored, not the callable.

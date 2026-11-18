@@ -23,6 +23,7 @@ from typing import (
     List,
     Literal,
     Mapping,
+    NamedTuple,
     Optional,
     Sequence,
     Sized,
@@ -70,6 +71,7 @@ from ._descriptors import (
 )
 from ._evaluator import evaluate as _evaluate
 from ._limits import limit_checks
+from ._operands import UNSPELLED, OperandName, Spelling, spell
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
 from ._settle import settle
@@ -104,16 +106,46 @@ _REQUIRE_NEEDS_FIXTURE = (
 )
 
 
+class _Labels(NamedTuple):
+    """How a check on a value is labelled: its name, its note and its operand names."""
+
+    name: Any
+    note: Optional[str]
+    auto_name: bool
+    spelling: Spelling
+
+    @property
+    def expected_name(self) -> Optional[str]:
+        """The name given to the expected value (``expected_name=``), if any."""
+        return self.spelling.expected
+
+    def on(self, descriptor: CheckDescriptor) -> CheckDescriptor:
+        """*descriptor* with the note, the ``auto_name`` flag and the operand names."""
+        return self.spelling.on(annotate(descriptor, self.note, self.auto_name))
+
+
 def _labels(
-    name: Optional[str], note: Optional[str], method: str, parameter: str = "actual"
-) -> Tuple[Any, Optional[str], bool]:
-    """``(name, note, auto_name)`` of a check on a value: the *name* given, else the source
-    text of the value argument *parameter* at the user's call of ``verify.<method>()``; the
-    *note* checked and stripped."""
+    name: Optional[str],
+    note: Optional[str],
+    method: str,
+    parameter: str = "actual",
+    *,
+    actual_name: object = None,
+    expected_name: object = None,
+) -> _Labels:
+    """The labels of a check on a value: the *note* and the operand names checked and
+    stripped, and the name: the *name* given, else *actual_name* (the test says how the value
+    is spelled), else the source text of the value argument *parameter* at the user's call of
+    ``verify.<method>()``. The last two set ``auto_name``."""
     note = require_note(note, method)
-    if name is None:
-        return subject_text(method, parameter), note, True
-    return name, note, False
+    spelling = UNSPELLED
+    if actual_name is not None or expected_name is not None:
+        spelling = spell(method, actual_name, expected_name)
+    if name is not None:
+        return _Labels(name, note, False, spelling)
+    if spelling.actual is not None:
+        return _Labels(spelling.actual, note, True, spelling)
+    return _Labels(subject_text(method, parameter), note, True, spelling)
 
 
 class Sink:
@@ -264,6 +296,17 @@ class Verify:
     negative tolerance) raise ``TypeError``/``ValueError``. A failed check stops the test
     (raises ``ChecksFailedError``) only when it is made through the fixture's
     :attr:`require`, or with ``--verify-fail-fast``.
+
+    Operand names: ``actual_name=`` (every check on one value) and ``expected_name=`` (the
+    checks with one compared value: ``equal``, ``not_equal``, ``approx``, the ordering checks
+    and ``length``) say how the operands are spelled when the code does not, as after a
+    ``getattr``. Each takes a ``str`` or, on Python 3.14+, a template string; ``None`` or
+    blank text counts as not given. The descriptor keeps the text with this run's values
+    (``actual_name``: ``block.reg3.F``) and, when it is known and differs, the text with each
+    interpolation as ``<expression>`` (``actual_name_symbolic``: ``block.reg<channel>.F``): a
+    template string carries it, and for a ``str`` it is read from the source of the call when
+    the argument is written there as an f-string. Without ``name=``, ``actual_name`` names
+    the check; ``expected_name`` is shown before the expected value: ``== wdata (243)``.
     """
 
     #: Where the built checks go; the fixture's instance has a recording sink.
@@ -281,6 +324,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* equals *expected*.
 
@@ -292,14 +337,28 @@ class Verify:
             units: Optional unit suffix (e.g. ``"V"``, ``"A"``).
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "equal")
+        labels = _labels(name, note, "equal", actual_name=actual_name, expected_name=expected_name)
         return self._sink.check(
-            annotate(EQUAL.build(actual, expected, name=name, units=units), note, auto)
+            labels.on(
+                EQUAL.build(
+                    actual,
+                    expected,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def not_equal(
@@ -310,6 +369,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* does not equal *expected*.
 
@@ -321,14 +382,30 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "not_equal")
+        labels = _labels(
+            name, note, "not_equal", actual_name=actual_name, expected_name=expected_name
+        )
         return self._sink.check(
-            annotate(NOT_EQUAL.build(actual, expected, name=name, units=units), note, auto)
+            labels.on(
+                NOT_EQUAL.build(
+                    actual,
+                    expected,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def approx(
@@ -341,6 +418,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is approximately equal to *expected*.
 
@@ -356,6 +435,12 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -364,14 +449,18 @@ class Verify:
             ValueError: If neither *abs_tol* nor *rel_tol* is provided.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "approx")
+        labels = _labels(name, note, "approx", actual_name=actual_name, expected_name=expected_name)
         return self._sink.check(
-            annotate(
+            labels.on(
                 APPROX.build(
-                    actual, expected, abs_tol=abs_tol, rel_tol=rel_tol, name=name, units=units
-                ),
-                note,
-                auto,
+                    actual,
+                    expected,
+                    abs_tol=abs_tol,
+                    rel_tol=rel_tol,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
             )
         )
 
@@ -387,6 +476,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* > *threshold*.
 
@@ -398,14 +489,30 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "greater")
+        labels = _labels(
+            name, note, "greater", actual_name=actual_name, expected_name=expected_name
+        )
         return self._sink.check(
-            annotate(GREATER.build(actual, threshold, name=name, units=units), note, auto)
+            labels.on(
+                GREATER.build(
+                    actual,
+                    threshold,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def greater_equal(
@@ -416,6 +523,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* >= *threshold*.
 
@@ -427,14 +536,30 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "greater_equal")
+        labels = _labels(
+            name, note, "greater_equal", actual_name=actual_name, expected_name=expected_name
+        )
         return self._sink.check(
-            annotate(GREATER_EQUAL.build(actual, threshold, name=name, units=units), note, auto)
+            labels.on(
+                GREATER_EQUAL.build(
+                    actual,
+                    threshold,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def less(
@@ -445,6 +570,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* < *threshold*.
 
@@ -456,14 +583,28 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "less")
+        labels = _labels(name, note, "less", actual_name=actual_name, expected_name=expected_name)
         return self._sink.check(
-            annotate(LESS.build(actual, threshold, name=name, units=units), note, auto)
+            labels.on(
+                LESS.build(
+                    actual,
+                    threshold,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def less_equal(
@@ -474,6 +615,8 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* <= *threshold*.
 
@@ -485,14 +628,30 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "less_equal")
+        labels = _labels(
+            name, note, "less_equal", actual_name=actual_name, expected_name=expected_name
+        )
         return self._sink.check(
-            annotate(LESS_EQUAL.build(actual, threshold, name=name, units=units), note, auto)
+            labels.on(
+                LESS_EQUAL.build(
+                    actual,
+                    threshold,
+                    name=labels.name,
+                    units=units,
+                    expected_name=labels.expected_name,
+                )
+            )
         )
 
     def between(
@@ -505,6 +664,7 @@ class Verify:
         name: Optional[str] = None,
         units: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is between *low* and *high*.
 
@@ -518,17 +678,26 @@ class Verify:
             units: Optional unit suffix.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "between")
+        labels = _labels(name, note, "between", actual_name=actual_name)
         return self._sink.check(
-            annotate(
-                BETWEEN.build(actual, low, high, inclusive=inclusive, name=name, units=units),
-                note,
-                auto,
+            labels.on(
+                BETWEEN.build(
+                    actual,
+                    low,
+                    high,
+                    inclusive=inclusive,
+                    name=labels.name,
+                    units=units,
+                )
             )
         )
 
@@ -542,6 +711,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that ``bool(actual)`` is ``True``.
 
@@ -551,13 +721,17 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "is_true")
-        return self._sink.check(annotate(IS_TRUE.build(actual, name=name), note, auto))
+        labels = _labels(name, note, "is_true", actual_name=actual_name)
+        return self._sink.check(labels.on(IS_TRUE.build(actual, name=labels.name)))
 
     def is_false(
         self,
@@ -565,6 +739,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that ``bool(actual)`` is ``False``.
 
@@ -574,13 +749,17 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "is_false")
-        return self._sink.check(annotate(IS_FALSE.build(actual, name=name), note, auto))
+        labels = _labels(name, note, "is_false", actual_name=actual_name)
+        return self._sink.check(labels.on(IS_FALSE.build(actual, name=labels.name)))
 
     def is_none(
         self,
@@ -588,6 +767,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is ``None``.
 
@@ -597,13 +777,17 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "is_none")
-        return self._sink.check(annotate(IS_NONE.build(actual, name=name), note, auto))
+        labels = _labels(name, note, "is_none", actual_name=actual_name)
+        return self._sink.check(labels.on(IS_NONE.build(actual, name=labels.name)))
 
     def is_not_none(
         self,
@@ -611,6 +795,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is not ``None``.
 
@@ -620,13 +805,17 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "is_not_none")
-        return self._sink.check(annotate(IS_NOT_NONE.build(actual, name=name), note, auto))
+        labels = _labels(name, note, "is_not_none", actual_name=actual_name)
+        return self._sink.check(labels.on(IS_NOT_NONE.build(actual, name=labels.name)))
 
     # ------------------------------------------------------------------
     # String & container
@@ -639,6 +828,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *needle* is in *haystack*.
 
@@ -649,13 +839,17 @@ class Verify:
                 *haystack* at the call, such as ``reply.lines``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *haystack* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "contains", "haystack")
-        return self._sink.check(annotate(CONTAINS.build(haystack, needle, name=name), note, auto))
+        labels = _labels(name, note, "contains", "haystack", actual_name=actual_name)
+        return self._sink.check(labels.on(CONTAINS.build(haystack, needle, name=labels.name)))
 
     def not_contains(
         self,
@@ -664,6 +858,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *needle* is **not** in *haystack*.
 
@@ -674,15 +869,17 @@ class Verify:
                 *haystack* at the call, such as ``reply.lines``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *haystack* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "not_contains", "haystack")
-        return self._sink.check(
-            annotate(NOT_CONTAINS.build(haystack, needle, name=name), note, auto)
-        )
+        labels = _labels(name, note, "not_contains", "haystack", actual_name=actual_name)
+        return self._sink.check(labels.on(NOT_CONTAINS.build(haystack, needle, name=labels.name)))
 
     def matches(
         self,
@@ -691,6 +888,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* matches the regular-expression *pattern*.
 
@@ -702,13 +900,17 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "matches")
-        return self._sink.check(annotate(MATCHES.build(actual, pattern, name=name), note, auto))
+        labels = _labels(name, note, "matches", actual_name=actual_name)
+        return self._sink.check(labels.on(MATCHES.build(actual, pattern, name=labels.name)))
 
     # ------------------------------------------------------------------
     # Type / collection / conditional
@@ -721,6 +923,7 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is an instance of *expected_type*.
 
@@ -736,6 +939,10 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -744,9 +951,9 @@ class Verify:
             TypeError: If *expected_type* is not something ``isinstance`` accepts.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "is_instance")
+        labels = _labels(name, note, "is_instance", actual_name=actual_name)
         return self._sink.check(
-            annotate(IS_INSTANCE.build(actual, expected_type, name=name), note, auto)
+            labels.on(IS_INSTANCE.build(actual, expected_type, name=labels.name))
         )
 
     def length(
@@ -756,6 +963,8 @@ class Verify:
         *,
         name: Optional[str] = None,
         note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
     ) -> CheckDescriptor:
         """Check that ``len(actual)`` equals *expected*.
 
@@ -766,13 +975,28 @@ class Verify:
                 *actual* at the call, such as ``dat.txfe``.
             note: Optional text that explains the check, shown after its detail in
                 summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (243)``) and stored as ``expected_name``.
 
         Returns:
             A :class:`CheckDescriptor` dict.
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
-        name, note, auto = _labels(name, note, "length")
-        return self._sink.check(annotate(LENGTH.build(actual, expected, name=name), note, auto))
+        labels = _labels(name, note, "length", actual_name=actual_name, expected_name=expected_name)
+        return self._sink.check(
+            labels.on(
+                LENGTH.build(
+                    actual,
+                    expected,
+                    name=labels.name,
+                    expected_name=labels.expected_name,
+                )
+            )
+        )
 
     def all_satisfy(
         self,
