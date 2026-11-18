@@ -48,6 +48,23 @@ def test_3v3_rail(verify, psu):
   verify.equal(dat.tx8e, 1, note="at least 8 empty positions")
   # 1 of 1 checks failed: dat.tx8e — expected 1, got 0 (at least 8 empty positions)
   ```
+- **`actual_name=` / `expected_name=` say how the operands are spelled** when the code does
+  not, as after a `getattr`. `actual_name` is on every check of one value and names the check
+  when `name=` is absent; `expected_name` is only on `equal`, `not_equal`, `approx`, `greater`,
+  `greater_equal`, `less`, `less_equal` and `length`, and is shown before the expected value.
+  Write them as f-strings in the call itself (or, on Python 3.14+, as t-strings, which also
+  work through a variable or a helper): the record then keeps both `actual_name`
+  (`tb.dev.map.block.reg3.F`) and `actual_name_symbolic` (`tb.dev.map.block.reg<channel>.F`),
+  likewise `expected_name` and `expected_name_symbolic`. Blank or `None` counts as not given.
+  An f-string passed through an alias or `functools.partial` of the method gives no symbolic
+  form; a t-string field with a wrong format spec raises at the call, as in an f-string.
+
+  ```python
+  block_reg_f = getattr(tb.dev.map.block, f"reg{channel}").F
+  verify.equal(block_reg_f, wdata,
+               actual_name=f"tb.dev.map.block.reg{channel}.F", expected_name="wdata")
+  # 1 of 1 checks failed: tb.dev.map.block.reg3.F — expected wdata (243), got 240
+  ```
 - **Soft checks never raise.** Do not `assert verify.equal(...)` or write `if verify.equal(...)`
   (the returned dict is always truthy), and do not wrap checks in `try`/`except` or
   `pytest.raises`: nothing is raised until the test body ends (to check that code raises, use
@@ -64,6 +81,7 @@ def test_3v3_rail(verify, psu):
   accepts ±200%. When `expected` can be 0 use `abs_tol`. Leave headroom:
   `approx(3.35, 3.3, abs_tol=0.05)` fails by float rounding.
 - **Call mistakes raise; bad values fail.** A positional `name`, a `note` that is not a `str`,
+  an `actual_name`/`expected_name` that is not a `str` or a template string,
   a composite's missing `name`, `approx` without a tolerance, a negative or NaN tolerance,
   `between` with `low > high`, or an `is_instance` type
   that is not a class, tuple or union (`list[int]`, `None`) raises at the call and stops the

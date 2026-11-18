@@ -28,7 +28,7 @@ from .._render import (
     safe_repr,
     safe_str,
 )
-from ._base import CheckType, exact_number, plain_number, register, value, value_pair
+from ._base import CheckType, exact_number, named, plain_number, register, value, value_pair
 
 #: Longest ``fail()`` message shown in a description or detail.
 _MESSAGE_LIMIT = 1000
@@ -40,6 +40,13 @@ _NAN_ORDERING = " (NaN fails every comparison)"
 def subject(name: str) -> str:
     """``Verify 'name'``, the start of most descriptions."""
     return f"Verify '{render_text(name)}'"
+
+
+def _spelled(descriptor: CheckDescriptor, expected_name: Optional[str]) -> CheckDescriptor:
+    """*descriptor* with the name the test gave its expected value, when it gave one."""
+    if expected_name is not None:
+        descriptor["expected_name"] = expected_name
+    return descriptor
 
 
 def _is_nan(number: Any) -> bool:
@@ -157,31 +164,41 @@ class Equal(CheckType):
 
     @staticmethod
     def build(
-        actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+        actual: Any,
+        expected: Any,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "equal"), plain_units(units)
-        return {
-            "check_type": "equal",
-            "name": name,
-            "description": f"{subject(name)} == {render_value(expected, units)}",
-            "actual": actual,
-            "expected": expected,
-            "units": units,
-        }
+        shown = named(expected_name, render_value(expected, units))
+        return _spelled(
+            {
+                "check_type": "equal",
+                "name": name,
+                "description": f"{subject(name)} == {shown}",
+                "actual": actual,
+                "expected": expected,
+                "units": units,
+            },
+            expected_name,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         return d["actual"] == d["expected"]
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
+        label = d.get("expected_name")
         if passed:
-            return f"{value(d['actual'], units)} == {value(d['expected'], units)}"
+            return f"{value(d['actual'], units)} == {named(label, value(d['expected'], units))}"
         actual, expected = value_pair(d["actual"], d["expected"], units)
         note = _nan_note(_NAN_EQUALITY, d["actual"], d["expected"])
         if actual == expected:  # long values that differ past what is shown
             difference = _difference(d["actual"], d["expected"], units)
             note += f"; {difference}" if difference else ""
-        return f"expected {expected}, got {actual}{note}"
+        return f"expected {named(label, expected)}, got {actual}{note}"
 
 
 class NotEqual(CheckType):
@@ -189,17 +206,26 @@ class NotEqual(CheckType):
 
     @staticmethod
     def build(
-        actual: Any, expected: Any, *, name: str, units: Optional[str] = None
+        actual: Any,
+        expected: Any,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "not_equal"), plain_units(units)
-        return {
-            "check_type": "not_equal",
-            "name": name,
-            "description": f"{subject(name)} != {render_value(expected, units)}",
-            "actual": actual,
-            "expected": expected,
-            "units": units,
-        }
+        shown = named(expected_name, render_value(expected, units))
+        return _spelled(
+            {
+                "check_type": "not_equal",
+                "name": name,
+                "description": f"{subject(name)} != {shown}",
+                "actual": actual,
+                "expected": expected,
+                "units": units,
+            },
+            expected_name,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         return d["actual"] != d["expected"]
@@ -207,6 +233,7 @@ class NotEqual(CheckType):
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
         actual, expected = value_pair(d["actual"], d["expected"], units)
+        expected = named(d.get("expected_name"), expected)
         if passed:
             return f"{actual} ≠ {expected}{_nan_note(_NAN_EQUALITY, d['actual'], d['expected'])}"
         return f"expected ≠ {expected}, got {actual}"
@@ -262,6 +289,7 @@ class Approx(CheckType):
         rel_tol: Optional[float] = None,
         name: str,
         units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "approx"), plain_units(units)
         if abs_tol is None and rel_tol is None:
@@ -269,16 +297,20 @@ class Approx(CheckType):
         abs_tol = validate_tolerance(abs_tol, "abs_tol")
         rel_tol = validate_tolerance(rel_tol, "rel_tol")
         tolerance = approx_tolerance(abs_tol, rel_tol, units)
-        return {
-            "check_type": "approx",
-            "name": name,
-            "description": f"{subject(name)} == {render_value(expected, units)} {tolerance}",
-            "actual": actual,
-            "expected": expected,
-            "abs_tol": abs_tol,
-            "rel_tol": rel_tol,
-            "units": units,
-        }
+        shown = named(expected_name, render_value(expected, units))
+        return _spelled(
+            {
+                "check_type": "approx",
+                "name": name,
+                "description": f"{subject(name)} == {shown} {tolerance}",
+                "actual": actual,
+                "expected": expected,
+                "abs_tol": abs_tol,
+                "rel_tol": rel_tol,
+                "units": units,
+            },
+            expected_name,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         return _approx(d["actual"], d["expected"], d.get("abs_tol"), d.get("rel_tol"))
@@ -286,7 +318,7 @@ class Approx(CheckType):
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
         actual = value(d["actual"], units)
-        expected = value(d["expected"], units)
+        expected = named(d.get("expected_name"), value(d["expected"], units))
         target = f"{expected} {approx_tolerance(d.get('abs_tol'), d.get('rel_tol'), units)}"
         if passed:
             return f"{actual} == {target}"
@@ -352,17 +384,26 @@ class _Ordering(CheckType):
 
     @classmethod
     def _build(
-        cls, actual: Any, threshold: Any, name: str, units: Optional[str]
+        cls,
+        actual: Any,
+        threshold: Any,
+        name: str,
+        units: Optional[str],
+        expected_name: Optional[str],
     ) -> CheckDescriptor:
         name, units = require_name(name, cls.check_type), plain_units(units)
-        return {
-            "check_type": cls.check_type,
-            "name": name,
-            "description": f"{subject(name)} {cls.symbol} {render_value(threshold, units)}",
-            "actual": actual,
-            "threshold": threshold,
-            "units": units,
-        }
+        shown = named(expected_name, render_value(threshold, units))
+        return _spelled(
+            {
+                "check_type": cls.check_type,
+                "name": name,
+                "description": f"{subject(name)} {cls.symbol} {shown}",
+                "actual": actual,
+                "threshold": threshold,
+                "units": units,
+            },
+            expected_name,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         actual, threshold = d["actual"], d["threshold"]
@@ -373,6 +414,7 @@ class _Ordering(CheckType):
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
         actual, threshold = value_pair(d["actual"], d["threshold"], units)
+        threshold = named(d.get("expected_name"), threshold)
         if passed:
             return f"{actual} {self.symbol} {threshold}"
         note = _nan_note(_NAN_ORDERING, d["actual"], d["threshold"])
@@ -390,9 +432,14 @@ class Greater(_Ordering):
 
     @staticmethod
     def build(
-        actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        actual: Any,
+        threshold: float,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
-        return Greater._build(actual, threshold, name, units)
+        return Greater._build(actual, threshold, name, units, expected_name)
 
 
 class GreaterEqual(_Ordering):
@@ -403,9 +450,14 @@ class GreaterEqual(_Ordering):
 
     @staticmethod
     def build(
-        actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        actual: Any,
+        threshold: float,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
-        return GreaterEqual._build(actual, threshold, name, units)
+        return GreaterEqual._build(actual, threshold, name, units, expected_name)
 
 
 class Less(_Ordering):
@@ -416,9 +468,14 @@ class Less(_Ordering):
 
     @staticmethod
     def build(
-        actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        actual: Any,
+        threshold: float,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
-        return Less._build(actual, threshold, name, units)
+        return Less._build(actual, threshold, name, units, expected_name)
 
 
 class LessEqual(_Ordering):
@@ -429,9 +486,14 @@ class LessEqual(_Ordering):
 
     @staticmethod
     def build(
-        actual: Any, threshold: float, *, name: str, units: Optional[str] = None
+        actual: Any,
+        threshold: float,
+        *,
+        name: str,
+        units: Optional[str] = None,
+        expected_name: Optional[str] = None,
     ) -> CheckDescriptor:
-        return LessEqual._build(actual, threshold, name, units)
+        return LessEqual._build(actual, threshold, name, units, expected_name)
 
 
 class Between(CheckType):
@@ -768,20 +830,26 @@ class Length(CheckType):
     snapshot_limits: ClassVar[Dict[str, int]] = {"actual": 100}
 
     @staticmethod
-    def build(actual: Any, expected: int, *, name: str) -> CheckDescriptor:
+    def build(
+        actual: Any, expected: int, *, name: str, expected_name: Optional[str] = None
+    ) -> CheckDescriptor:
         name = require_name(name, "length")
         try:
             actual_length: Optional[int] = len(actual)
         except Exception:
             actual_length = None  # evaluation calls len() again and records the error
-        return {
-            "check_type": "length",
-            "name": name,
-            "description": f"{subject(name)} has length {render_value(expected)}",
-            "actual": actual,
-            "expected": expected,
-            "actual_length": actual_length,
-        }
+        shown = named(expected_name, render_value(expected))
+        return _spelled(
+            {
+                "check_type": "length",
+                "name": name,
+                "description": f"{subject(name)} has length {shown}",
+                "actual": actual,
+                "expected": expected,
+                "actual_length": actual_length,
+            },
+            expected_name,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         length = d.get("actual_length")
@@ -795,13 +863,10 @@ class Length(CheckType):
         return d.get("actual"), d.get("actual_length")
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
-        expected = d["expected"]
+        expected = named(d.get("expected_name"), render_value(d["expected"]))
         if passed:
-            return f"length {render_value(expected)}"
-        return (
-            f"expected length {render_value(expected)}, "
-            f"got length {render_value(d.get('actual_length'))}"
-        )
+            return f"length {expected}"
+        return f"expected length {expected}, got length {render_value(d.get('actual_length'))}"
 
 
 class Fail(CheckType):
