@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `all_satisfy` records `items_name`, the source text of its `items` argument (`waveforms`),
+  and `item_name`, the name of the factory's parameter (`w` in `lambda w: ...`), each only when
+  known (no source: no `items_name`; a bound method or `functools.partial` factory: no
+  `item_name`). They are words for reports, never judged: stepdoc and pytest-reporter use them
+  to show an `all_satisfy` as one line, `for each w in waveforms, w & INDEX_ERROR_BIT == 0`,
+  instead of one line per item. Description, detail and verdict are unchanged.
+
 - Operand names: `actual_name=` on every check of one value and `expected_name=` on the checks
   with one compared value (`equal`, `not_equal`, `approx`, `greater`, `greater_equal`, `less`,
   `less_equal`, `length`), on `verify`, `verify.require` and `checks`. They say how the operands

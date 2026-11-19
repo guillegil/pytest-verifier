@@ -7,6 +7,7 @@ built and absorbed by the composite like any other child.
 """
 from __future__ import annotations
 
+import types
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .._descriptors import (
@@ -70,6 +71,22 @@ def _unbuilt(child: Any) -> Any:
     return None if _is_lazy(child) else child
 
 
+def parameter_name(factory: Any) -> Optional[str]:
+    """The name of the first parameter of *factory* when it is a plain function or lambda
+    that takes one (``w`` in ``lambda w: ...``); ``None`` for anything else (a bound method,
+    a ``functools.partial``, a builtin, a class). Never raises."""
+    try:
+        if not isinstance(factory, types.FunctionType):
+            return None
+        code = factory.__code__
+        if code.co_argcount < 1:
+            return None
+        name = code.co_varnames[0]
+        return name if isinstance(name, str) and name.isidentifier() else None
+    except Exception:  # a word for reports must never break a check
+        return None
+
+
 class AllSatisfy(CompositeType):
     check_type = "all_satisfy"
     child_fields = ("child_checks",)
@@ -80,8 +97,13 @@ class AllSatisfy(CompositeType):
         descriptor_factory: Callable[[Any], CheckDescriptor],
         *,
         name: str,
+        items_name: Optional[str] = None,
     ) -> CheckDescriptor:
         """Build one child check per item by calling *descriptor_factory* right away.
+
+        *items_name* is the source text of *items* at the call, when known. The name of the
+        factory's first parameter (``w`` in ``lambda w: ...``) is stored as ``item_name`` when
+        the factory is a plain function.
 
         Problems with the data (``items`` is not iterable, the factory raises or returns
         something that is not a check) do not raise: the descriptor records them in ``error``
@@ -128,6 +150,11 @@ class AllSatisfy(CompositeType):
             ),
             "child_checks": child_checks,
         }
+        if items_name:
+            desc["items_name"] = items_name
+        item_name = parameter_name(descriptor_factory)
+        if item_name is not None:
+            desc["item_name"] = item_name
         if error is not None:
             desc["error"] = error
         return desc
