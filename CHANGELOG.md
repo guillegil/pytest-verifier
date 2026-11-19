@@ -9,6 +9,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Register values. `radix=` (`"hex"`, `"bin"`, `"oct"` or `"dec"`) and `width=` (bits) on
+  `equal`, `not_equal`, `greater`, `greater_equal`, `less`, `less_equal` and `between` show the
+  integers of a check as a register reads: `verify.equal(rdata, wdata, radix="hex", width=16)`
+  gives `expected 0x00F3, got 0x00F0; bits [1:0] differ`. Hex and binary are padded to the width
+  and grouped in fours (`0xDEAD_BEEF`, `0b0000_1111`), octal is padded, `width` alone means hex,
+  a negative value has a sign, and a value wider than the width shows every digit. A format
+  applies only to the operands that are an `int` (not a `bool`), changes no verdict, and a
+  check without one reads exactly as before. A wrong `radix` or `width` raises at the call.
+- `verify.bits(actual, expected, *, mask=None, fields=None, width=None, radix=None, name=None,
+  note=None, actual_name=None, expected_name=None)`, check type `"bits"`: passes when
+  `(actual ^ expected) & mask == 0` (every bit without a mask), shown in hex by default. Its
+  description states the expected bits under the mask (`Verify 'CTRL' & 0x00FF == 0x00F3`), and
+  a failed check names the bits and the fields that differ: `expected 0x00F3, got 0x00F0 (mask
+  0x00FF); bits [1:0] differ: MODE [3:1] is 0b000, expected 0b001`. `fields` maps a name to a
+  bit index or `(msb, lsb)`. Operands that are not integers make the check fail with an `error`.
+  On `verify`, `verify.require` and `checks`. `pytest_verifier.BitField` is the type of one
+  entry, for a fields table kept in a constant (`Dict[str, BitField]`).
+- Values that carry their own format: a class may define `__verify_format__()`, which returns
+  any of `radix`, `width`, `fields` and `value` (the integer an object that is not an `int`
+  stands for). `equal`, `not_equal`, the ordering checks, `between` and `bits` read it once,
+  when the check is made, from the checked value and then from the value it is compared with;
+  arguments given at the call win over it. A method that raises or returns something invalid
+  never raises from the check or fails it: the check is made without it and its record says why
+  in `format_error`. `pytest_verifier.VerifyFormat` (a `typing.Protocol`) and
+  `pytest_verifier.ValueFormat` (the `TypedDict` of the answer) type such classes. Fields must
+  fit the width in force, whichever of the call and the value gave each: `fields=` with a bit
+  outside the value's width raises `ValueError`, and under a narrower `width=` the value's
+  fields outside it are left out.
+- A formatted value longer than 240 characters is shown in descriptions and details with `...`
+  for its middle digits, so a line stays bounded as for every other value; the record's
+  `rendered` keeps every digit.
+- Records of these checks carry the format as data, all optional keys: `radix`, `width`,
+  `fields` (`{name: [msb, lsb]}`), `mask` (`bits`), `rendered` (the text of each value as shown,
+  without units, exact for 64-bit and wider values), `bit_diff` (`bits`, `text` and, with
+  fields, `fields`; on `equal` and `bits` when the integers differ, never on a recorded check
+  that passed) and `format_error`. `rendered` and `bit_diff` are made from the values the
+  check is judged on, so a copy of a built check with another value records its own. The
+  value fields of a register object hold its integer, not its `repr`. `CheckDescriptor` has the
+  keys; `--verify-json`, `report.verify_checks` and `get_check_results` deliver them.
+- `verify.limits` rows and `load_limits` CSV files take `radix` and `width` on the checks that
+  have them, and `bits` rows (`"check": "bits"`, with `expected`, `mask`, `fields`, `width`,
+  `radix`). In a CSV file `mask` and `width` are whole numbers (`0x00FF`) and `fields` is
+  written `EN=0 MODE=3:1`. `LimitRow` has the new keys. A hex, binary or octal number in a CSV
+  file may be grouped with `_` as the plugin prints it (`0xDEAD_BEEF`).
+- `--verify-summary=stats` prints the value range of a group of register checks in their format
+  (`0x00F0 to 0x00F3`) and a whole margin in the same radix (`margin 0xC`), and leaves the
+  range out when the checks of a group do not all have the same one or one of them measured a
+  value that is not an integer.
+
 - `all_satisfy` records `items_name`, the source text of its `items` argument (`waveforms`),
   and `item_name`, the name of the factory's parameter (`w` in `lambda w: ...`), each only when
   known (no source: no `items_name`; a bound method or `functools.partial` factory: no
@@ -60,6 +109,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- A limits row that names an argument its check does not take lists `radix` and `width` among
+  the ones it takes: `equal() takes expected, units, radix, width; not: abs_tol`.
 - CI runs the test suite on Python 3.14 too (the template-string path of the operand names
   runs only there), and the package metadata lists Python 3.14.
 - `name=` is optional on the checks of one value (`equal`, `not_equal`, `approx`, `greater`,

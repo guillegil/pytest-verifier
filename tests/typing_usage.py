@@ -11,19 +11,22 @@ import datetime
 import enum
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Mapping, Optional, Type
 
 import pytest
 
 import pytest_verifier
 from pytest_verifier import (
+    BitField,
     CheckDescriptor,
     ChecksFailedError,
     GuardBranch,
     LimitRow,
     Raises,
     Require,
+    ValueFormat,
     Verify,
+    VerifyFormat,
     checks,
     get_check_results,
     load_limits,
@@ -116,6 +119,74 @@ def module_api() -> None:
     check_type: str = lazy["check_type"]
     description: str = lazy["description"]
     assert check_type == "conditional" and description == "Verify 'Speed' [mode=fast]"
+
+
+class ControlRegister:
+    """A register of a register model: it tells the checks how to show it."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __verify_format__(self) -> ValueFormat:
+        return {"radix": "hex", "width": 16, "fields": {"EN": 0, "MODE": (3, 1)},
+                "value": self.value}
+
+    def __eq__(self, other: object) -> bool:
+        return self.value == (other.value if isinstance(other, ControlRegister) else other)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+class StatusWord(int):
+    """An ``int`` subclass may return any mapping."""
+
+    def __verify_format__(self) -> Mapping[str, Any]:
+        return {"radix": "bin", "width": 8}
+
+
+#: A fields table kept in a constant: without the annotation the literal is
+#: ``dict[str, object]``, which no ``fields=`` takes.
+CTRL_FIELDS: Dict[str, BitField] = {"EN": 0, "MODE": (3, 1), "DIV": [15, 8]}
+
+
+def _shown(value: VerifyFormat) -> Mapping[str, Any]:
+    return value.__verify_format__()
+
+
+def register_api() -> None:
+    rdata, wdata = 0x00F0, 0x00F3
+    as_hex: CheckDescriptor = checks.equal(rdata, wdata, radix="hex", width=16, name="CTRL")
+    assert as_hex["description"] == "Verify 'CTRL' == 0x00F3"
+    checks.not_equal(rdata, wdata, radix="bin", name="CTRL")
+    checks.greater(rdata, 0x10, width=16, name="CTRL")
+    checks.greater_equal(rdata, 0x10, radix="oct", name="CTRL")
+    checks.less(rdata, 0x100, radix="dec", width=16, name="CTRL")
+    checks.less_equal(rdata, 0x100, width=16, units="counts", name="CTRL")
+    checks.between(rdata, 0x00, 0xFF, radix="hex", width=16, name="CTRL")
+
+    masked = checks.bits(
+        rdata, wdata, mask=0x00FF, fields={"EN": 0, "MODE": (3, 1)}, width=16, radix="hex",
+        name="CTRL", note="after reset", actual_name="dev.ctrl", expected_name="wdata",
+    )
+    rendered: Dict[str, str] = masked["rendered"]
+    differing: Dict[str, Any] = masked["bit_diff"]
+    fields: Dict[str, List[int]] = masked["fields"]
+    assert rendered["mask"] == "0x00FF" and differing["text"] == "bits [1:0] differ"
+    assert fields == {"EN": [0, 0], "MODE": [3, 1]} and masked["mask"] == 0x00FF
+    assert not checks.evaluate(masked)
+    shared = checks.bits(rdata, wdata, fields=CTRL_FIELDS, width=16, name="CTRL")
+    assert shared["fields"] == {"EN": [0, 0], "MODE": [3, 1], "DIV": [15, 8]}
+
+    # A value that carries its own format.
+    register = ControlRegister(0x00F0)
+    own = checks.equal(register, 0x00F0)
+    assert own["radix"] == "hex" and own["width"] == 16
+    assert _shown(register)["width"] == 16 and _shown(StatusWord(3))["radix"] == "bin"
+    assert checks.evaluate(checks.bits(register, ControlRegister(0x00F0), name="CTRL"))
+
+    row: LimitRow = {"check": "bits", "expected": 0xF3, "mask": 0xFF, "fields": {"EN": 0},
+                     "width": 16, "radix": "hex"}
+    assert row["check"] == "bits"
 
 
 def fixture_api(fixture: Verify, request: pytest.FixtureRequest) -> None:
@@ -273,6 +344,14 @@ def _by_name(text: str) -> CheckDescriptor:
 def misuse() -> None:
     """Never called: each line must stay a type error."""
     checks.equal(1, 1, note=3)  # type: ignore[arg-type]
+    checks.equal(1, 1, name="R", radix="hexadecimal")  # type: ignore[arg-type]
+    checks.equal(1, 1, name="R", width="16")  # type: ignore[arg-type]
+    checks.approx(1.0, 1.0, abs_tol=0.1, name="R", radix="hex")  # type: ignore[call-arg]
+    checks.bits(1, 1, name="R", mask="0xFF")  # type: ignore[arg-type]
+    checks.bits(1, 1, name="R", fields={"EN": "0"})  # type: ignore[dict-item]
+    checks.bits(1, 1, 0xFF, name="R")  # type: ignore[call-arg]
+    checks.bits(1, 1, name="R", units="V")  # type: ignore[call-arg]
+    _shown(5)  # type: ignore[arg-type]
     checks.equal(1, 1, actual_name=3)  # type: ignore[arg-type]
     checks.length("ab", 2, expected_name=b"depth")  # type: ignore[arg-type]
     checks.between(1, 0, 2, name="B", expected_name="limits")  # type: ignore[call-arg]

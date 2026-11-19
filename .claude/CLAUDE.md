@@ -42,6 +42,11 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 - **Some exceptions always go on.** Code that turns an exception into a failed check (lazy children, guard conditions, `all_satisfy` factories, sampling tries, `verify.raises`) lets `_checks._base.passes_through(exc)` exceptions through: stop errors (also inside exception groups), non-`Exception`s, and `pytest.exit`, `bdb.BdbQuit`, `unittest.SkipTest`; `verify.raises` takes them only when an expected class names them.
 - **Pure data descriptors.** All check functions return plain dicts matching the CheckDescriptor schema. Results recorded by the fixture hold JSON-safe snapshots of the checked values.
 - **No dependency on pytest-reporter.** The plugin works standalone and always records results on the item. Other plugins read them with `pytest_verifier.get_check_results(item)`, the `pytest_verify_results` hook (declare it `optionalhook=True`) or `report.verify_checks`; there is no reporter detection.
+- **Register formats are data.** `radix=`/`width=`, `verify.bits` and a value's
+  `__verify_format__` only change how integers are shown and what the record carries
+  (`rendered`, `bit_diff`, ...); they never change a verdict, and a check without a format takes
+  the old code path, so its text stays byte-for-byte. The protocol is user code: read once at
+  build, never raising, never failing a check (`format_error`).
 - **One class per check type.** Everything specific to a `check_type` (build, compare, detail, children) lives in its class in `_checks/`. No other module branches on `check_type`; they dispatch through `REGISTRY`.
 
 ## Package Structure
@@ -50,6 +55,7 @@ pytest-verifier (this plugin)        pytest-reporter (separate plugin)
 pytest_verifier/
 ├── __init__.py              # Exports: checks, Verify, Require, Raises, CheckDescriptor,
 │                            #   GuardBranch, LimitRow, ChecksFailedError, UnusedCheckWarning,
+│                            #   VerifyFormat (Protocol), ValueFormat (TypedDict), BitField,
 │                            #   get_check_results, load_limits, __version__ (installed metadata);
 │                            #   pytest_plugins = ["pytest_verifier.plugin"]
 ├── py.typed                 # PEP 561 marker — REQUIRED
@@ -59,7 +65,9 @@ pytest_verifier/
 │   ├── _base.py             #   CheckType, CompositeType, REGISTRY, judge() (never raises),
 │   │                        #   render_detail(), call_user() (CALLER: how a sink watches the
 │   │                        #   user code a composite calls)
-│   ├── _values.py           #   The 18 leaf check types (build, compare, detail)
+│   ├── _values.py           #   18 leaf check types (build, compare, detail); the seven
+│   │                        #   with radix=/width= read a Format at build and in detail
+│   ├── _bits.py             #   bits: (actual ^ expected) & mask == 0, always in a radix
 │   ├── _raises.py           #   raises: the check of a verify.raises block, decided at exit
 │   ├── _sampling.py         #   eventually, stable: Sampler takes tries (Try), trace, schedule
 │   └── _composites.py       #   all_satisfy, conditional, guard (children, lazy children)
@@ -74,6 +82,11 @@ pytest_verifier/
 │                            #   fixture's Sink: judges, records, absorbs children, stops
 │                            #   when hard or fail-fast; try scopes for sampling; raises blocks
 │                            #   (`_Block`), calls of user code (`_Call`))
+├── _registers.py            # Register formats: argument checks (require_radix/width/mask/
+│                            #   fields), render_int, bit_ranges/bit_diff/difference_clause,
+│                            #   the __verify_format__ protocol (_ask, never raises), Format
+│                            #   (read() at build, of() from a descriptor or record, stamp()),
+│                            #   recorded() (CheckType.evidence), VerifyFormat, ValueFormat
 ├── _limits.py               # verify.limits (parse_row, Row, limit_checks) and load_limits (CSV)
 ├── _source.py               # Default names: source text of the value argument at the call
 │                            #   (co_positions on 3.11+, else the call on the line), cached;
@@ -113,7 +126,7 @@ not document it; users annotate `verify: Verify` (README, "Editor completion and
 `tests/test_editors.py`).
 
 Adding a check type: a class in `_checks/` with `check_type`, a static `build`, `compare` and
-`detail` (composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,
+`detail` (a type whose record must not copy a field as built overrides `evidence`; composites also `child_fields`, `children`, `chosen`, `combine`, `map_children`,
 optionally `vetoed`; a leaf type whose record keeps only a preview of `actual`
 (`snapshot_limits`) may implement `reading`, which sampling compares to tell whether the value
 changed: `Length` adds `actual_length`), registered with `register()`; a `Verify` method that
@@ -152,6 +165,19 @@ class CheckDescriptor(TypedDict, total=False):
     low: float               # between only
     high: float              # between only
     inclusive: bool           # between only
+    radix: str               # "hex"/"bin"/"oct"/"dec": the format in force; absent without one
+    width: int               # bits, when known
+    fields: Dict[str, List[int]]  # {name: [msb, lsb]}, in the given order
+    mask: int                # bits only, when given
+    rendered: Dict[str, str] # text of each value the format applies to, without units: keys
+                             #   among actual, expected, threshold, low, high, mask
+    bit_diff: Dict[str, Any] # equal/bits, when the integers differ: bits [[msb, lsb], ...]
+                             #   (at most 64, then more_bits), text, fields [{name, msb, lsb,
+                             #   actual, expected}] (when fields are known and some differ; at
+                             #   most 64, then more_fields); never in a record that passed
+    format_error: str        # why a value's __verify_format__ was not used
+    format_values: Dict[str, int]  # built checks only: the integer of a register object; the
+                             #   record stores it as the operand and drops this key
     # ... other check-type-specific fields
 ```
 
@@ -276,17 +302,20 @@ Implementation requirements:
 - Docstrings on all public methods
 - Use `Optional[...]` and `Union[...]` in public signatures and TypedDicts: tools evaluate them with `typing.get_type_hints`, and `X | None` fails there on Python 3.9 (`X | None` is fine in private code with `from __future__ import annotations`)
 
-## Function Catalog (24 check functions, plus `limits`, `record` and `section`)
+## Function Catalog (25 check functions, plus `limits`, `record` and `section`)
 
 Every method that takes `name=` also takes `note=None` (composites, sampling, `fail` and
 `raises` included); the tables list it on the value checks, whose `name` is optional.
 
-The 17 value checks also take `actual_name=None`, and the 8 with one compared operand (`equal`,
-`not_equal`, `approx`, `greater`, `greater_equal`, `less`, `less_equal`, `length`) take
+The 18 value checks also take `actual_name=None`, and the 9 with one compared operand (`equal`,
+`not_equal`, `bits`, `approx`, `greater`, `greater_equal`, `less`, `less_equal`, `length`) take
 `expected_name=None` (both `Optional[OperandName]`, keyword-only, after `note`; not listed in
 the tables). `between`, `contains`, `not_contains`, `matches` and `is_instance` have no single
 compared operand to name and take `actual_name=` only; composites, sampling, `raises`, `fail`
 and `limits` take neither.
+
+`equal`, `not_equal`, the four ordering checks and `between` also take `radix=None` and
+`width=None` (`Optional[Radix]`, `Optional[int]`, keyword-only, last; not listed in the tables).
 
 ### Equality & Approximation
 | Function | check_type | Key fields |
@@ -294,6 +323,7 @@ and `limits` take neither.
 | `verify.equal(actual, expected, *, name=None, units=None, note=None)` | `"equal"` | actual, expected |
 | `verify.not_equal(actual, expected, *, name=None, units=None, note=None)` | `"not_equal"` | actual, expected |
 | `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name=None, units=None, note=None)` | `"approx"` | actual, expected, abs_tol, rel_tol |
+| `verify.bits(actual, expected, *, mask=None, fields=None, width=None, radix=None, name=None, note=None)` | `"bits"` | actual, expected (integers), mask, fields, width, radix; no units |
 
 ### Ordering & Range
 | Function | check_type | Key fields |
@@ -343,6 +373,68 @@ type there, and `CellNumber` cells, floats that keep their digits, become a `Dec
 after the whole table.
 `load_limits(path, *, select, columns, encoding)` validates every line with `parse_row`.
 
+### Registers (`_registers.py`)
+
+- Arguments: `radix` one of `hex`/`bin`/`oct`/`dec` (`ValueError` otherwise, `TypeError` for a
+  non-str), `width` an `int` from 1 to 1024 (`MAX_BITS`), `mask` a non-negative `int`, `fields`
+  a mapping of non-blank `str` names to a bit index or `(msb, lsb)` (`BitField`; either order,
+  normalised to `[msb, lsb]`, a bit below `width` when given). `bool` is never an integer here.
+  `width` or `fields` alone means hex. The fields are checked against the width in force after
+  the protocol answered: explicit `fields=` beyond a protocol's width raise, protocol fields
+  outside an explicit narrower `width=` are left out (`_inside`; `Format._of` does the same for
+  a hand-built descriptor).
+- `render_int`: `0x00F3` (uppercase, padded to `ceil(width/4)`), `0b1111_0011` (padded to
+  `width`), `0o000363` (padded to `ceil(width/3)`, not grouped), dec unchanged; `_` every four
+  digits when hex or binary has more than four; a sign for negatives; a wider value in full;
+  `None` above 1024 bits (the usual rendering is kept). `display(text)` is the text as a
+  description or a detail shows it: whole up to `VALUE_LIMIT`, else head, `...`, tail
+  (`Format.shown`, `Format.shown_number`); `rendered` keeps the exact text.
+- `Format.read(check, operands, radix, width, fields, default=)` at build: returns `PLAIN` (a
+  shared instance that stamps nothing) when there is no argument, no `default` and no operand
+  whose type has `__verify_format__`. Otherwise it validates the arguments, asks every operand
+  that has the protocol once (`_ask`), takes the format keys from the first that answers
+  (arguments win key by key), and collects the integer of each operand: a plain `int`, the
+  answer's `value`, or `operator.index()` of a protocol object. A protocol that raises or
+  returns junk (not a mapping, a wrong key) sets `Format.error` and is ignored for every
+  operand; `None` means no answer. `Format.stamp` writes `radix`, `width`, `fields`, `rendered`,
+  `format_error` and `format_values`.
+- `Format.of(d, keys, default=)` in `detail`: reads the same keys back from a descriptor or a
+  record, ignores anything malformed, never raises. An operand that is an integer is rendered
+  from it (a copy of a check with another value shows that value); the stored `rendered` text
+  (escaped, bounded by `display`) stands only for an operand that is not an integer any more
+  (a record keeps an int enum member as its `repr`). The seven value checks use the format
+  branch only when `fmt.texts` is not empty and `_values._in_format` agrees: when an operand
+  outside the format reads like the checked value (`5` and `Decimal(5)` in `dec`), the plain
+  detail with `value_pair`'s type names is used.
+- `CheckType.evidence(d, passed)` (`_registers.recorded` with the type's `format_keys`,
+  `format_diff`, `format_default`) is what `_settle._evidence` copies: `format_values` replaces
+  the operands and is dropped, so a record of `equal(Reg(0xF0), 0xF3)` has `actual: 240` while
+  the built check still compares the object; `rendered` and (with `format_diff`: `equal`,
+  `bits`) `bit_diff` are made again from the integers the check has now, and a record that
+  passed gets no `bit_diff` (a register object's `==` may accept another integer). `bits`
+  stores the integers in `actual`/`expected` at build (`stamp(values=False)`).
+- `bit_diff` is computed at build (`Format.difference`) and again for the record: `equal` and
+  `bits` only, only when a format is in force, both operands are integers and some bit differs
+  (under the mask for `bits`); none without a mask when an operand is negative. `Format.clause(d)`
+  computes it from the integers (`difference_clause`: at most 6 fields, then `and N more`;
+  `ranges_text`: at most 8 runs, then `and N more differ`), and renders the stored one only
+  when an integer is missing; a stored `text` goes through `render_text`.
+- With a format, details of two integers never add `value_pair`'s type names. A failed `equal`
+  whose integers are equal (a register object whose `==` says no) ends in
+  `; the integers are equal, but == is False`.
+- `_summary._Group.formats` holds the `(radix, width)` of each measured integer, and
+  `(None, None)` for a float: the stats range is printed with `render_number` when there is
+  one, left out when there are several. A whole margin beside a hex, binary or octal range is
+  shown with `render_int` (`margin 0xC`).
+- A `bits` operand that is not an integer names what to do (`_bits._advice`): convert it or
+  add `__verify_format__`; for a class that has the method, that it gave no `value` or was
+  not used (`format_error`).
+- Limits: `ROW_CHECKS` lists `radix`/`width` as optional arguments of the seven checks and the
+  `bits` row; CSV: `radix` is text, `width`/`mask` whole numbers (`_WHOLE`), `fields` is
+  `EN=0 MODE=3:1` (`_fields`), the `expected` of `bits` a number that must be an `int`.
+  `_INTEGER` takes `_` between the digits of a `0x`/`0b`/`0o` number (`0xDEAD_BEEF`), not of
+  a decimal one.
+
 `verify.record(check)` (fixture only) judges and records a check built elsewhere, typically by
 `checks`; of a check a composite took without selecting it, it records a pinned copy (`Run.pin`;
 `Run.keep_copy` stores it and `Run.copy_of` gives the same copy again). `checks.record()`
@@ -387,6 +479,8 @@ the test. The methods of `checks.require`, and calling it, raise `RuntimeError`.
 - `conditional`: resolve matched case → evaluate child → parent passes if child passes
 - `guard`: first branch with a truthy condition (else `default`) → parent passes if that child passes
 - `fail`: always False
+- `bits`: `(actual ^ expected) & mask == 0` (`mask` absent: every bit); a `TypeError` (so a failed check with an `error`) when an operand is not an `int` (a `bool` is not one)
+- `radix`/`width`/`fields` and `__verify_format__` take no part in any verdict: `equal` on a register object is still the object's `==`
 - `raises`: `type_check` and `match_check`, decided when the block ended
 - `eventually`: any kept child passed; `stable`: the kept child passed; both fail when the kept try made another check that failed (`also_failed`)
 
@@ -404,6 +498,17 @@ The `description` field is generated by the assertion engine. Format conventions
 - `verify.equal(r, "OK", name="Reply")` → `"Verify 'Reply' == 'OK'"`
 - `verify.approx(v, 50, abs_tol=2, name="Duty", units="%")` → `"Verify 'Duty' == 50% ± 2% (abs)"`
 - `verify.matches(s, re.compile(r"^v\d", re.I), name="FW")` → `"Verify 'FW' matches /^v\d/i"`
+
+- `verify.equal(v, 0xF3, radix="hex", width=16, name="R")` → `"Verify 'R' == 0x00F3"`
+- `verify.between(v, 1, 3, radix="bin", width=4, name="R")` → `"Verify 'R' ∈ [0b0001, 0b0011]"`
+- `verify.bits(v, 0xABF3, mask=0x00FF, width=16, name="CTRL")` → `"Verify 'CTRL' & 0x00FF == 0x00F3"` (the expected bits under the mask; `rendered["expected"]` is the whole `0xABF3`)
+- `verify.bits(v, 0xF3, name="CTRL", expected_name="wdata")` → `"Verify 'CTRL' == wdata (0xF3)"`
+
+Details with a format: `0x00F3 == 0x00F3`; `expected 0x00F3, got 0x00F0; bits [1:0] differ`;
+with fields `...; bits [1:0] differ: MODE [3:1] is 0b000, expected 0b001` (several fields are
+joined with `; `; a field of four bits or fewer is binary, a wider one hex, padded to its
+size); `bits`: `0x12F3 & 0x00FF == 0x00F3` and
+`expected 0x00F3, got 0x00F0 (mask 0x00FF); bits [1:0] differ: ...`.
 
 When `units` is `None`, values appear without suffix: `"Verify 'Vout' == 3.3 ± 0.05"`
 
@@ -476,13 +581,16 @@ while it is logged).
 - Test `conditional`: case matching, default fallback, no-match-no-default
 - Test `all_satisfy`: all pass, some fail, empty list
 - Test `fail()`: always fails, name defaults to msg
+- `tests/test_registers.py`: rendering in every radix, bit ranges and fields, `bits`, the
+  `__verify_format__` protocol (also misbehaving), records and JSON exactness for 64-bit and
+  128-bit values, composites, sampling, limits rows and CSV, summary stats, exports, hints
 - `tests/test_contracts.py` runs every registered check type through the shared contracts (JSON
   safety, fixture/`evaluate()` parity, rendering, snapshots); a new type needs examples there
 
 ## Common Pitfalls
 
 - **Don't forget `py.typed` marker.** Without it, mypy/Pylance won't recognize the package as typed.
-- **`name` is optional only on the checks of one value** (the 17 leaf checks with an `actual`/`haystack`): when omitted it is the concrete `actual_name` if one was given, else the source text of that argument at the call (both with `auto_name: True`; `_source.subject_text`; `"value"` without source, or when no call of the method itself is at the site, as for `map(verify.is_true, xs)` or a bound method/`partial` factory; both lookups compare `_called_name` to the method). `fail` defaults it to `msg`; composites, sampling checks and `raises` still raise `TypeError` without it. `name` must be a `str` when given.
+- **`name` is optional only on the checks of one value** (the 18 leaf checks with an `actual`/`haystack`): when omitted it is the concrete `actual_name` if one was given, else the source text of that argument at the call (both with `auto_name: True`; `_source.subject_text`; `"value"` without source, or when no call of the method itself is at the site, as for `map(verify.is_true, xs)` or a bound method/`partial` factory; both lookups compare `_called_name` to the method). `fail` defaults it to `msg`; composites, sampling checks and `raises` still raise `TypeError` without it. `name` must be a `str` when given.
 - **Operand names are text about the operands, never judged.** `_verify._labels` validates them
   with `_operands.spell` (a `str`, or a `string.templatelib.Template` on 3.14+; stripped; `None`
   or blank is not given; else `TypeError`) only when one is given, so a check without them
@@ -506,6 +614,9 @@ while it is logged).
   expected value is rendered (description and detail; a hand-built field that is not text is
   ignored). Names are stored as given and bounded where shown (`render_text`), like `name`.
 - **`note` is free text, never judged.** Every method that takes `name=` takes `note=` (`require_note`: `str` or `None`, stripped, blank dropped; `annotate` stores it). Summaries add ` (note)` after the detail through `note_suffix`.
+- **A format must not touch plain checks.** `Format.read` returns `PLAIN` before validating anything when a check has no `radix`/`width` and no operand type with `__verify_format__`; details branch on `fmt.texts`. Hundreds of tests assert the plain text.
+- **Records lose the object.** A detail may be rendered from a record (composite children, `evaluate` on records), where a register object is a number and an int enum member its `repr`: read the stored integers, and `rendered`/`bit_diff` where there is none, never the value's type.
+- **A register model must read once per check.** `__verify_format__` runs at build and `==` at judgement; the README example returns an `int` subclass from `read()` for that reason.
 - **`approx` needs at least one tolerance.** Raise `ValueError` if neither `abs_tol` nor `rel_tol` provided.
 - **`all_satisfy` callable is invoked at call time.** The resulting `child_checks` list is stored, not the callable.
 - **Lazy children are stored as built.** A `conditional`/`guard` callable that was selected is replaced by the check it returned; one that was not is stored as `None`, and so is a guard condition that was not called.

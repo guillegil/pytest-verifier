@@ -27,6 +27,7 @@ import pytest
 from ._descriptors import CheckDescriptor, GuardBranch
 from ._exceptions import ChecksFailedError
 from ._limits import LimitRow, load_limits
+from ._registers import BitField, ValueFormat, VerifyFormat
 from ._stash import check_results_key
 from ._unused import UnusedCheckWarning
 from ._verify import Raises, Require, Verify
@@ -36,6 +37,7 @@ from ._verify import Raises, Require, Verify
 pytest_plugins = ["pytest_verifier.plugin"]
 
 __all__ = [
+    "BitField",
     "CheckDescriptor",
     "ChecksFailedError",
     "GuardBranch",
@@ -43,7 +45,9 @@ __all__ = [
     "Raises",
     "Require",
     "UnusedCheckWarning",
+    "ValueFormat",
     "Verify",
+    "VerifyFormat",
     "__version__",
     "checks",
     "get_check_results",

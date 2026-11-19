@@ -1,8 +1,8 @@
 ---
 name: pytest-verifier
-description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, all_satisfy, conditional, guard, fail, raises, eventually, stable, limits, record, require, section), load_limits for CSV limit files, the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; limit tables; values that must settle or stay stable; expected errors; hardware, lab, bench or production tests), even if the plugin is not named.
+description: Write, fix and review pytest tests that use pytest-verifier soft assertions - the verify fixture (verify.equal, approx, between, greater, less, is_true, is_none, contains, matches, is_instance, length, bits, all_satisfy, conditional, guard, fail, raises, eventually, stable, limits, record, require, section), load_limits for CSV limit files, the checks builder, --verify-fail-fast, get_check_results and ChecksFailedError output. Use it whenever a test takes a verify argument, code imports pytest_verifier, the project depends on pytest-verifier, a run fails with ChecksFailedError or "N of M checks failed", or the user wants several checks in one test to all run and be reported together (soft assertions; measurements with limits, units and tolerances; limit tables; register values in hex or binary and bit fields; values that must settle or stay stable; expected errors; hardware, lab, bench or production tests), even if the plugin is not named.
 metadata:
-  version: "0.10.0"
+  version: "0.11.0"
 ---
 
 # pytest-verifier
@@ -32,7 +32,8 @@ def test_3v3_rail(verify, psu):
 - **Measured value first, then keywords.** Pass the measured value, then the expected value
   or limit, positionally (`equal(measured, expected)`, `greater(measured, limit)`): the report
   reads `expected <second>, got <first>`. Everything else is keyword-only: `name=`, `units=`,
-  `abs_tol=`, `rel_tol=`, `inclusive=`, `note=`. `name` must be a `str` when given. The checks
+  `abs_tol=`, `rel_tol=`, `inclusive=`, `note=`, `actual_name=`, `expected_name=`, `radix=`,
+  `width=`. `name` must be a `str` when given. The checks
   of one value (the table below, except `fail`) may leave it out: the name is then the source
   text of the value (`verify.equal(dat.txfe, 1)` is named `dat.txfe`; `value` without source,
   as in `exec`, or when the method is passed to other code, as in `map(verify.is_true, xs)` or
@@ -50,8 +51,8 @@ def test_3v3_rail(verify, psu):
   ```
 - **`actual_name=` / `expected_name=` say how the operands are spelled** when the code does
   not, as after a `getattr`. `actual_name` is on every check of one value and names the check
-  when `name=` is absent; `expected_name` is only on `equal`, `not_equal`, `approx`, `greater`,
-  `greater_equal`, `less`, `less_equal` and `length`, and is shown before the expected value.
+  when `name=` is absent; `expected_name` is only on `equal`, `not_equal`, `bits`, `approx`,
+  `greater`, `greater_equal`, `less`, `less_equal` and `length`, and is shown before the expected value.
   Write them as f-strings in the call itself (or, on Python 3.14+, as t-strings, which also
   work through a variable or a helper): the record then keeps both `actual_name`
   (`tb.dev.map.block.reg3.F`) and `actual_name_symbolic` (`tb.dev.map.block.reg<channel>.F`),
@@ -94,10 +95,18 @@ def test_3v3_rail(verify, psu):
 - **`units` is only a label**, appended to numbers as written (`"V"` gives `3.3V`, `" ms"`
   gives `3 ms`), and only the numeric checks below take it. Nothing is converted. A `str` enum
   member is used and stored as its text.
+- **Register values take `radix=` and `width=`**, not `hex()` text: `verify.equal(rdata,
+  0x00F3, radix="hex", width=16)` fails with `expected 0x00F3, got 0x00F0; bits [1:0] differ`.
+  To compare under a mask or name bit fields use `verify.bits`. Both change only how integers
+  are shown, never a verdict. Before using them, or writing a class with `__verify_format__`,
+  read [references/registers.md](references/registers.md).
 
 ## Checks
 
-The same methods exist on `verify`, on `verify.require` and on the `checks` builder.
+The same methods exist on `verify`, on `verify.require` and on the `checks` builder. Each
+also takes `note=None`; the checks of one value take `actual_name=None`, some `expected_name=None`
+(rules above); `equal`, `not_equal`, the ordering checks, `between` and `bits` take
+`radix=None` and `width=None`.
 
 | Call | Passes when | Watch out |
 |---|---|---|
@@ -109,9 +118,10 @@ The same methods exist on `verify`, on `verify.require` and on the `checks` buil
 | `is_true(actual, *, name=None)`, `is_false(...)` | `bool(actual)` is `True` / `False` | Truthiness: `is_true("0")`, `is_true("False")` and an uncalled method pass |
 | `is_none(actual, *, name=None)`, `is_not_none(...)` | `actual is None` / `is not None` | `0`, `""` and `False` are not `None` |
 | `contains(haystack, needle, *, name=None)`, `not_contains(...)` | `needle in haystack` | Haystack first. Text: substring; dict: keys only; list: whole items, so `not_contains(lines, "error")` misses `"error: x"` (join the lines). A generator is consumed |
-| `matches(actual, pattern, *, name=None)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or start the pattern with `(?i)`. `actual` must be text |
+| `matches(actual, pattern, *, name=None)` | `re.search(pattern, actual)` finds a match | Matches anywhere: anchor with `\A...\Z` for the whole string. No `flags=`: use `re.compile(p, re.I)` or start the pattern with `(?i)`. `actual` must be text (or `bytes` with a `bytes` pattern) |
 | `is_instance(actual, expected_type, *, name=None)` | `isinstance(actual, expected_type)` | Class, tuple or union (`Optional[int]`, or `int \| None` from Python 3.10). `list[int]`, `Literal[...]` and `None` raise `TypeError`: use `list`, `type(None)` |
 | `length(actual, expected, *, name=None)` | `len(actual) == expected` | Pass a sized value (`list(gen)`) and an `int` |
+| `bits(actual, expected, *, mask=None, fields=None, width=None, radix=None, name=None)` | `(actual ^ expected) & mask == 0`; every bit without `mask` | Integers only: a `bool`, float or text fails with an error. Shown in hex. See [references/registers.md](references/registers.md) |
 | `fail(msg, *, name=None)` | never | `name` defaults to `msg` |
 
 ## Composite checks
@@ -158,7 +168,9 @@ other values are valid. Keys that would collide (`1` and `"1"`) raise `ValueErro
 truthy is checked, else `default`. A swapped tuple is not detected (a label is always truthy).
 The label names the chosen branch in the report (`[→ boost]`). A condition must not be a check
 (`TypeError`, a check is always truthy): use `check["passed"]`. A callable condition that
-raises (or whose truth test raises) fails the guard, and `default` is not used; a condition
+raises (or whose truth test raises) fails the guard, also when there is a `default`: an eager
+default is shown before the error, a lazy one is not called and the detail says
+`no branch chosen`. A condition
 written inline runs before `guard` does, so it raises in the test: make it a lambda.
 
 **Lazy children.** A case, a branch's check or a default can be a zero-argument callable that
@@ -277,6 +289,8 @@ verify.limits({"3V3": vout, "Ripple": ripple_mv, "FW": fw}, LIMITS)
   similar key, in any case (`on_missing="ignore"` skips it). Measurements without a row are not
   checked: keys must match row names exactly (an `int` key matches its decimal string).
 - `verify.require.limits` and fail-fast stop only after the whole table is recorded.
+- Register rows (`radix`, `width`, `"check": "bits"`) are in
+  [references/registers.md](references/registers.md).
 
 `load_limits(path, *, select=None, columns=None, encoding="utf-8-sig")` reads such a table
 from a CSV file: a `name` column, an optional `check` column and a column per argument; an
@@ -439,7 +453,7 @@ conftest, a reporter), read [references/results.md](references/results.md):
 
 ## This skill's version
 
-This skill describes pytest-verifier 0.10.0; the `plugins:` line of pytest's header shows the
+This skill describes pytest-verifier 0.11.0; the `plugins:` line of pytest's header shows the
 project's version (`verifier-X.Y.Z`). For another version from 0.9.0 on, run
 `pytest-verifier skill install` in the project root (with `--global` when this skill is in
 `~/.claude/skills` or `~/.agents/skills`). Versions before 0.9.0 have no skill and no

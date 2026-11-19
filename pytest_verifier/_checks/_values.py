@@ -6,7 +6,7 @@ import operator
 import re
 from decimal import Decimal
 from fractions import Fraction
-from typing import Any, Callable, ClassVar, Dict, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, ClassVar, Dict, List, Mapping, Optional, Tuple, Union
 
 from .._descriptors import (
     CheckDescriptor,
@@ -21,6 +21,7 @@ from .._descriptors import (
     type_display,
     validate_tolerance,
 )
+from .._registers import PLAIN, Format
 from .._render import (
     describe_error,
     render_text,
@@ -46,6 +47,20 @@ def _spelled(descriptor: CheckDescriptor, expected_name: Optional[str]) -> Check
     """*descriptor* with the name the test gave its expected value, when it gave one."""
     if expected_name is not None:
         descriptor["expected_name"] = expected_name
+    return descriptor
+
+
+def _formatted(
+    descriptor: CheckDescriptor, expected_name: Optional[str], fmt: Format, diff: bool = False
+) -> CheckDescriptor:
+    """*descriptor* with its expected value's name and what its format says (nothing for a
+    check without one). With *diff*, also which bits of ``actual`` and ``expected`` differ."""
+    _spelled(descriptor, expected_name)
+    if fmt is not PLAIN:
+        fmt.stamp(descriptor)
+        difference = fmt.difference() if diff else None
+        if difference is not None:
+            descriptor["bit_diff"] = difference
     return descriptor
 
 
@@ -159,8 +174,35 @@ def _find_difference(actual: Any, expected: Any, units: Optional[str]) -> str:
     return f"first difference{location}: expected {shown_expected}, got {shown_actual}{note}"
 
 
+#: The operand fields of the checks that compare two values.
+_PAIR = ("actual", "expected")
+
+
+def _in_format(
+    fmt: Format, d: Mapping[str, Any], keys: Tuple[str, ...], units: Optional[str]
+) -> Optional[List[str]]:
+    """The operands *keys* of *d* as its format shows them, or ``None`` when the check is
+    shown as a plain one: without a format, and when an operand the format does not apply
+    to (a ``Decimal`` beside an ``int`` in ``dec``) reads like the checked value, where the
+    plain detail names the types."""
+    if not fmt.texts:
+        return None
+    shown = [fmt.shown(key, d[key], units) for key in keys]
+    if any(key not in fmt.texts for key in keys) and shown[0] in shown[1:]:
+        return None
+    return shown
+
+
+def _same_integer(fmt: Format) -> bool:
+    """Whether ``actual`` and ``expected`` are both integers, and the same one."""
+    actual = fmt.integers.get("actual")
+    return actual is not None and actual == fmt.integers.get("expected")
+
+
 class Equal(CheckType):
     check_type = "equal"
+    format_keys = _PAIR
+    format_diff = True
 
     @staticmethod
     def build(
@@ -170,10 +212,13 @@ class Equal(CheckType):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "equal"), plain_units(units)
-        shown = named(expected_name, render_value(expected, units))
-        return _spelled(
+        fmt = Format.read("equal", {"actual": actual, "expected": expected}, radix, width)
+        shown = named(expected_name, fmt.shown("expected", expected, units))
+        return _formatted(
             {
                 "check_type": "equal",
                 "name": name,
@@ -183,6 +228,8 @@ class Equal(CheckType):
                 "units": units,
             },
             expected_name,
+            fmt,
+            diff=True,
         )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
@@ -191,6 +238,21 @@ class Equal(CheckType):
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
         label = d.get("expected_name")
+        fmt = Format.of(d, _PAIR)
+        shown = _in_format(fmt, d, _PAIR, units)
+        if shown is not None:  # a register: in its radix, with the bits that differ
+            actual, expected = shown
+            if passed:
+                return f"{actual} == {named(label, expected)}"
+            text = f"expected {named(label, expected)}, got {actual}"
+            text += _nan_note(_NAN_EQUALITY, d["actual"], d["expected"])
+            clause = fmt.clause(d)
+            if clause:
+                return f"{text}; {clause}"
+            if d.get("error") is None and _same_integer(fmt):
+                # a register object whose == says no to an equal integer
+                text += "; the integers are equal, but == is False"
+            return text
         if passed:
             return f"{value(d['actual'], units)} == {named(label, value(d['expected'], units))}"
         actual, expected = value_pair(d["actual"], d["expected"], units)
@@ -203,6 +265,7 @@ class Equal(CheckType):
 
 class NotEqual(CheckType):
     check_type = "not_equal"
+    format_keys = _PAIR
 
     @staticmethod
     def build(
@@ -212,10 +275,13 @@ class NotEqual(CheckType):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "not_equal"), plain_units(units)
-        shown = named(expected_name, render_value(expected, units))
-        return _spelled(
+        fmt = Format.read("not_equal", {"actual": actual, "expected": expected}, radix, width)
+        shown = named(expected_name, fmt.shown("expected", expected, units))
+        return _formatted(
             {
                 "check_type": "not_equal",
                 "name": name,
@@ -225,6 +291,7 @@ class NotEqual(CheckType):
                 "units": units,
             },
             expected_name,
+            fmt,
         )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
@@ -232,7 +299,11 @@ class NotEqual(CheckType):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, expected = value_pair(d["actual"], d["expected"], units)
+        shown = _in_format(Format.of(d, _PAIR), d, _PAIR, units)
+        if shown is not None:  # in the radix; never the types of a register and an int
+            actual, expected = shown
+        else:
+            actual, expected = value_pair(d["actual"], d["expected"], units)
         expected = named(d.get("expected_name"), expected)
         if passed:
             return f"{actual} ≠ {expected}{_nan_note(_NAN_EQUALITY, d['actual'], d['expected'])}"
@@ -381,6 +452,7 @@ class _Ordering(CheckType):
     compare_with: ClassVar[Callable[[Any, Any], Any]]
     #: ``1`` when the value must be above the threshold, ``-1`` when below.
     side: ClassVar[int]
+    format_keys = ("actual", "threshold")
 
     @classmethod
     def _build(
@@ -390,10 +462,15 @@ class _Ordering(CheckType):
         name: str,
         units: Optional[str],
         expected_name: Optional[str],
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, cls.check_type), plain_units(units)
-        shown = named(expected_name, render_value(threshold, units))
-        return _spelled(
+        fmt = Format.read(
+            cls.check_type, {"actual": actual, "threshold": threshold}, radix, width
+        )
+        shown = named(expected_name, fmt.shown("threshold", threshold, units))
+        return _formatted(
             {
                 "check_type": cls.check_type,
                 "name": name,
@@ -403,6 +480,7 @@ class _Ordering(CheckType):
                 "units": units,
             },
             expected_name,
+            fmt,
         )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
@@ -413,7 +491,12 @@ class _Ordering(CheckType):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, threshold = value_pair(d["actual"], d["threshold"], units)
+        keys = self.format_keys
+        shown = _in_format(Format.of(d, keys), d, keys, units)
+        if shown is not None:
+            actual, threshold = shown
+        else:
+            actual, threshold = value_pair(d["actual"], d["threshold"], units)
         threshold = named(d.get("expected_name"), threshold)
         if passed:
             return f"{actual} {self.symbol} {threshold}"
@@ -438,8 +521,10 @@ class Greater(_Ordering):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
-        return Greater._build(actual, threshold, name, units, expected_name)
+        return Greater._build(actual, threshold, name, units, expected_name, radix, width)
 
 
 class GreaterEqual(_Ordering):
@@ -456,8 +541,10 @@ class GreaterEqual(_Ordering):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
-        return GreaterEqual._build(actual, threshold, name, units, expected_name)
+        return GreaterEqual._build(actual, threshold, name, units, expected_name, radix, width)
 
 
 class Less(_Ordering):
@@ -474,8 +561,10 @@ class Less(_Ordering):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
-        return Less._build(actual, threshold, name, units, expected_name)
+        return Less._build(actual, threshold, name, units, expected_name, radix, width)
 
 
 class LessEqual(_Ordering):
@@ -492,12 +581,15 @@ class LessEqual(_Ordering):
         name: str,
         units: Optional[str] = None,
         expected_name: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
-        return LessEqual._build(actual, threshold, name, units, expected_name)
+        return LessEqual._build(actual, threshold, name, units, expected_name, radix, width)
 
 
 class Between(CheckType):
     check_type = "between"
+    format_keys = ("actual", "low", "high")
 
     @staticmethod
     def build(
@@ -508,6 +600,8 @@ class Between(CheckType):
         inclusive: bool = True,
         name: str,
         units: Optional[str] = None,
+        radix: Optional[str] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         name, units = require_name(name, "between"), plain_units(units)
         if is_real(low) and is_real(high):
@@ -520,18 +614,23 @@ class Between(CheckType):
                     "between() low must not exceed high, "
                     f"got low={safe_repr(low)}, high={safe_repr(high)}"
                 )
-        lo, hi = render_value(low, units), render_value(high, units)
+        fmt = Format.read("between", {"actual": actual, "low": low, "high": high}, radix, width)
+        lo, hi = fmt.shown("low", low, units), fmt.shown("high", high, units)
         bounds = f"[{lo}, {hi}]" if inclusive else f"({lo}, {hi})"
-        return {
-            "check_type": "between",
-            "name": name,
-            "description": f"{subject(name)} ∈ {bounds}",
-            "actual": actual,
-            "low": low,
-            "high": high,
-            "inclusive": inclusive,
-            "units": units,
-        }
+        return _formatted(
+            {
+                "check_type": "between",
+                "name": name,
+                "description": f"{subject(name)} ∈ {bounds}",
+                "actual": actual,
+                "low": low,
+                "high": high,
+                "inclusive": inclusive,
+                "units": units,
+            },
+            None,
+            fmt,
+        )
 
     def compare(self, d: Mapping[str, Any]) -> Any:
         actual, low, high = d["actual"], d["low"], d["high"]
@@ -542,9 +641,14 @@ class Between(CheckType):
 
     def detail(self, d: Mapping[str, Any], passed: bool) -> str:
         units = d.get("units")
-        actual, low = value_pair(d["actual"], d["low"], units)
-        tagged, high = value_pair(d["actual"], d["high"], units)
-        actual = max(actual, tagged, key=len)  # with its type when it looks like either bound
+        keys = self.format_keys
+        shown = _in_format(Format.of(d, keys), d, keys, units)
+        if shown is not None:
+            actual, low, high = shown
+        else:
+            actual, low = value_pair(d["actual"], d["low"], units)
+            tagged, high = value_pair(d["actual"], d["high"], units)
+            actual = max(actual, tagged, key=len)  # with its type when it looks like a bound
         bounds = f"[{low}, {high}]" if d.get("inclusive", True) else f"({low}, {high})"
         if passed:
             return f"{actual} ∈ {bounds}"

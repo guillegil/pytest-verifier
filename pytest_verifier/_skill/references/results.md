@@ -77,6 +77,10 @@ def pytest_sessionfinish(session):
 |---|---|
 | `check_type` | `"equal"`, `"approx"`, ..., `"true"`/`"false"` for `is_true`/`is_false` |
 | `name`, `description` | The label, and the statement such as `"Verify 'Vout' == 3.3V ± 0.05V"` |
+| `auto_name` | `True` only when `name=` was not given: the name is the value's source text, or `actual_name` |
+| `note` | Only when `note=` was given: the text, stripped |
+| `actual_name`, `expected_name` | Only when given: how the operand is spelled, with this run's values (`tb.dev.map.block.reg3.F`) |
+| `actual_name_symbolic`, `expected_name_symbolic` | Only when known and different: the same text with each f-string or t-string field as `<expression>` (`tb.dev.map.block.reg<channel>.F`) |
 | `passed`, `detail` | The verdict, and `"expected ... got ..."` (or the passing form) |
 | `error` | Only when the check could not be evaluated: the exception, e.g. `"TypeError: ..."` |
 | `phase` | `"setup"`, `"call"` or `"teardown"`: the test phase that made it |
@@ -84,8 +88,25 @@ def pytest_sessionfinish(session):
 | `section` | Only for a check recorded in `verify.section` blocks: their titles, outermost first (`["3V3", "Load"]`) |
 | values | Per type: `actual`, `expected`, `units`, `abs_tol`, `rel_tol`, `threshold`, `low`, `high`, `inclusive`, `haystack`, `needle`, `pattern`, `flags`, `expected_type`, `actual_length`, `msg` ... as JSON-safe snapshots: tuples become lists; sets, bytes, enums, `Decimal`, NaN, dicts with non-text keys and other objects become their repr text (`"Decimal('0.1')"`, `"nan"`). `units` given as a `str` enum member is stored as its text. A value of more than 10,000 items becomes shortened repr text, and `length` keeps only a preview of `actual` (repr text past 100 items, text cut at 240 characters): read `actual_length` |
 
-Keys of the 0.10.0 checks:
+Keys of single check types:
 
+- `is_instance`: `expected_type` (`"int | str"`), `expected_types` (`["builtins.int",
+  "builtins.str"]`) and `instance_check` (the `isinstance` result, taken when the check was
+  made).
+- Register values (`radix=`, `width=`, `bits`, `__verify_format__`): `radix` (`"hex"`,
+  `"bin"`, `"oct"`, `"dec"`), `width` (bits, when given), `fields` (`{"EN": [0, 0], "MODE":
+  [3, 1]}`: each `[msb, lsb]`), `mask` (`bits`, when given), and `rendered`: the formatted
+  text, without units, of each integer operand, by its key (`{"actual": "0x00F0", "expected":
+  "0x00F3"}`; keys among `actual`, `expected`, `threshold`, `low`, `high`, `mask`). `actual`
+  and `expected` stay exact JSON integers, also above 53 bits: show `rendered` where numbers
+  are parsed as floats. For `bits`, `rendered["expected"]` is the whole expected value; the
+  description and detail show it under the mask. An `equal` or `bits` whose integers
+  differ has `bit_diff` (never a recorded check that passed; a check not judged yet may, so
+  use it only with `passed` false): `bits` (runs of differing bits as `[msb, lsb]`, highest first, at
+  most 64; `more_bits` counts the rest), `text` (`"bits [1:0] differ"`) and, when fields differ, `fields`
+  (a list of `{"name", "msb", "lsb", "actual", "expected"}` with the two values as text such
+  as `"0b001"`; at most 64; `more_fields` counts the rest). `format_error` is there only when a value's
+  `__verify_format__` raised or answered wrongly. Checks without a format have none of these.
 - `raises`: `expected_type` (`"ValueError | KeyError"`), `expected_types`, `match`, `flags`,
   `raised_type` and `raised_message` (`None` when nothing was raised), `raised_at` (the
   `path:line` that raised), `type_check`, `match_check`. A block never used in a `with` is
@@ -112,7 +133,8 @@ Composites nest their children. Each child that was evaluated carries its own `p
 that was not selected carries no `passed` or `detail` (an eager child is still a dict, a lazy
 one is `None`), so test `"passed" in child`, not `child is None`:
 
-- `all_satisfy`: `child_checks`, a list.
+- `all_satisfy`: `child_checks`, a list; `items_name` (the source text of `items`) and
+  `item_name` (the factory's parameter), each only when known.
 - `conditional`: `switch_value`, `switch_label`, `matched_case` (the key as a string, or
   `None`), `cases` (a dict with string keys), `default`.
 - `guard`: `matched_index` (or `None`), `branches` (a list of `{"condition", "label",
@@ -128,8 +150,11 @@ with `.get()`: `check_type` is always there; `name` and `description` on every c
 `CheckDescriptor` is the `TypedDict` of a check, and `GuardBranch` the `TypedDict` of one entry
 of a guard record's `branches` (`guard()` itself takes `(condition, label, check)` tuples);
 both are exported by `pytest_verifier`, with `Verify`, `Require`, `ChecksFailedError`,
-`LimitRow` (a row of a `verify.limits` table) and `Raises` (the `verify.raises` block,
-generic in its exception type).
+`LimitRow` (a row of a `verify.limits` table), `Raises` (the `verify.raises` block,
+generic in its exception type), `VerifyFormat` and `ValueFormat` (a class with
+`__verify_format__` and what it returns: see [registers.md](registers.md)), and `BitField`
+(one entry of a `fields` table: annotate a table kept in a constant as
+`Dict[str, BitField]`).
 `pytest_verifier.__version__` is the installed version.
 
 ## Evaluating built checks yourself

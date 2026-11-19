@@ -57,20 +57,25 @@ class LimitRow(typing.TypedDict, total=False):
     needle: Any
     pattern: Union[str, "re.Pattern[str]"]
     expected_type: Any
+    radix: str
+    width: int
+    mask: int
+    fields: Mapping[str, Any]
     source: str
 
 
 #: The checks a row can name: the arguments each takes after the measured value (required
 #: ones, then optional ones) and its ``check_type``.
 ROW_CHECKS: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...], str]] = {
-    "equal": (("expected",), ("units",), "equal"),
-    "not_equal": (("expected",), ("units",), "not_equal"),
+    "equal": (("expected",), ("units", "radix", "width"), "equal"),
+    "not_equal": (("expected",), ("units", "radix", "width"), "not_equal"),
+    "bits": (("expected",), ("mask", "fields", "width", "radix"), "bits"),
     "approx": (("expected",), ("abs_tol", "rel_tol", "units"), "approx"),
-    "greater": (("threshold",), ("units",), "greater"),
-    "greater_equal": (("threshold",), ("units",), "greater_equal"),
-    "less": (("threshold",), ("units",), "less"),
-    "less_equal": (("threshold",), ("units",), "less_equal"),
-    "between": (("low", "high"), ("inclusive", "units"), "between"),
+    "greater": (("threshold",), ("units", "radix", "width"), "greater"),
+    "greater_equal": (("threshold",), ("units", "radix", "width"), "greater_equal"),
+    "less": (("threshold",), ("units", "radix", "width"), "less"),
+    "less_equal": (("threshold",), ("units", "radix", "width"), "less_equal"),
+    "between": (("low", "high"), ("inclusive", "units", "radix", "width"), "between"),
     "is_true": ((), (), "true"),
     "is_false": ((), (), "false"),
     "is_none": ((), (), "is_none"),
@@ -103,7 +108,7 @@ ARGUMENTS = frozenset(
 #: Arguments that are always numbers.
 _NUMBERS = frozenset({"low", "high", "threshold", "abs_tol", "rel_tol"})
 #: Checks whose ``expected`` is a number.
-_NUMBER_EXPECTED = frozenset({"approx", "length"})
+_NUMBER_EXPECTED = frozenset({"approx", "length", "bits"})
 
 ON_MISSING = ("fail", "ignore")
 
@@ -332,6 +337,12 @@ def _check_numbers(method: str, given: Mapping[str, Any], context: str) -> None:
                     f"{context}: expected must be a whole number of items, "
                     f"got {safe_repr(value)}"
                 )
+        elif argument == "expected" and method == "bits":
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise TypeError(
+                    f"{context}: expected must be an int (bits are compared), "
+                    f"got {safe_repr(value)}"
+                )
         elif argument in _NUMBERS or (argument == "expected" and method in _NUMBER_EXPECTED):
             if not _finite(value):
                 # The right type with a wrong value (NaN, infinity) is a ValueError.
@@ -525,10 +536,16 @@ def limit_checks(
 # ---------------------------------------------------------------------------
 
 #: Arguments that are always text.
-_TEXTS = frozenset({"units", "pattern"})
+_TEXTS = frozenset({"units", "pattern", "radix"})
+#: Arguments that are whole numbers (``16``, ``0x00FF``).
+_WHOLE = frozenset({"width", "mask"})
+#: One field of a ``fields`` cell: ``EN=0`` or ``MODE=3:1``.
+_FIELD = re.compile(r"([^\s=]+)=([0-9]+)(?::([0-9]+))?")
 _TRUE = frozenset({"true", "yes", "1", "y"})
 _FALSE = frozenset({"false", "no", "0", "n"})
-_INTEGER = re.compile(r"[+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[oO][0-7]+|[0-9]+)")
+_INTEGER = re.compile(
+    r"[+-]?(?:0[xX](?:_?[0-9a-fA-F])+|0[bB](?:_?[01])+|0[oO](?:_?[0-7])+|[0-9]+)"
+)
 _FLOAT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 #: A number with a dot between groups of three digits (``1.000,5``, ``1.000.000``).
 _THOUSANDS = re.compile(r"[+-]?[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]*)?")
@@ -538,7 +555,8 @@ _DELIMITERS = (",", ";", "\t")
 
 
 def _number(text: str, comma: bool) -> Union[int, float, None]:
-    """*text* as an ``int`` (decimal, or ``0x``/``0b``/``0o``) or a finite ``float``; ``None``
+    """*text* as an ``int`` (decimal, or ``0x``/``0b``/``0o``, whose digits may be grouped
+    with ``_`` as the plugin prints them: ``0xDEAD_BEEF``) or a finite ``float``; ``None``
     when it is not one (also for ``nan``, ``inf`` and ``1_000``). With *comma*, a decimal comma
     is a decimal point."""
     if comma and "," in text and "." not in text:
@@ -643,6 +661,11 @@ def load_limits(
       a number (a ``Decimal`` or ``Fraction`` against one), against a ``bool`` true/false; a
       cell that cannot be that fails the check.
     - ``inclusive``: true/false (also yes/no, 1/0, any case). ``units``, ``pattern``: text.
+    - ``radix`` (``hex``, ``bin``, ``oct`` or ``dec``) and ``width`` (bits) show the integers
+      of ``equal``, ``not_equal``, the ordering checks, ``between`` and ``bits`` as a
+      register reads. A ``bits`` row (``check`` is ``bits``) also takes ``mask`` (a whole
+      number, such as ``0x00FF``) and ``fields``: ``EN=0 MODE=3:1``, each a name with a bit
+      index or ``msb:lsb``, separated by spaces.
     - Selector columns, named in *select*: ``select={"corner": "hot"}`` keeps the lines whose
       ``corner`` cell is ``hot`` (a cell may list values: ``hot|cold``) or empty. A line that
       names the value beats one that leaves it empty, so a default line can be overridden per
@@ -896,6 +919,16 @@ def _row(values: Dict[str, str], where: str, comma: bool) -> LimitRow:
             row[column] = method
         elif column in _TEXTS:
             row[column] = text
+        elif column in _WHOLE:
+            whole = _number(text, False)
+            if not isinstance(whole, int):
+                raise ValueError(
+                    f"load_limits(): {where}, column {column!r}: must be a whole number, got "
+                    f"{text!r}"
+                )
+            row[column] = whole
+        elif column == "fields":
+            row[column] = _fields(text, where)
         elif column == "inclusive":
             flag = _boolean(text)
             if flag is None:
@@ -923,6 +956,26 @@ def _row(values: Dict[str, str], where: str, comma: bool) -> LimitRow:
             row[column] = typed
     row["source"] = where
     return row  # type: ignore[return-value]
+
+
+def _fields(text: str, where: str) -> Dict[str, Any]:
+    """A ``fields`` cell, such as ``EN=0 MODE=3:1``: names with a bit index or ``msb:lsb``,
+    separated by spaces."""
+    fields: Dict[str, Any] = {}
+    for part in text.split():
+        match = _FIELD.fullmatch(part)
+        if match is None:
+            raise ValueError(
+                f"load_limits(): {where}, column 'fields': {part!r} is not a field; write "
+                "name=bit or name=msb:lsb, with spaces between fields (EN=0 MODE=3:1)"
+            )
+        name, first, second = match.groups()
+        if name in fields:
+            raise ValueError(
+                f"load_limits(): {where}, column 'fields': the field {name!r} is there twice"
+            )
+        fields[name] = int(first) if second is None else (int(first), int(second))
+    return fields
 
 
 def _number_hint(text: str, comma: bool) -> str:

@@ -107,8 +107,8 @@ test as it is written:
 
 - **Where they go.** `actual_name=` is on every check of one value (it names the haystack of
   `contains` and `not_contains`). `expected_name=` is on the checks with one compared value:
-  `equal`, `not_equal`, `approx` (the expected value), `greater`, `greater_equal`, `less`,
-  `less_equal` (the threshold) and `length`. `between`, `contains`, `not_contains`, `matches`
+  `equal`, `not_equal`, `bits`, `approx` (the expected value), `greater`, `greater_equal`,
+  `less`, `less_equal` (the threshold) and `length`. `between`, `contains`, `not_contains`, `matches`
   and `is_instance` do not take `expected_name=`; composite and sampling checks, `raises`,
   `fail` and `limits` take neither.
 - **The name of the check.** Without `name=`, `actual_name` is the check's name (and the
@@ -139,6 +139,117 @@ test as it is written:
 
 - A name is stripped; `None` or a blank one counts as not given. Anything that is not a `str`
   (or a template string) raises `TypeError`.
+
+### Registers and bit fields
+
+Register values read as hex or binary, and a failed compare should say which bits are wrong.
+`radix=` (`"hex"`, `"bin"`, `"oct"` or `"dec"`) and `width=` (bits) show the integers of a check
+as a register reads; `verify.bits` compares under a mask and names the fields:
+
+```python
+def test_readback(verify, rdata, wdata):
+    verify.equal(rdata, wdata, radix="hex", width=16)
+    verify.bits(rdata, wdata, mask=0x00FF, fields={"EN": 0, "MODE": (3, 1)}, width=16)
+```
+
+```text
+2 of 2 checks failed: rdata — expected 0x00F3, got 0x00F0; bits [1:0] differ (+1 more)
+
+  ✗ [0] rdata (test_ctrl.py:2) — expected 0x00F3, got 0x00F0; bits [1:0] differ
+  ✗ [1] rdata (test_ctrl.py:3) — expected 0x00F3, got 0x00F0 (mask 0x00FF); bits [1:0] differ: EN [0] is 0b0, expected 0b1; MODE [3:1] is 0b000, expected 0b001
+```
+
+- **`radix=` and `width=`** are on `equal`, `not_equal`, `greater`, `greater_equal`, `less`,
+  `less_equal`, `between` and `bits`. Hex and binary are padded to the width and grouped in
+  fours (`0xDEAD_BEEF`, `0b0000_1111`), so the text is a Python literal; octal is padded
+  (`0o000363`). `width` alone means hex, and `radix` alone uses the digits the value needs. A
+  negative value has a sign (`-0x000F`), and a value wider than the width shows every digit.
+  `units` follow the value as usual.
+- **They change no verdict.** A format applies to the operands that are an `int` (not a
+  `bool`); a float, text or `None` in the same check is shown as usual. Integers above 1024
+  bits keep their decimal form. A formatted value longer than 240 characters (binary above
+  about 190 bits, hex above about 760) is shown in descriptions and details with `...` for
+  its middle digits; the record's `rendered` text has every digit.
+- **`verify.bits(actual, expected, *, mask=None, fields=None, width=None, radix=None, ...)`**
+  passes when `(actual ^ expected) & mask == 0`; without a mask every bit counts. It is shown
+  in hex unless `radix` says otherwise, and its description states the expected bits under the
+  mask: `Verify 'CTRL' & 0x00FF == 0x00F3`. Operands that are not integers (a `bool`, a float,
+  text) make the check fail with an `error`; they never raise.
+- **`fields`** maps a name to a bit index or to `(msb, lsb)`, in either order. Fields may
+  overlap. A failed check names each field that differs, in binary up to four bits and in hex
+  above; bits that differ outside every field are still in the bit list. A table kept in a
+  constant needs its type for a type checker, which otherwise reads a dict of ints and tuples
+  as `dict[str, object]`: `CTRL: Dict[str, BitField] = {"EN": 0, "MODE": (3, 1)}`, with
+  `from pytest_verifier import BitField`.
+- **Which bits differ.** A failed `equal` with a format says so too: runs of bits, highest
+  first, as `bits [7:6], bit 4 and bits [1:0] differ` (eight runs, then `and N more`). A
+  negative operand without a mask has no bit list.
+- A wrong argument raises at the call: an unknown radix, a width that is not from 1 to 1024, a
+  negative mask, a field that is blank, named twice, negative or outside the width.
+
+A value can carry its own format, so that the tests of a register model need no arguments. A
+class defines `__verify_format__`, which returns any of `radix`, `width`, `fields` and `value`:
+
+```python
+from pytest_verifier import ValueFormat
+
+class Reading(int):
+    """What one read of a register returned. It knows how the register is shown."""
+
+    register: "Register"
+
+    def __verify_format__(self) -> ValueFormat:
+        return {"radix": "hex", "width": self.register.width, "fields": self.register.fields}
+
+
+class Register:
+    """One register of a register model."""
+
+    def __init__(self, bus, address, width=16, fields=None):
+        self.bus, self.address, self.width, self.fields = bus, address, width, fields or {}
+
+    def read(self) -> Reading:
+        reading = Reading(self.bus.read(self.address))
+        reading.register = self
+        return reading
+
+
+def test_ctrl(verify, bus):
+    ctrl = Register(bus, 0x10, fields={"EN": 0, "MODE": (3, 1), "DIV": (15, 8)})
+    verify.equal(ctrl.read(), 0x00F3)
+```
+
+```text
+1 of 1 checks failed: ctrl.read() — expected 0x00F3, got 0x00F0; bits [1:0] differ: EN [0] is 0b0, expected 0b1; MODE [3:1] is 0b000, expected 0b001
+```
+
+- **One read per check.** The example reads the bus once: the reading is an `int`, so the
+  value compared is the value shown. An object that is not an `int` returns its integer as
+  `value`, and then `__verify_format__` is called when the check is made and the object's `==`
+  when it is judged. Both must use the same reading (keep it in the object); a class that
+  reads the bus in each compares one value and shows another, and a read-to-clear register is
+  read twice.
+- The method is read once, when the check is made, from the type of the checked value and
+  then of the value it is compared with (`expected`, `threshold`, `low`, `high`). The first
+  one that answers gives the format; `radix=`, `width=` and `fields=` given at the call win
+  over it, each on its own. It applies to the eight checks above, and `equal` and `not_equal`
+  take the fields from it. The fields must fit the width in force wherever each came from:
+  `fields=` with a bit outside the value's width raises, and under a narrower `width=` the
+  value's fields outside it are left out.
+- `value` is the integer an object stands for. Without it, an `int` subclass is its own value
+  and an object with `__index__` gives `operator.index()`. The comparison does not change:
+  `equal` still calls the object's `==`. The record stores the integer, so reports have a
+  number where they had the object's `repr`. For `bits`, the integers are what is compared.
+- It can never break a test. If it raises or returns something that is not valid, the check is
+  made without it and its record says why in `format_error`. Returning `None` means no format.
+- `pytest_verifier.VerifyFormat` is a `typing.Protocol` for such classes, and
+  `pytest_verifier.ValueFormat` the `TypedDict` of what the method returns.
+
+The record of a check with a format holds it as data (see
+[Reading Results from Another Plugin](https://github.com/guillegil/pytest-verifier#reading-results-from-another-plugin)),
+and `--verify-summary=stats` prints a register's range in its format (`0x00F0 to 0x00F3`),
+with a whole margin in the same radix (`margin 0xC`). A name whose checks used different
+formats, or measured a value that is not an integer beside formatted ones, gets no range.
 
 ### Editor completion and type checking
 
@@ -390,7 +501,9 @@ Every check that takes `name` also takes `note=None` (see
 [Names and notes](https://github.com/guillegil/pytest-verifier#names-and-notes)). On the checks of
 one value, `name` is optional: it defaults to the source text of that value. Those checks also
 take `actual_name=`, and the ones with one compared value `expected_name=` (see
-[Operand names](https://github.com/guillegil/pytest-verifier#operand-names)).
+[Operand names](https://github.com/guillegil/pytest-verifier#operand-names)). `equal`,
+`not_equal`, the ordering checks, `between` and `bits` take `radix=None` and `width=None` (see
+[Registers and bit fields](https://github.com/guillegil/pytest-verifier#registers-and-bit-fields)).
 
 ### Equality & Approximation
 
@@ -398,6 +511,7 @@ take `actual_name=`, and the ones with one compared value `expected_name=` (see
 |----------|-------------|
 | `verify.equal(actual, expected, *, name=None, units=None)` | `actual == expected` |
 | `verify.not_equal(actual, expected, *, name=None, units=None)` | `actual != expected` |
+| `verify.bits(actual, expected, *, mask=None, fields=None, width=None, radix=None, name=None)` | `(actual ^ expected) & mask == 0`: register values, bit by bit |
 | `verify.approx(actual, expected, *, abs_tol=None, rel_tol=None, name=None, units=None)` | Approximate equality (at least one tolerance required) |
 
 With `units="%"`, the tolerance says whether it is absolute or relative: `50% ± 1% (abs)`.
@@ -749,6 +863,10 @@ needs a tolerance, or `"check": "equal"`).
 - Every row is checked before anything is recorded: limits must be finite numbers (not text,
   NaN or infinity), `rel_tol` a fraction below 1, and `inclusive` a `bool`. A wrong row raises
   and names the row.
+- Register rows: `radix` and `width` are arguments of `equal`, `not_equal`, the ordering checks
+  and `between`, and `"check": "bits"` makes a `bits` row, with `expected` (an `int`) and
+  optionally `mask`, `fields`, `width` and `radix`:
+  `{"check": "bits", "expected": 0x00F3, "mask": 0x00FF, "fields": {"EN": 0}, "width": 16}`.
 - A row with no measurement fails with an error, `not measured: ...`, that names a similar
   measurement key (in any case) when there is one. `on_missing="ignore"` makes no check for it
   instead. Measurements that have no row are not checked.
@@ -797,6 +915,9 @@ LIMITS = load_limits(Path(__file__).with_name("limits.csv"), select={"corner": "
   `1.10` stays text against a `str` reply and becomes a number against a number (a `Decimal`
   against a `Decimal`). A `needle` takes the type of the haystack's items: any collection that
   can be read again, such as a list, a set, `dict.keys()` or a `deque`, but not an iterator.
+- `radix` and `width` are columns too, for the checks that take them. A `bits` row (`check` is
+  `bits`) has its `expected`, and may have `mask` and `fields`, written as `EN=0 MODE=3:1`: each
+  field a name with a bit index or `msb:lsb`, with spaces between fields.
 - Every line is checked when the file is read, and errors name the file and line. Each row gets
   `source`, such as `"limits.csv:3"`, which its record keeps as `limit_source`.
 
@@ -968,6 +1089,34 @@ check holds JSON-safe copies of the checked values taken when the check was made
 `json.dumps` works on it. A check nested in `all_satisfy`, `conditional` or `guard` is inside
 its parent. After a rerun, only the last attempt's checks are returned. `pytest-reporter` uses
 this to render verification cards.
+
+A check of [register values](https://github.com/guillegil/pytest-verifier#registers-and-bit-fields)
+adds these keys. All are optional, so a reader must not require them:
+
+| Key | Example | |
+|-----|---------|---|
+| `radix` | `"hex"` | the format in force: `"hex"`, `"bin"`, `"oct"` or `"dec"` |
+| `width` | `16` | bits, when given |
+| `fields` | `{"EN": [0, 0], "MODE": [3, 1]}` | each field as `[msb, lsb]`, in the order given |
+| `mask` | `255` | `bits` only, when given |
+| `rendered` | `{"actual": "0x00F0", "expected": "0x00F3"}` | the text of each value the format applies to, without units: keys among `actual`, `expected`, `threshold`, `low`, `high`, `mask` |
+| `bit_diff` | `{"bits": [[1, 0]], "text": "bits [1:0] differ", "fields": [...]}` | `equal` and `bits`, when the integers differ (under the mask); never on a check that passed |
+| `format_error` | `"Reg.__verify_format__: RuntimeError: bus"` | why a value's `__verify_format__` was not used |
+
+- `rendered` is exact for any width. A 64-bit value is also in `actual` as a JSON number with
+  every digit, but a reader that parses numbers as floats (JavaScript) loses the low bits
+  there, so show the text. The `rendered["expected"]` of `bits` is the whole value given; the
+  description and the detail show it under the mask.
+- `bit_diff["bits"]` lists the runs of differing bits as `[msb, lsb]`, highest first (at most
+  64, with `more_bits` for the rest). `fields`, present when fields are known and some differ,
+  has one `{"name", "msb", "lsb", "actual", "expected"}` per differing field, the two values as
+  text (`"0b000"`, `"0b001"`; at most 64, with `more_fields` for the rest). A recorded check
+  that passed has no `bit_diff`, also when a register object's `==` accepted another integer.
+  A check built with `checks` and not judged yet has it whenever its integers differ.
+- `rendered` and `bit_diff` in a record are made from the values the check was judged on, so
+  a copy of a built check with another value (`dict(check, actual=...)`) records its own.
+- `actual`, `expected`, `threshold`, `low` and `high` hold the integer of a register object
+  (its `value`), not its `repr`.
 
 A plugin that should not import pytest-verifier can implement the `pytest_verify_results` hook
 instead. It is called when a phase ends with checks to judge: when the test body ends, for the
