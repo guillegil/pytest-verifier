@@ -131,6 +131,9 @@ no check (a `def` without `return`) fails the composite at that item, and later 
 checked. The failure names the first
 three failing items by index: `expected all 8 to pass, got 1 failed: [2] expected [3.2V,
 3.4V], got 3.47V`.
+The record keeps `items_name` (source text of `items`) and `item_name` (the lambda's or
+function's parameter), each only when known, so reports can print one line,
+`for each v in voltages, ...`. Pass the items as a named variable and use a lambda to get both.
 
 ```python
 voltages = dut.channel_voltages()

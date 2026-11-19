@@ -75,7 +75,7 @@ from ._operands import UNSPELLED, OperandName, Spelling, spell
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
 from ._settle import settle
-from ._source import subject_text
+from ._source import FALLBACK, subject_text
 
 #: The type of the items an ``all_satisfy`` factory receives.
 _Item = TypeVar("_Item")
@@ -1009,7 +1009,10 @@ class Verify:
         """Check that every item in *items* satisfies *descriptor_factory*.
 
         The factory is invoked immediately for each item, and the resulting
-        child descriptors are stored in the returned descriptor. If *items* cannot be
+        child descriptors are stored in the returned descriptor. The descriptor also keeps
+        words for reports: ``items_name``, the source text of *items* (``waveforms``), and
+        ``item_name``, the name of the factory's parameter (``w`` in ``lambda w: ...``), each
+        only when known. If *items* cannot be
         iterated, or the factory raises or returns something that is not a check, the check
         fails and its ``error`` says why. With the fixture, the checks the factory makes
         belong to this check.
@@ -1027,8 +1030,15 @@ class Verify:
         """
         __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
         note = require_note(note, "all_satisfy")
+        items_name = subject_text("all_satisfy", "items")
+        if items_name == FALLBACK:
+            items_name = ""
         return self._sink.composite(
-            lambda: annotate(ALL_SATISFY.build(items, descriptor_factory, name=name), note, False),
+            lambda: annotate(
+                ALL_SATISFY.build(items, descriptor_factory, name=name, items_name=items_name),
+                note,
+                False,
+            ),
             (),
         )
 

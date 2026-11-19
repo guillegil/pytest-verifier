@@ -106,6 +106,10 @@ class CheckDescriptor(_CheckIdentity, total=False):
     instance_check: bool
     actual_length: Optional[int]
     child_checks: List[CheckDescriptor]
+    #: ``all_satisfy``: the source text of ``items`` (``waveforms``) and the name of the
+    #: factory's parameter (``w``), each only when known. Words for reports, never judged.
+    items_name: str
+    item_name: str
     switch_value: Any
     switch_label: str
     cases: Dict[str, Optional[CheckDescriptor]]

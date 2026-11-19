@@ -575,6 +575,14 @@ A failure names the first three failing items by their index:
   ✗ [0] All channels within spec (tests/test_channels.py:2) — expected all 4 to pass, got 2 failed: [1] expected [3.2V, 3.4V], got 3.55V; [3] expected [3.2V, 3.4V], got 3.1V
 ```
 
+The record also says how the items and the item are spelled in your code: `items_name` is
+the source text of the first argument (`channel_voltages`) and `item_name` is the name of the
+factory's parameter (`v`). Each is there only when it is known: there is no `items_name` without
+source, and no `item_name` for a factory that is not a plain function or lambda (a bound method,
+a `functools.partial`). They are words for reports, never judged: stepdoc and pytest-reporter
+use them to show the check as one line, `for each v in channel_voltages, ...`, instead of one
+line per item.
+
 ### How child checks are counted
 
 With the fixture, every check you pass to a composite (in `cases`, `branches`, `default`, or

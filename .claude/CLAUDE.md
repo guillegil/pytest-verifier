@@ -324,7 +324,7 @@ and `limits` take neither.
 |----------|-----------|-------|
 | `verify.is_instance(actual, expected_type, *, name=None, note=None)` | `"is_instance"` | Store type as string in descriptor |
 | `verify.length(actual: Sized, expected, *, name=None, note=None)` | `"length"` | Stores `actual_length` in descriptor; a record keeps a preview of `actual` (100 nodes, text cut at 240) |
-| `verify.all_satisfy(items: Iterable[T], descriptor_factory: Callable[[T], ...], *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored |
+| `verify.all_satisfy(items: Iterable[T], descriptor_factory: Callable[[T], ...], *, name)` | `"all_satisfy"` | Factory callable invoked at call time, not stored; `items_name` (source of `items`) and `item_name` (factory parameter) when known |
 | `verify.conditional(switch_value, *, cases, default=None, name)` | `"conditional"` | Only matched branch evaluated; a case/default may be a callable, called only if selected |
 | `verify.guard(branches, *, default=None, name)` | `"guard"` | First truthy `(condition, label, check)` branch evaluated; checks, default and conditions may be callables |
 | `verify.fail(msg, *, name=None)` | `"fail"` | Always fails. name defaults to msg (`fail` when blank) |

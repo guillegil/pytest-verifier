@@ -44,10 +44,10 @@ FALLBACK = "value"
 #: Longest default name; a longer expression is cut and ends in ``...``.
 NAME_LIMIT = 120
 
-#: Cached names: ``(id(code), f_lasti) -> (weakref to the code, name)``. The weak reference
-#: tells a code object from a newer one that reuses the id; ids avoid hashing code objects,
-#: which walks their bytecode and constants.
-_NAMES: Dict[Tuple[int, int], Tuple[Any, str]] = {}
+#: Cached names: ``(id(code), f_lasti, method, parameter) -> (weakref to the code, name)``.
+#: The weak reference tells a code object from a newer one that reuses the id; ids avoid
+#: hashing code objects, which walks their bytecode and constants.
+_NAMES: Dict[Tuple[int, int, str, str], Tuple[Any, str]] = {}
 
 #: The parts of an f-string, in order: its literal text (``str``) and, each in a 1-tuple, the
 #: source text of the expressions it interpolates.
@@ -121,7 +121,9 @@ def spellings(method: str) -> Mapping[str, Parts]:
 
 def _cached(frame: FrameType, method: str, parameter: str) -> str:
     code, lasti = frame.f_code, frame.f_lasti
-    key = (id(code), lasti)
+    # The method is part of the key: ``all_satisfy`` reads its ``items`` at the instruction
+    # where a bound-method factory (``checks.is_true``) then runs, and must not name it.
+    key = (id(code), lasti, method, parameter)
     hit = _NAMES.get(key)
     if hit is not None and hit[0]() is code:
         return hit[1]
