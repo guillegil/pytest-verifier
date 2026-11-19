@@ -29,6 +29,7 @@ from typing import (
 import pytest
 
 from .._descriptors import is_descriptor
+from .._registers import recorded
 from .._render import describe_error, escape, render_text, render_value, safe_repr, safe_str
 
 #: ``(passed, error)``: the verdict and, when the check could not be evaluated, why.
@@ -111,6 +112,13 @@ class CheckType:
     #: :data:`~pytest_verifier._render.VALUE_LIMIT` characters. Others are copied in full.
     snapshot_limits: ClassVar[Dict[str, int]] = {}
 
+    #: The operand fields a register format applies to (``radix=``/``width=``); none for a
+    #: type without formats. With :attr:`format_diff` the type also stores ``bit_diff``, and
+    #: :attr:`format_default` is the radix of a type that always has one.
+    format_keys: ClassVar[Tuple[str, ...]] = ()
+    format_diff: ClassVar[bool] = False
+    format_default: ClassVar[Optional[str]] = None
+
     def compare(self, d: Mapping[str, Any]) -> Any:
         """Compare the descriptor's values and return the raw result. May raise."""
         raise NotImplementedError
@@ -141,6 +149,22 @@ class CheckType:
         """What the check read, as a record keeps it: the tries of a sampling check compare
         it to tell whether the value changed. May raise."""
         return d.get("actual")
+
+    def evidence(self, d: Mapping[str, Any], passed: Optional[bool] = None) -> Mapping[str, Any]:
+        """The fields of *d* a record copies; *passed* is the verdict, when the record has
+        one. They are *d*'s, except that the integer a register object stands for
+        (``format_values``, read from its ``__verify_format__`` when the check was built)
+        takes the object's place, so the record holds a number while the built check still
+        compares the object; and that a type with a format (:attr:`format_keys`) gets the
+        ``rendered`` text, and with :attr:`format_diff` the ``bit_diff``, of the integers
+        it has now (no ``bit_diff`` when it passed). Never raises."""
+        return recorded(
+            d,
+            self.format_keys,
+            passed=passed,
+            diff=self.format_diff,
+            default=self.format_default,
+        )
 
 
 class CompositeType(CheckType):

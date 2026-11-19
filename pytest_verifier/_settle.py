@@ -31,19 +31,22 @@ def _unknown(descriptor: Any) -> None:
     return None
 
 
-def _evidence(descriptor: Mapping[str, Any]) -> Dict[str, Any]:
+def _evidence(descriptor: Mapping[str, Any], passed: Optional[bool] = None) -> Dict[str, Any]:
     """JSON-safe copies of every field except the verdict and the child checks. Units given
     as a ``str`` subclass (a hand-built descriptor's ``str`` enum member) are kept as their
-    text, as the check methods store them."""
+    text, as the check methods store them. The check type says which fields are copied
+    (:meth:`~pytest_verifier._checks.CheckType.evidence`), given the verdict *passed* when
+    the record gets one."""
     check = lookup(descriptor)
     limits = {} if check is None else check.snapshot_limits
+    fields = descriptor if check is None else check.evidence(descriptor, passed)
     return {
         _field(key): (
             snapshot(value, limits[key], VALUE_LIMIT)
             if key in limits
             else snapshot(plain_units(value) if key == "units" else value)
         )
-        for key, value in descriptor.items()
+        for key, value in fields.items()
         if key not in _VERDICT_FIELDS and key not in _CHILD_FIELDS
     }
 
@@ -86,7 +89,7 @@ def settle(descriptor: Any, known: Known = _unknown) -> Tuple[CheckDescriptor, b
     passed, error = judge(descriptor)
     # Render from the live values now; the record keeps only the snapshots.
     detail = render_detail(descriptor, passed, error)
-    record = _evidence(descriptor)
+    record = _evidence(descriptor, passed)
     record["passed"] = passed
     if error is not None:
         record["error"] = error

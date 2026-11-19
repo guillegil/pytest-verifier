@@ -5,6 +5,7 @@ from pytest_verifier import _checks
 
 build_equal = _checks.EQUAL.build
 build_not_equal = _checks.NOT_EQUAL.build
+build_bits = _checks.BITS.build
 build_approx = _checks.APPROX.build
 build_greater = _checks.GREATER.build
 build_greater_equal = _checks.GREATER_EQUAL.build

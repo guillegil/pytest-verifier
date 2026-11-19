@@ -29,14 +29,19 @@ Pick a free name before publishing. `pytest-softverify`, `pytest-soft-verify` an
    and accept lazy composite children ([ARCH-4](#arch-4-lazy-composite-children-instead-of-evaluate-then-discard)).
    Together these fix most of the High and Medium bugs.
 3. **0.5.0 and later: features.** Call-site locations, `verify.raises`, collection-aware
-   checks, sections, limits tables, and a published schema.
+   checks, sections, limits tables, and a published schema. Saved for a later release, not
+   scheduled: waveform and mask checks ([FEAT-13](#feat-13-waveform-and-mask-checks)) and a
+   measurement datalog with statistics across rows
+   ([FEAT-14](#feat-14-measurement-datalog-and-statistics-across-rows)).
 4. **1.0.0: rename, publish to PyPI, and freeze the descriptor schema.**
 
 ## Contents
 
 - [Improvements found during the review](#improvements-found-during-the-review)
 - [Architecture and refactoring](#architecture-and-refactoring)
-- [Feature ideas](#feature-ideas)
+- [Feature ideas](#feature-ideas) (FEAT-1 to FEAT-14; the newest are
+  [FEAT-13](#feat-13-waveform-and-mask-checks), waveform and mask checks, and
+  [FEAT-14](#feat-14-measurement-datalog-and-statistics-across-rows), a measurement datalog)
 - [Developer experience, CI and releases](#developer-experience-ci-and-releases)
 
 ---
@@ -471,6 +476,13 @@ formatter as values so `± 0.30000000000000004` disappears, and show how far out
 failing reading was. Duck-type `pint` quantities (`.magnitude` and `.units`) without depending on
 pint. *Effort M, impact medium, minor.*
 
+Partly shipped in 0.11.0, under another spelling: `radix=` (`"hex"`, `"bin"`, `"oct"`, `"dec"`)
+and `width=` on the equality and ordering checks and on the new `verify.bits`, plus the
+`__verify_format__` protocol for values that carry their format. A failed register compare
+names the bits and fields that differ, which is the register half of FEAT-5's structured
+diffs. Engineering notation, ppm, tolerances formatted like their values, the distance past a
+limit and `pint` quantities wait.
+
 #### FEAT-8. `verify.section()` for grouping
 
 ```python
@@ -528,6 +540,52 @@ Add `--verify-show-passed=auto|all|none|N` (with `auto` following `-q` and `-v`)
 `--verify-summary=off|failed|all|stats`, which adds a terminal section grouping checks by name
 across tests and parameters (for example, "Vout: 120 runs, 3 failed, closest margin 4 mV").
 *Effort M, impact medium, minor.*
+
+#### FEAT-13. Waveform and mask checks
+
+A scope capture is judged against an envelope, not against one number: a power-up ramp must
+stay inside its window, a rail must settle, ripple must stay under a line, an eye must stay out
+of a mask. Add
+
+```python
+verify.within_mask(t, y, upper=[(0.0, 0.5), (1e-3, 3.6), (5e-3, 3.4)],
+                   lower=[(0.0, -0.1), (2e-3, 3.2)], name="3V3 rail power-up", units="V")
+```
+
+which judges every sample of the captured trace against an upper and a lower envelope, each
+given as corner points `(time, value)` with a straight line between corners. The record keeps
+a decimated copy of the samples (bounded, and always with the worst excursion and the samples
+around each violation), the number of samples outside, the first and the last time outside,
+and the worst sample with its distance to the limit, so that pytest-reporter can draw the
+trace inline (SVG) with the excursion marked. The summary line reads
+`3V3 rail power-up: 29 samples outside the mask, worst 3.687 V at 0.64 ms (+196 mV)`.
+
+Open questions: the decimation rule; numpy arrays without importing numpy; masks relative to
+a reference trace; time alignment at a trigger.
+
+Saved for later on 2026-11-19 at the owner's request, not implemented. A mockup of the trace
+view was reviewed with the owner that day (artifact "Mask and Datalog Mockups",
+https://claude.ai/artifact/QJaABK2aZ5MpqffXnj9ro8). *Effort M to L, impact high for bench work,
+minor.*
+
+#### FEAT-14. Measurement datalog and statistics across rows
+
+No new API in tests: every numeric check (`approx`, `between`, the ordering checks, limits
+tables) already has a value, limits, units and a margin. Collect them over the run into one
+table (test, row or parametrize id, check name, value, low and high limit, units, margin,
+outcome), written as CSV or JSON from `report.verify_checks`, like `--verify-json`, and shown
+by pytest-reporter as a sortable Measurements view. When the same check runs over many rows
+(the random vectors of pytest-strategies), show the distribution against the limits: a
+histogram, the mean, sigma and `Cpk = min(USL - mean, mean - LSL) / (3 sigma)`, so that a run
+where every row passes but the values sit against one limit is visible.
+
+Open questions: the grouping key (the label plus the test function); one-sided limits; `approx`
+tolerances as limits; the smallest sample count for a Cpk.
+
+Saved for later on 2026-11-19 at the owner's request, not implemented. A mockup of the
+Measurements view was reviewed with the owner that day (artifact "Mask and Datalog Mockups",
+https://claude.ai/artifact/QJaABK2aZ5MpqffXnj9ro8). *Effort S to M in pytest-verifier, M in
+pytest-reporter, impact high, minor.*
 
 ---
 

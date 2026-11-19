@@ -114,6 +114,26 @@ reasons for each choice, is in `.tasks.md`.
 - [x] ~~Bug and corner-case hunt over the release; every confirmed finding fixed with a test~~ (45 findings, 42 confirmed; limits: exact CSV limits for `Decimal`/`Fraction`, re-readable needles, hints for thousands separators, BOMs and `columns=` targets; raises blocks: dropped with their try, or with a sample, lazy child or factory that raised, reported only when the phase ended without an exception (with phase, section, place, creation order), no teardown crash, a returned block reported once with a fitting hint, required-block stops wait only when the try or composite took the exception, no chained context on a stop, failing `__notes__`; sampling: a try passes only when every check it made passes (`also_failed`), returned thread checks join their try, "never changed" compares whole values and lengths, async samples, margins with units; `verify.record` copies stay on their own; the verbose XFAIL line follows `--verify-ascii`)
 - [x] ~~PR, CI green, merge, release v0.10.0 to PyPI and GitHub~~ (PR #8)
 
+### 0.11.0 Register-aware checks
+
+Scope: asked for by the user on 2026-11-19 as part of a change across pytest-verifier, stepdoc
+and pytest-reporter (register values in hex with the bits that differ; this repository carries
+the checks and the record keys). The plan, with the reasons for each choice, is in `.tasks.md`.
+`[Unreleased]` in the CHANGELOG also holds the earlier unreleased work (`note=`, optional
+`name=`, operand names, `items_name`/`item_name`, the `_entry` module).
+
+- [x] ~~`radix=` and `width=` on `equal`, `not_equal`, the ordering checks and `between` (the register half of FEAT-7)~~ (plain checks read byte-for-byte as before)
+- [x] ~~`verify.bits(actual, expected, *, mask=, fields=, width=, radix=)`, check type `bits`~~
+- [x] ~~The `__verify_format__` protocol; `VerifyFormat` and `ValueFormat` exported~~ (read once at build; never raises, never fails a check: `format_error`)
+- [x] ~~Record keys `radix`, `width`, `fields`, `mask`, `rendered`, `bit_diff`, `format_error`; the integer of a register object in the record~~
+- [x] ~~Limits rows and CSV columns (`radix`, `width`, `bits` rows with `mask` and `fields`); `--verify-summary=stats` in the group's format~~
+- [x] ~~The skill: audit findings fixed, registers reference, version 0.11.0~~
+- [x] ~~README, CHANGELOG, CLAUDE.md; FEAT-13 and FEAT-14 saved as ideas~~
+- [x] ~~Suite and mypy on Python 3.13~~
+- [ ] Full test matrix (Python 3.9 to 3.14, pytest 7.0.1), build, sdist tests against the wheel
+- [ ] Independent review and fixes
+- [ ] PR, CI green, merge, dated CHANGELOG heading, release v0.11.0
+
 ## Bugs
 
 ### Critical
@@ -234,12 +254,14 @@ Not implemented until we discuss them.
 - [x] ~~**FEAT-4** Export results~~ · done in 0.9.0
 - [ ] **FEAT-5** Collection-aware checks · idea, discuss
 - [ ] **FEAT-6** `pytest.approx` interop · idea, discuss
-- [ ] **FEAT-7** Lab-grade number formatting · idea, discuss
+- [ ] **FEAT-7** Lab-grade number formatting · partly done in 0.11.0 (`radix=`/`width=`, `verify.bits`, `__verify_format__`); engineering notation, ppm and `pint` wait
 - [x] ~~**FEAT-8** `verify.section()` for grouping~~ · done in 0.9.0
 - [ ] **FEAT-9** Custom check types · idea, discuss
 - [x] ~~**FEAT-10** Limits tables~~ · done in 0.10.0
 - [x] ~~**FEAT-11** `verify.eventually` and `verify.stable`~~ · done in 0.10.0
 - [x] ~~**FEAT-12** Verbosity-aware CLI options and a session summary~~ · done in 0.9.0
+- [ ] **FEAT-13** Waveform and mask checks (`verify.within_mask`) · idea, discuss (saved on 2026-11-19; mockup reviewed with the user: "Mask and Datalog Mockups", https://claude.ai/artifact/QJaABK2aZ5MpqffXnj9ro8)
+- [ ] **FEAT-14** Measurement datalog and statistics across rows (Cpk) · idea, discuss (saved on 2026-11-19; same mockup)
 
 ## Ideas: developer experience, CI and releases
 

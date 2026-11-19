@@ -58,6 +58,9 @@ class CheckDescriptor(_CheckIdentity, total=False):
     the same text with each interpolation as ``<expression>``
     (``tb.dev.map.block.reg<channel>.F``), only when that is known and differs. All four are
     absent when not given.
+
+    Register checks add ``radix``, ``width``, ``fields``, ``mask``, ``rendered`` and
+    ``bit_diff`` (see below): all optional, so a reader must not require them.
     """
 
     # --- set when built, if given ---
@@ -141,6 +144,27 @@ class CheckDescriptor(_CheckIdentity, total=False):
     also_failed: List[str]
     #: ``verify.limits``: the row's ``source``, such as ``"limits.csv:12"``.
     limit_source: str
+    #: Register checks (``radix=``/``width=``, ``bits``, a value with ``__verify_format__``):
+    #: the radix in force (``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``), the width in bits,
+    #: the bit fields as ``{name: [msb, lsb]}`` and, for ``bits``, the mask.
+    radix: str
+    width: int
+    fields: Dict[str, List[int]]
+    mask: int
+    #: The text of each value the format applies to, as the check shows it, without units:
+    #: keys among ``actual``, ``expected``, ``threshold``, ``low``, ``high`` and ``mask``.
+    #: Exact for any width, where a reader that parses JSON numbers as floats is not.
+    rendered: Dict[str, str]
+    #: Which bits of two compared integers differ (``equal``, ``bits``): ``bits`` (the runs
+    #: as ``[msb, lsb]``, highest first), ``text`` (``"bits [1:0] differ"``) and, when the
+    #: fields are known and some differ, ``fields`` (``name``, ``msb``, ``lsb``, and the
+    #: ``actual`` and ``expected`` field values as text). Absent when no bit differs.
+    bit_diff: Dict[str, Any]
+    #: Why a value's ``__verify_format__`` was not used.
+    format_error: str
+    #: Built checks only: the integer of each operand that is a register object and not a
+    #: plain ``int``. A record stores it as the operand itself and has no ``format_values``.
+    format_values: Dict[str, int]
 
 
 class GuardBranch(typing.TypedDict):

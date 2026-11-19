@@ -38,6 +38,7 @@ from ._checks import (
     ALL_SATISFY,
     APPROX,
     BETWEEN,
+    BITS,
     CONDITIONAL,
     CONTAINS,
     EQUAL,
@@ -72,6 +73,7 @@ from ._descriptors import (
 from ._evaluator import evaluate as _evaluate
 from ._limits import limit_checks
 from ._operands import UNSPELLED, OperandName, Spelling, spell
+from ._registers import BitField, Radix
 from ._evaluator import evaluate_detailed as _evaluate_detailed
 from ._exceptions import hide_stop_frames
 from ._settle import settle
@@ -298,8 +300,8 @@ class Verify:
     :attr:`require`, or with ``--verify-fail-fast``.
 
     Operand names: ``actual_name=`` (every check on one value) and ``expected_name=`` (the
-    checks with one compared value: ``equal``, ``not_equal``, ``approx``, the ordering checks
-    and ``length``) say how the operands are spelled when the code does not, as after a
+    checks with one compared value: ``equal``, ``not_equal``, ``bits``, ``approx``, the
+    ordering checks and ``length``) say how the operands are spelled when the code does not, as after a
     ``getattr``. Each takes a ``str`` or, on Python 3.14+, a template string; ``None`` or
     blank text counts as not given. The descriptor keeps the text with this run's values
     (``actual_name``: ``block.reg3.F``) and, when it is known and differs, the text with each
@@ -307,6 +309,13 @@ class Verify:
     template string carries it, and for a ``str`` it is read from the source of the call when
     the argument is written there as an f-string. Without ``name=``, ``actual_name`` names
     the check; ``expected_name`` is shown before the expected value: ``== wdata (243)``.
+
+    Registers: ``radix=`` (``"hex"``, ``"bin"``, ``"oct"``, ``"dec"``) and ``width=`` (bits)
+    on ``equal``, ``not_equal``, the ordering checks, ``between`` and ``bits`` show integer
+    values as a register reads: ``0x00F3``, ``0b1111_0011``. They change no verdict. A failed
+    ``equal`` then names the bits that differ, and :meth:`bits` compares under a mask and
+    names the fields. A value may carry its own format (``__verify_format__``, see
+    :class:`pytest_verifier.VerifyFormat`); the arguments win over it.
     """
 
     #: Where the built checks go; the fixture's instance has a recording sink.
@@ -326,6 +335,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* equals *expected*.
 
@@ -343,6 +354,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -357,6 +372,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -371,6 +388,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* does not equal *expected*.
 
@@ -388,6 +407,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -404,6 +427,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -464,6 +489,79 @@ class Verify:
             )
         )
 
+    def bits(
+        self,
+        actual: Any,
+        expected: Any,
+        *,
+        mask: Optional[int] = None,
+        fields: Optional[Mapping[str, BitField]] = None,
+        width: Optional[int] = None,
+        radix: Optional[Radix] = None,
+        name: Optional[str] = None,
+        note: Optional[str] = None,
+        actual_name: Optional[OperandName] = None,
+        expected_name: Optional[OperandName] = None,
+    ) -> CheckDescriptor:
+        """Check that the bits of *actual* equal those of *expected*, under *mask*.
+
+        Passes when ``(actual ^ expected) & mask == 0``. The values are shown in hex (or
+        *radix*), and a failed check names the bits that differ and, with *fields*, the
+        fields they belong to: ``expected 0x00F3, got 0x00F0 (mask 0x00FF); bits [1:0]
+        differ: MODE [3:1] is 0b000, expected 0b001``.
+
+        *actual* and *expected* are integers, or objects that say which integer they stand
+        for with ``__verify_format__`` (see :class:`pytest_verifier.VerifyFormat`), which
+        may also give *width*, *radix* and *fields*. Anything else (a ``bool``, a float,
+        text) makes the check fail with an ``error``.
+
+        Args:
+            actual: The value under test.
+            expected: The expected value.
+            mask: The bits that count; ``None`` for every bit. The description shows
+                ``expected & mask``.
+            fields: The bit fields by name: a bit index, or ``(msb, lsb)`` in either
+                order, such as ``{"EN": 0, "MODE": (3, 1)}``. Fields may overlap.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``.
+            radix: ``"hex"`` (the default), ``"bin"``, ``"oct"`` or ``"dec"``.
+            name: Human-readable label for the check. Defaults to the source text of
+                *actual* at the call, such as ``dat.txfe``.
+            note: Optional text that explains the check, shown after its detail in
+                summaries (stripped; a blank note is dropped).
+            actual_name: How *actual* is spelled, such as
+                ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
+                3.14+). Stored as ``actual_name``, and names the check when *name* is not
+                given. See :class:`Verify` for the symbolic form.
+            expected_name: How *expected* is spelled, such as ``"wdata"``: shown before
+                its value (``wdata (0x00F3)``) and stored as ``expected_name``.
+
+        Returns:
+            A :class:`CheckDescriptor` dict.
+
+        Raises:
+            TypeError: If *mask*, *width*, *radix* or *fields* has the wrong type.
+            ValueError: If *mask* is negative, *width* is not from 1 to 1024, *radix* is
+                not one of the four, or a field is blank, named twice, negative or outside
+                *width*.
+        """
+        __tracebackhide__ = hide_stop_frames  # noqa: F841 - read by pytest
+        labels = _labels(name, note, "bits", actual_name=actual_name, expected_name=expected_name)
+        return self._sink.check(
+            labels.on(
+                BITS.build(
+                    actual,
+                    expected,
+                    mask=mask,
+                    fields=fields,
+                    width=width,
+                    radix=radix,
+                    name=labels.name,
+                    expected_name=labels.expected_name,
+                )
+            )
+        )
+
     # ------------------------------------------------------------------
     # Ordering & range
     # ------------------------------------------------------------------
@@ -478,6 +576,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* > *threshold*.
 
@@ -495,6 +595,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -511,6 +615,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -525,6 +631,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* >= *threshold*.
 
@@ -542,6 +650,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -558,6 +670,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -572,6 +686,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* < *threshold*.
 
@@ -589,6 +705,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -603,6 +723,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -617,6 +739,8 @@ class Verify:
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
         expected_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* <= *threshold*.
 
@@ -634,6 +758,10 @@ class Verify:
                 given. See :class:`Verify` for the symbolic form.
             expected_name: How *threshold* is spelled, such as ``"wdata"``: shown before
                 its value (``wdata (243)``) and stored as ``expected_name``.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -650,6 +778,8 @@ class Verify:
                     name=labels.name,
                     units=units,
                     expected_name=labels.expected_name,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -665,6 +795,8 @@ class Verify:
         units: Optional[str] = None,
         note: Optional[str] = None,
         actual_name: Optional[OperandName] = None,
+        radix: Optional[Radix] = None,
+        width: Optional[int] = None,
     ) -> CheckDescriptor:
         """Check that *actual* is between *low* and *high*.
 
@@ -682,6 +814,10 @@ class Verify:
                 ``f"block.reg{channel}.F"`` (a ``str``, or a template string on Python
                 3.14+). Stored as ``actual_name``, and names the check when *name* is not
                 given. See :class:`Verify` for the symbolic form.
+            radix: Shows integer values in ``"hex"``, ``"bin"``, ``"oct"`` or ``"dec"``:
+                ``0x00F3``. A value that is not an ``int`` is shown as usual.
+            width: The width of the values in bits, which pads them: ``width=16`` gives
+                ``0x00F3``. Alone, it means hex.
 
         Returns:
             A :class:`CheckDescriptor` dict.
@@ -697,6 +833,8 @@ class Verify:
                     inclusive=inclusive,
                     name=labels.name,
                     units=units,
+                    radix=radix,
+                    width=width,
                 )
             )
         )
@@ -1272,11 +1410,11 @@ class Verify:
         *table* maps each check's name to its row, and the measurement of the same name is the
         value the row checks. A row holds the arguments of a check method after the value
         (``expected``, ``abs_tol``, ``rel_tol``, ``threshold``, ``low``, ``high``,
-        ``inclusive``, ``units``, ``needle``, ``pattern``, ``expected_type``) and, under
-        ``"check"``, the method: ``equal``, ``not_equal``, ``approx``, ``greater``,
-        ``greater_equal``, ``less``, ``less_equal``, ``between``, ``is_true``, ``is_false``,
-        ``is_none``, ``is_not_none``, ``contains``, ``not_contains``, ``matches``, ``length``
-        or ``is_instance``. Without ``"check"`` the limits say which: ``low`` and ``high`` make
+        ``inclusive``, ``units``, ``needle``, ``pattern``, ``expected_type``, ``radix``,
+        ``width``, ``mask``, ``fields``) and, under ``"check"``, the method: ``equal``,
+        ``not_equal``, ``bits``, ``approx``, ``greater``, ``greater_equal``, ``less``,
+        ``less_equal``, ``between``, ``is_true``, ``is_false``, ``is_none``, ``is_not_none``,
+        ``contains``, ``not_contains``, ``matches``, ``length`` or ``is_instance``. Without ``"check"`` the limits say which: ``low`` and ``high`` make
         a ``between``; ``low`` alone a ``greater_equal`` and ``high`` alone a ``less_equal``
         (``greater``/``less`` with ``inclusive=False``); ``expected`` with ``abs_tol`` or
         ``rel_tol`` an ``approx``; ``expected`` alone an ``equal``, except for a ``float``,
@@ -1295,7 +1433,7 @@ class Verify:
         Limits are strict: ``low``, ``high``, ``threshold``, the tolerances and the
         ``expected`` of ``approx`` must be finite numbers (not text, NaN or infinity),
         ``rel_tol`` a fraction below 1 (``0.02`` is 2%), ``inclusive`` a ``bool``, and the
-        ``expected`` of ``length`` a whole number. Measurement names match row names as text:
+        ``expected`` of ``length`` a whole number and that of ``bits`` an ``int``. Measurement names match row names as text:
         an ``int`` key matches its decimal string and an enum member its value. Measurements
         the table has no row for are not checked.
 

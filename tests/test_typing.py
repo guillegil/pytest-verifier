@@ -8,11 +8,22 @@ import pytest
 from pytest_verifier import ChecksFailedError, Verify
 from pytest_verifier import checks as mverify
 
-from .typing_usage import deprecated_alias, error_api, fixture_api, lab_api, module_api
+from .typing_usage import (
+    deprecated_alias,
+    error_api,
+    fixture_api,
+    lab_api,
+    module_api,
+    register_api,
+)
 
 
 def test_documented_module_usage_runs() -> None:
     module_api()
+
+
+def test_documented_register_usage_runs() -> None:
+    register_api()
 
 
 def test_documented_fixture_usage_runs(verify: Verify, request: pytest.FixtureRequest) -> None:

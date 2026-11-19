@@ -54,6 +54,28 @@ class Ambiguous:
         return "array([1, 2])"
 
 
+class Register:
+    """A register of a register model: not an ``int``, with its own format."""
+
+    def __init__(self, value: int) -> None:
+        self.value = value
+
+    def __verify_format__(self) -> Any:
+        return {"width": 16, "fields": {"EN": 0, "MODE": (3, 1)}, "value": self.value}
+
+    def __eq__(self, other: object) -> bool:
+        return self.value == (other.value if isinstance(other, Register) else other)
+
+    __hash__ = None  # type: ignore[assignment]
+
+
+class HostileFormat(Hostile):
+    """A hostile value whose format cannot be read either."""
+
+    def __verify_format__(self) -> Any:
+        raise RuntimeError("hostile format\n\x1b[31m")
+
+
 def _recursive() -> List[Any]:
     value: List[Any] = [1]
     value.append(value)
@@ -106,7 +128,43 @@ EXAMPLES = [
             lambda v: v.equal(Hostile(), 1, name="eq", actual_name="line\nbreak \ud800 \x1b[31m",
                               expected_name="w\ud800\ndata " + "x" * 500),
             False, True),
+    Example("equal", "hex",
+            lambda v: v.equal(0xF0, 0xF3, name="eq", radix="hex", width=16, units="V"), False),
+    Example("equal", "wide", lambda v: v.equal(2**127, 2**127, name="eq", width=128), True),
+    Example("equal", "register object",
+            lambda v: v.equal(Register(0xF0), 0xF3, name="eq", expected_name="wdata"), False),
+    Example("equal", "hostile protocol",
+            lambda v: v.equal(HostileFormat(), 1, name="eq", radix="bin"), False, True),
+    Example("equal", "hostile value with a radix",
+            lambda v: v.equal(Hostile(), 1, name="eq", radix="hex"), False, True),
     Example("not_equal", "pass", lambda v: v.not_equal("a", "b", name="ne"), True),
+    Example("not_equal", "octal", lambda v: v.not_equal(8, 8, name="ne", radix="oct"), False),
+    Example("bits", "pass", lambda v: v.bits(0x12F3, 0x00F3, mask=0x00FF, name="b"), True),
+    Example("bits", "fail",
+            lambda v: v.bits(0xF0, 0xF3, mask=0x00FF, fields={"EN": 0, "MODE": (3, 1)},
+                             width=16, name="b"),
+            False),
+    Example("bits", "no mask", lambda v: v.bits(-5, 5, radix="bin", name="b"), False),
+    Example("bits", "wide",
+            lambda v: v.bits(2**200 - 1, 1, fields={f"F{n}": n for n in range(100)}, name="b"),
+            False),
+    Example("bits", "too wide for a radix", lambda v: v.bits(10**400, 0, name="b"), False),
+    Example("bits", "register object",
+            lambda v: v.bits(Register(0xF0), Register(0xF0), note="read back"), True),
+    Example("bits", "operand names",
+            lambda v: v.bits(0xF0, 0xF3, actual_name="dev.ctrl", expected_name="w\ndata"),
+            False),
+    Example("bits", "float", lambda v: v.bits(1.5, 1, name="b"), False, True),
+    Example("bits", "bool", lambda v: v.bits(True, 1, name="b"), False, True),
+    Example("bits", "text", lambda v: v.bits(1, "0x1", name="b", width=8), False, True),
+    Example("bits", "hostile", lambda v: v.bits(Hostile(), 1, name="b"), False, True),
+    Example("bits", "hostile protocol",
+            lambda v: v.bits(HostileFormat(), 1, mask=1, name="b"), False, True),
+    Example("greater", "hex", lambda v: v.greater(0x10, 0x20, name="gt", width=8), False),
+    Example("between", "binary",
+            lambda v: v.between(5, 1, 3, name="bt", radix="bin", width=4, units="V"), False),
+    Example("between", "register object",
+            lambda v: v.between(Register(2), 1, 3, name="bt"), False, True),
     Example("not_equal", "fail", lambda v: v.not_equal(b"x", b"x", name="ne"), False),
     Example("not_equal", "operand names",
             lambda v: v.not_equal(1, 1, actual_name="new.word", expected_name="é→x\ny"),

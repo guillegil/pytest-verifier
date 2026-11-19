@@ -285,7 +285,7 @@ def test_threshold_and_its_alias_together_are_an_error(row, alias):
 
 def test_the_bound_an_ordering_check_does_not_take_is_an_unknown_argument():
     _, verify = _recording()
-    with pytest.raises(TypeError, match=r"greater\(\) takes threshold \(or low\), units; not: hi"):
+    with pytest.raises(TypeError, match=r"greater\(\) takes threshold \(or low\), units, radix, width; not: hi"):
         verify.limits({"X": 3}, {"X": {"check": "greater", "high": 5}})
     with pytest.raises(TypeError, match=r"less_equal\(\) takes threshold \(or high\).*not: low"):
         verify.limits({"X": 3}, {"X": {"check": "less_equal", "low": 5}})
@@ -356,14 +356,14 @@ def test_a_row_that_says_no_check_and_no_limit_is_an_error(row, got):
         ({"check": "TRUE"}, ValueError, r"unknown check 'TRUE'"),
         ({"check": 5}, ValueError, r"unknown check 5"),
         # unknown or missing argument
-        ({"expected": 3, "abs_tool": 1}, TypeError, r"equal\(\) takes expected, units; not: abs_"),
+        ({"expected": 3, "abs_tool": 1}, TypeError, r"equal\(\) takes expected, units, radix, width; not: abs_"),
         ({"expected": 3, "abs_tol": 1, "inclusive": True}, TypeError, r"approx\(\) .*not: inclus"),
         ({"check": "is_true", "low": 1}, TypeError, r"is_true\(\) takes no limits; not: low"),
         ({"low": 1, "expected": 2}, TypeError, r"greater_equal\(\) .*not: expected"),
         (
             {"check": "between", "low": 1, "high": 5, "threshold": 3},
             TypeError,
-            r"between\(\) takes low, high, inclusive, units; not: threshold",
+            r"between\(\) takes low, high, inclusive, units, radix, width; not: threshold",
         ),
         ({"check": "between", "low": 1}, TypeError, r"between\(\) needs high"),
         ({"check": "contains"}, TypeError, r"contains\(\) needs needle"),
@@ -1167,7 +1167,7 @@ def test_an_is_instance_line_is_refused(tmp_path, monkeypatch, check):
         ("Vout,,,abc,0.1,,,", r"column 'expected': must be a number, got 'abc'"),
         ("Vout,1,,,,,5,", r"row 'Vout': give threshold or low, not both"),
         ("Vout,,,,,,,", r"row 'Vout' says neither which check"),
-        ("Vout,,,3,0.1,,,equal", r"row 'Vout': equal\(\) takes expected, units; not: abs_tol"),
+        ("Vout,,,3,0.1,,,equal", r"row 'Vout': equal\(\) takes expected, units, radix, width; not: abs_tol"),
     ],
 )
 def test_every_line_is_validated_naming_its_place(tmp_path, monkeypatch, line, message):

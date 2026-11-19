@@ -9,11 +9,12 @@ margin (see :func:`~pytest_verifier._checks.margin`).
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Set
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Set, Tuple
 
 from ._checks import child_checks, margin, units
 from ._exceptions import label, note_suffix
-from ._render import escape, render_value, units_text
+from ._registers import render_int, render_number
+from ._render import escape, units_text
 
 #: The values of ``--verify-summary``.
 MODES = ("off", "failed", "all", "stats")
@@ -22,7 +23,9 @@ MODES = ("off", "failed", "all", "stats")
 class _Group:
     """The checks of one label."""
 
-    __slots__ = ("count", "failed", "first_failure", "low", "high", "margin", "units", "notes")
+    __slots__ = (
+        "count", "failed", "first_failure", "low", "high", "margin", "units", "notes", "formats"
+    )
 
     def __init__(self) -> None:
         self.count = 0
@@ -36,6 +39,8 @@ class _Group:
         self.units: Optional[str] = None
         #: The `` (note)`` of each check, shown when they all have the same.
         self.notes: Set[str] = set()
+        #: The ``(radix, width)`` of each measured check; ``(None, None)`` without a format.
+        self.formats: Set[Tuple[Any, Any]] = set()
 
     def measure(self, check: Mapping[str, Any]) -> None:
         actual = check.get("actual")
@@ -45,6 +50,8 @@ class _Group:
         ):
             self.low = actual if self.low is None else min(self.low, actual)
             self.high = actual if self.high is None else max(self.high, actual)
+            # A float of a check with a radix is not shown in it: a format of its own.
+            self.formats.add(_format(check) if isinstance(actual, int) else (None, None))
         found = margin(check)
         if found is not None:
             self.margin = found if self.margin is None else min(self.margin, found)
@@ -52,15 +59,33 @@ class _Group:
             self.units = units(check)  # a sampling check: the units of the try it kept
 
     def stats(self) -> str:
-        """``; 3.21V to 3.41V, margin -0.11V``, or ``""`` without numbers."""
+        """``; 3.21V to 3.41V, margin -0.11V``, or ``""`` without numbers. Register values
+        are shown in their format (``0x00F0 to 0x00F3``); when the checks do not all have
+        the same one (or one of them measured a value that is not an integer), the range is
+        left out: it would mix radixes. A whole margin beside a range in hex, binary or
+        octal is in that radix too, without padding (``margin 0xC``)."""
         parts = []
-        if self.low is not None and self.high is not None:
-            low, high = render_value(self.low, self.units), render_value(self.high, self.units)
+        radix = None
+        if self.low is not None and self.high is not None and len(self.formats) == 1:
+            radix, width = next(iter(self.formats))
+            low = render_number(self.low, radix, width, self.units)
+            high = render_number(self.high, radix, width, self.units)
             parts.append(low if low == high else f"{low} to {high}")
         if self.margin is not None:
             # ``+ 0.0`` turns ``-0.0`` (a value at a ``less`` limit) into ``0``.
-            parts.append(f"margin {self.margin + 0.0:.4g}{units_text(self.units)}")
+            text = f"{self.margin + 0.0:.4g}"
+            if radix in ("hex", "bin", "oct") and self.margin == int(self.margin):
+                text = render_int(int(self.margin), radix) or text
+            parts.append(f"margin {text}{units_text(self.units)}")
         return "; " + ", ".join(parts) if parts else ""
+
+
+def _format(check: Mapping[str, Any]) -> Tuple[Any, Any]:
+    """The ``(radix, width)`` a record's values are shown in; ``(None, None)`` for none."""
+    radix, width = check.get("radix"), check.get("width")
+    if not isinstance(radix, str):
+        return None, None
+    return radix, width if isinstance(width, int) and not isinstance(width, bool) else None
 
 
 class SessionSummary:

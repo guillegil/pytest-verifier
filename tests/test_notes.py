@@ -63,6 +63,11 @@ class TestDescriptor:
         with pytest.raises(TypeError, match=r"note must be a str or None"):
             build(1)
 
+    def test_bits_takes_a_note(self) -> None:
+        check = checks.bits(0xF0, 0xF3, name="CTRL", note=" after reset ")
+        assert check["note"] == "after reset"
+        assert "note" not in checks.bits(1, 1, name="CTRL", note="  ")
+
     def test_evaluation_ignores_it(self) -> None:
         assert checks.evaluate(checks.equal(1, 1, name="x", note="n"))
         assert not checks.evaluate(checks.equal(1, 2, name="x", note="n"))

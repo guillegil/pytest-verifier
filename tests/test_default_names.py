@@ -93,10 +93,11 @@ class TestDerivedNames:
         assert check["name"] == "value"
 
     def test_every_value_method(self, lookup: str) -> None:
-        x, text = 1.0, "v1.2"
+        x, text, word = 1.0, "v1.2", 1
         names = [
             checks.equal(x, 1.0)["name"],
             checks.not_equal(x, 2.0)["name"],
+            checks.bits(word, 1)["name"],
             checks.approx(x, 1.0, rel_tol=0.1)["name"],
             checks.greater(x, 0)["name"],
             checks.greater_equal(x, 0)["name"],
@@ -113,7 +114,9 @@ class TestDerivedNames:
             checks.is_instance(x, float)["name"],
             checks.length(text, 4)["name"],
         ]
-        assert names == ["x"] * 9 + ["not x", "None", "x"] + ["text"] * 3 + ["x", "text"]
+        assert names == (
+            ["x", "x", "word"] + ["x"] * 7 + ["not x", "None", "x"] + ["text"] * 3 + ["x", "text"]
+        )
 
     def test_a_given_name_wins_and_has_no_flag(self, lookup: str) -> None:
         check = checks.equal(1, 1, name="FIFO not full")

@@ -57,6 +57,7 @@ def _spelled(check: Any) -> Dict[str, Any]:
 VALUE_METHODS: Dict[str, Callable[..., Any]] = {
     "equal": lambda v, **extra: v.equal(1, 1, **extra),
     "not_equal": lambda v, **extra: v.not_equal(1, 2, **extra),
+    "bits": lambda v, **extra: v.bits(1, 1, **extra),
     "approx": lambda v, **extra: v.approx(1.0, 1.0, abs_tol=0.1, **extra),
     "greater": lambda v, **extra: v.greater(2, 1, **extra),
     "greater_equal": lambda v, **extra: v.greater_equal(1, 1, **extra),
@@ -76,7 +77,8 @@ VALUE_METHODS: Dict[str, Callable[..., Any]] = {
 
 #: The ones with one compared operand, which also take ``expected_name=``.
 COMPARING = (
-    "equal", "not_equal", "approx", "greater", "greater_equal", "less", "less_equal", "length"
+    "equal", "not_equal", "bits", "approx", "greater", "greater_equal", "less", "less_equal",
+    "length",
 )
 
 #: Checks that take neither.

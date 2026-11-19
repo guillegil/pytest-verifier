@@ -16,6 +16,7 @@ from ._base import (
     truth,
     units,
 )
+from ._bits import BITS
 from ._composites import ALL_SATISFY, CONDITIONAL, GUARD
 from ._raises import RAISES
 from ._sampling import EVENTUALLY, STABLE
@@ -44,6 +45,7 @@ __all__ = [
     "ALL_SATISFY",
     "APPROX",
     "BETWEEN",
+    "BITS",
     "CONDITIONAL",
     "CONTAINS",
     "EQUAL",
